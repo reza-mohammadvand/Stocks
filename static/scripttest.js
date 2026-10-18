@@ -4461,6 +4461,25 @@ function formatExpectationPercent(value, digits = 2) {
     return `${formatExpectationNumber(value, digits)}٪`;
 }
 
+function formatExpectationTimestamp(value) {
+    if (!value) {
+        return "—";
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return "—";
+    }
+
+    return new Intl.DateTimeFormat("fa-IR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        timeZone: "Asia/Tehran"
+    }).format(date);
+}
+
 function renderMarketExpectations(payload) {
     const list = document.getElementById("expectations-list");
     const empty = document.getElementById("expectations-empty");
@@ -4472,16 +4491,35 @@ function renderMarketExpectations(payload) {
         [...list.querySelectorAll(".expectations-base[open]")]
             .map(item => item.dataset.baseSymbol)
     );
-    list.innerHTML = "";
     const bases = Array.isArray(payload?.bases) ? payload.bases : [];
+    const nextList = document.createDocumentFragment();
     const summaryButton = document.getElementById("nearest-expiry-summary");
     if (summaryButton) summaryButton.disabled = bases.length === 0;
     const expiringButton = document.getElementById("show-expiring-options");
     if (expiringButton) expiringButton.disabled = bases.length === 0;
     const marketShareButton = document.getElementById("show-market-share-options");
     if (marketShareButton) marketShareButton.disabled = bases.length === 0;
-    empty.hidden = bases.length > 0;
-    list.hidden = bases.length === 0;
+    const generatedTime = formatExpectationTimestamp(payload?.generated_at);
+    const sourceLabel = payload?.trade_value_source === "snapshot"
+        ? "ذخیره روز قبل"
+        : "داده زنده";
+    const meta = document.getElementById("expectations-meta");
+    const connection = document.getElementById("market-connection");
+    const connectionTime = document.getElementById("market-connection-time");
+
+    if (meta) {
+        meta.textContent = `آخرین محاسبه ${generatedTime} · منبع ارزش معاملات: ${sourceLabel}`;
+    }
+
+    if (connection) {
+        connection.classList.add("is-live");
+        connection.classList.remove("has-error");
+    }
+
+    if (connectionTime) {
+        connectionTime.textContent = generatedTime;
+        connectionTime.dateTime = payload?.generated_at || "";
+    }
 
     bases.forEach((base, baseIndex) => {
         const details = document.createElement("details");
@@ -4489,8 +4527,37 @@ function renderMarketExpectations(payload) {
         details.dataset.baseSymbol = normalizeSymbol(base.base_symbol);
         details.open = openBaseSymbols.has(details.dataset.baseSymbol);
 
+        const groups = Array.isArray(base.groups) ? base.groups : [];
+        const nearestGroup = [...groups].sort((first, second) =>
+            Number(first.days_remaining) - Number(second.days_remaining)
+        )[0];
+        const nearestWeightedAverage = Number(nearestGroup?.weighted_average);
+        const nearestWeightedTone = (
+            Number.isFinite(nearestWeightedAverage)
+            && nearestWeightedAverage < 0
+        ) ? "is-negative" : "is-positive";
+
         const summary = document.createElement("summary");
-        summary.innerHTML = `<span>${base.base_symbol}</span><small>${formatExpectationNumber(base.groups.length)} سررسید</small>`;
+        summary.innerHTML = `
+            <span class="expectations-symbol-block">
+                <span class="expectations-symbol">${base.base_symbol}</span>
+                <small class="expectations-count">${formatExpectationNumber(groups.length)} سررسید فعال</small>
+            </span>
+            <span class="expectations-glance">
+                <span>
+                    <span class="expectations-glance-label">نزدیک‌ترین سررسید:</span>
+                    <strong>${nearestGroup?.expiry_date || "—"}</strong>
+                </span>
+                <span>
+                    <span class="expectations-glance-label">روز باقی‌مانده:</span>
+                    <strong>${formatExpectationNumber(nearestGroup?.days_remaining)}</strong>
+                </span>
+                <span>
+                    <span class="expectations-glance-label">میانگین وزنی نزدیک‌ترین سررسید:</span>
+                    <strong class="expectation-weighted ${nearestWeightedTone}">${formatExpectationPercent(nearestGroup?.weighted_average)}</strong>
+                </span>
+            </span>
+            <span class="expectations-chevron" aria-hidden="true"></span>`;
         details.appendChild(summary);
 
         const wrapper = document.createElement("div");
@@ -4509,7 +4576,7 @@ function renderMarketExpectations(payload) {
             <tbody></tbody>`;
 
         const tbody = table.querySelector("tbody");
-        base.groups.forEach(group => {
+        groups.forEach(group => {
             const row = document.createElement("tr");
             row.innerHTML = `
                 <td>${formatExpectationNumber(group.days_remaining)}</td>
@@ -4523,16 +4590,24 @@ function renderMarketExpectations(payload) {
 
         wrapper.appendChild(table);
         details.appendChild(wrapper);
-        list.appendChild(details);
+        nextList.appendChild(details);
         initializeExpectationAccordion(details, summary, wrapper);
     });
 
+    list.replaceChildren(nextList);
+    empty.hidden = bases.length > 0;
+    list.hidden = bases.length === 0;
+
     filterMarketExpectationSymbols(
-        document.getElementById("expectations-search")?.value || ""
+        document.getElementById("expectations-search")?.value || "",
+        payload
     );
 }
 
-function filterMarketExpectationSymbols(searchValue) {
+function filterMarketExpectationSymbols(
+    searchValue,
+    data = marketExpectationsData
+) {
     const query = normalizeSymbol(searchValue).toLocaleLowerCase("fa");
     let visibleCount = 0;
 
@@ -4545,7 +4620,7 @@ function filterMarketExpectationSymbols(searchValue) {
 
     const empty = document.getElementById("expectations-empty");
     const list = document.getElementById("expectations-list");
-    if (empty && list && marketExpectationsData?.bases?.length) {
+    if (empty && list && data?.bases?.length) {
         empty.hidden = visibleCount > 0;
         empty.textContent = visibleCount > 0
             ? ""
@@ -4596,19 +4671,49 @@ async function loadMarketExpectations(force = false) {
     const loading = document.getElementById("expectations-loading");
     const list = document.getElementById("expectations-list");
     const empty = document.getElementById("expectations-empty");
+    const refreshButton = document.getElementById("refresh-expectations");
+    const connection = document.getElementById("market-connection");
+    const connectionTime = document.getElementById("market-connection-time");
+    const hasRenderedData = Boolean(
+        list
+        && list.childElementCount > 0
+        && !list.hidden
+    );
     marketExpectationsLoading = true;
     const summaryButton = document.getElementById("nearest-expiry-summary");
-    if (summaryButton) summaryButton.disabled = true;
+    if (summaryButton && !hasRenderedData) summaryButton.disabled = true;
     const expiringButton = document.getElementById("show-expiring-options");
-    if (expiringButton) expiringButton.disabled = true;
+    if (expiringButton && !hasRenderedData) expiringButton.disabled = true;
     const marketShareButton = document.getElementById("show-market-share-options");
-    if (marketShareButton) marketShareButton.disabled = true;
-    if (loading) {
-        loading.hidden = false;
-        loading.textContent = "در حال دریافت و محاسبه اطلاعات...";
+    if (marketShareButton && !hasRenderedData) {
+        marketShareButton.disabled = true;
     }
-    if (list) list.hidden = true;
-    if (empty) empty.hidden = true;
+    if (loading) {
+        loading.hidden = hasRenderedData;
+        if (!hasRenderedData) {
+            loading.textContent = "در حال دریافت و محاسبه اطلاعات...";
+        }
+    }
+    if (list) {
+        list.hidden = !hasRenderedData;
+        if (hasRenderedData) {
+            list.setAttribute("aria-busy", "true");
+        }
+    }
+    if (empty && !hasRenderedData) {
+        empty.hidden = true;
+    }
+    if (refreshButton) {
+        refreshButton.classList.add("is-refreshing");
+        refreshButton.setAttribute("aria-busy", "true");
+    }
+    if (connection) {
+        connection.classList.remove("is-live", "has-error");
+    }
+    if (connectionTime) {
+        connectionTime.textContent = "در حال دریافت";
+        connectionTime.removeAttribute("datetime");
+    }
 
     try {
         const useSavedValue = document
@@ -4636,16 +4741,34 @@ async function loadMarketExpectations(force = false) {
         if (!response.ok) {
             throw new Error(result.error || "دریافت اطلاعات ناموفق بود.");
         }
-        marketExpectationsData = result;
         renderMarketExpectations(result);
+        marketExpectationsData = result;
         if (loading) loading.hidden = true;
     } catch (error) {
         if (loading) {
-            loading.hidden = false;
-            loading.textContent = error.message || "دریافت اطلاعات ناموفق بود.";
+            loading.hidden = hasRenderedData;
+            if (!hasRenderedData) {
+                loading.textContent = error.message || "دریافت اطلاعات ناموفق بود.";
+            }
+        }
+        if (connection) {
+            connection.classList.remove("is-live");
+            connection.classList.add("has-error");
+        }
+        if (connectionTime) {
+            connectionTime.textContent = hasRenderedData
+                ? "نمایش آخرین داده"
+                : "خطا در اتصال";
         }
     } finally {
         marketExpectationsLoading = false;
+        if (list) {
+            list.removeAttribute("aria-busy");
+        }
+        if (refreshButton) {
+            refreshButton.classList.remove("is-refreshing");
+            refreshButton.removeAttribute("aria-busy");
+        }
     }
 }
 
@@ -5018,31 +5141,31 @@ document.addEventListener(
     async function () {
 
         /*
-            ساخت Dropdown نمادها
+            رابط دو نمای قدیمی فعلاً حذف شده است، اما تمام توابع دریافت
+            و پردازش آن‌ها برای استفاده در مراحل بعدی در همین فایل حفظ می‌شوند.
+            اگر آن نماها دوباره به DOM برگردند، راه‌اندازی قبلی نیز فعال می‌شود.
         */
-        await loadDiscoveredOptionBases();
-        populateBaseSymbolDropdown();
-        initializeDataSourceDropdown(
-            document.getElementById("market-data-source")
-        );
-        initializeDataSourceDropdown(
-            document.getElementById("spread-data-source")
-        );
-        initializeDataSourceDropdown(
-            document.getElementById("filter-status")
+        const legacyViewsAvailable = Boolean(
+            document.getElementById("market")
+            || document.getElementById("spread")
         );
 
+        if (legacyViewsAvailable) {
+            await loadDiscoveredOptionBases();
+            populateBaseSymbolDropdown();
+            initializeDataSourceDropdown(
+                document.getElementById("market-data-source")
+            );
+            initializeDataSourceDropdown(
+                document.getElementById("spread-data-source")
+            );
+            initializeDataSourceDropdown(
+                document.getElementById("filter-status")
+            );
+            await autoRefreshMarket();
+            startAutoRefresh();
+        }
 
-        /*
-            دریافت اولیه تب اول
-        */
-        await autoRefreshMarket();
-
-
-        /*
-            شروع بروزرسانی 30 ثانیه‌ای
-        */
-        startAutoRefresh();
         startMarketExpectationsAutoRefresh();
 
         document
@@ -5091,7 +5214,6 @@ document.addEventListener(
         document
             .getElementById("expectations-use-saved-value")
             ?.addEventListener("change", () => {
-                marketExpectationsData = null;
                 loadMarketExpectations(true);
             });
 
@@ -5200,6 +5322,8 @@ document.addEventListener(
                 closeMarketShareOptionsSummary();
             }
         });
+
+        await loadMarketExpectations();
     }
 );
 

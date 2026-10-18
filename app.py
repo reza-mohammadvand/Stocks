@@ -2199,4 +2199,15 @@ def get_spread_data():
     )
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    dashboard_port = int(
+        os.environ.get("STOCK_DASHBOARD_PORT", "5050")
+    )
+    dashboard_debug = (
+        os.environ.get("STOCK_DASHBOARD_DEBUG", "0") == "1"
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=dashboard_port,
+        debug=dashboard_debug
+    )

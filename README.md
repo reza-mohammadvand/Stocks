@@ -1,120 +1,118 @@
-# Options Strategies Dashboard
+# دیدبان بازار سهام
 
-A Persian-language web dashboard for monitoring Tehran Stock Exchange options and analyzing **Bull Call Spread** strategies. The application retrieves live market and order-book data from TSETMC, applies configurable filters, calculates spread metrics, and displays an interactive profit/loss chart.
+یک داشبورد فارسی و راست‌به‌چپ برای تحلیل بازار سهام ایران است. در مرحلهٔ فعلی،
+داده‌های اختیار معامله به‌عنوان سیگنال انتظارات معامله‌گران نسبت به نمادهای پایه
+تحلیل می‌شوند. ساختار پروژه برای اضافه‌شدن تب‌ها و ابزارهای تحلیلی جدید در مراحل
+بعدی آماده نگه داشته شده است.
 
-## Features
+## وضعیت مرحلهٔ اول
 
-- Live option-chain data from TSETMC
-- Market and Bull Spread views
-- Filtering by underlying asset, option symbol, moneyness, trading value, and days to expiration
-- Sortable tables with persistent sorting during automatic refresh
-- Bull Call Spread calculations, including maximum profit, maximum loss, break-even price, reward-to-risk ratio, and monthly return estimate
-- Interactive expiration payoff chart with current price, strike, break-even, and hover details
-- Buy, sell, and underlying order-book reports
-- Automatic refresh while preserving the selected row
-- Persian/Arabic symbol normalization for reliable symbol matching
-- Three data-source modes: live, saved trading values, or saved trading values and order books
-- End-of-session order-book snapshots captured between 12:25 and 12:35 Tehran time
-- Responsive dark user interface
+- تب‌های قدیمی `Market` و `Bull Spread` از رابط کاربری حذف شده‌اند.
+- صفحهٔ «انتظارات بازار» اکنون نمای اصلی برنامه است.
+- دریافت، پردازش و مدل‌های دادهٔ دو بخش حذف‌شده همچنان در بک‌اند و جاوااسکریپت
+  نگه‌داری می‌شوند تا در مراحل بعدی قابل استفاده باشند.
+- رابط کاربری با سبک شیشه‌ای، چیدمان واکنش‌گرا و هویت متناسب با تحلیل بازار سهام
+  بازطراحی شده است.
 
-## Tech Stack
+## قابلیت‌های فعلی
 
-- Python
-- Flask and Flask-CORS
-- Requests
-- pandas
-- jdatetime
-- Vanilla JavaScript, HTML, and CSS
-- Native SVG charts
+- دریافت داده‌های زندهٔ Market Watch و سفارش‌های برتر از TSETMC
+- استخراج خودکار نمادهای اختیار و نگاشت آن‌ها به سهم پایه
+- محاسبهٔ فاصله تا سر‌به‌سر، میانگین وزنی و بازدهی مؤثر
+- مشاهدهٔ نزدیک‌ترین سررسیدهای هر نماد پایه
+- رتبه‌بندی نمادهای اختیار بر اساس سهم ارزش معاملات
+- استفاده از snapshot ارزش معاملات و سفارش‌های روز قبل
+- جست‌وجو، فیلتر روز تا سررسید، مرتب‌سازی و جزئیات محاسبات
+- به‌روزرسانی خودکار داده‌های انتظارات بازار
 
-## Project Structure
+## سرویس‌های دادهٔ حفظ‌شده
 
-```text
-Options/
-├── apptest.py                 # Enhanced/current Flask application
-├── app.py                     # Original Flask application
-├── templates/
-│   ├── indextest.html         # Enhanced dashboard template
-│   └── index.html             # Original dashboard template
-├── static/
-│   ├── scripttest.js          # Enhanced dashboard behavior
-│   ├── script.js              # Original dashboard behavior
-│   ├── style.css              # Shared dashboard styles
-│   ├── logo.png
-│   └── iransans.ttf
-├── data/
-│   ├── trade_value_snapshot.json
-│   └── order_book_snapshot.json
-└── Test/                      # Earlier test implementation
-```
+| مسیر | کاربرد |
+|---|---|
+| `/market-expectations` | تحلیل انتظارات بازار با داده‌های اختیار معامله |
+| `/option-bases` | کشف نمادهای پایه و نگاشت ریشهٔ اختیار |
+| `/data` | دادهٔ کامل نمای قدیمی بازار؛ برای استفادهٔ آینده حفظ شده است |
+| `/spread-data` | داده و محاسبات Bull Call Spread؛ برای استفادهٔ آینده حفظ شده است |
 
-## Installation
+داده‌های snapshot در فایل‌های زیر نگه‌داری می‌شوند:
 
-Python 3.10 or newer is recommended.
+- `data/trade_value_snapshot.json`
+- `data/order_book_snapshot.json`
 
-1. Clone the repository:
+## پیش‌نیازها
 
-```bash
-git clone https://github.com/reza-mohammadvand/Options-Strategies.git
-cd Options-Strategies
-```
+- Python 3.10 یا جدیدتر
+- دسترسی اینترنت برای حالت دادهٔ زنده
 
-2. Create and activate a virtual environment:
-
-```bash
-python -m venv .venv
-```
-
-Windows PowerShell:
+## نصب
 
 ```powershell
+git clone https://github.com/reza-mohammadvand/Stocks.git
+cd Stocks
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
 
-Linux or macOS:
+## اجرا
+
+پورت پیش‌فرض جدید پروژه `5050` است:
+
+```powershell
+python app.py
+```
+
+سپس آدرس زیر را باز کنید:
+
+```text
+http://127.0.0.1:5050
+```
+
+برای اجرای برنامه روی یک پورت دیگر در PowerShell:
+
+```powershell
+$env:STOCK_DASHBOARD_PORT = "6060"
+python app.py
+```
+
+برای فعال‌کردن حالت debug فقط در محیط توسعه:
+
+```powershell
+$env:STOCK_DASHBOARD_DEBUG = "1"
+python app.py
+```
+
+در Linux یا macOS می‌توان پورت را به این شکل تعیین کرد:
 
 ```bash
-source .venv/bin/activate
+STOCK_DASHBOARD_PORT=6060 python app.py
 ```
 
-3. Install the dependencies:
+## ساختار پروژه
 
-```bash
-pip install flask flask-cors requests pandas jdatetime
+```text
+Stocks/
+├── app.py                         # برنامه Flask و سرویس‌های دریافت/تحلیل داده
+├── requirements.txt              # وابستگی‌های پایتون
+├── templates/
+│   ├── indextest.html             # رابط اصلی فعلی
+│   └── index.html                 # نمای قدیمی نگه‌داری‌شده
+├── static/
+│   ├── scripttest.js              # رفتار رابط و منطق تحلیل سمت کاربر
+│   ├── script.js                  # اسکریپت نمای قدیمی
+│   ├── style.css                  # استایل‌های پایه و طراحی شیشه‌ای
+│   ├── theme.css                  # پالت سرمه‌ای و فیروزه‌ای رابط فعلی
+│   ├── fonts/
+│   │   ├── Vazirmatn-Variable.woff2
+│   │   └── OFL-Vazirmatn.txt
+│   ├── logo.png
+│   └── iransans.ttf
+└── data/
+    ├── trade_value_snapshot.json
+    └── order_book_snapshot.json
 ```
 
-## Running the Application
+## نکته
 
-Run the enhanced version:
-
-```bash
-python apptest.py
-```
-
-Open `http://localhost:5001` in your browser.
-
-The original version can be started with `python app.py` and is available at `http://localhost:5000`.
-
-## Saved Data Modes
-
-| Mode | Trading values | Order books |
-|---|---|---|
-| Latest data | Live | Live |
-| Previous trading values | Saved | Live |
-| Previous trading values and orders | Saved | Saved |
-
-Trading-value snapshots are stored in `data/trade_value_snapshot.json`. Order-book snapshots are updated during the 12:25–12:35 Tehran-time window. Updates received after that window do not overwrite the final captured snapshot.
-
-## Data Sources
-
-The application uses public TSETMC endpoints for Market Watch data and best bid/ask order books. Their availability and response formats may change without notice. An internet connection is required when using live-data modes.
-
-## Notes
-
-- The interface language is Persian and uses a right-to-left layout.
-- Trading-value filters are displayed in million rials.
-- This project is intended for market analysis and educational use. It is not financial advice and does not execute trades.
-
-## License
-
-No license has been specified yet. Add a license file before distributing or reusing the project publicly.
+این پروژه ابزار تحلیل و آموزش است، معامله‌ای اجرا نمی‌کند و توصیهٔ سرمایه‌گذاری
+محسوب نمی‌شود.

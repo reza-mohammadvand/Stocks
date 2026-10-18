@@ -1,782 +1,291 @@
 <!DOCTYPE html>
-<html lang="fa">
+<html lang="fa" dir="rtl">
 <head>
-<meta charset="UTF-8">
-<title>Options Dashboard</title>
-
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-<link rel="icon" href="../static/logo.png" type="image/png" />
-
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#001426">
+    <meta
+        name="description"
+        content="سامانه تحلیل بازار سهام با استفاده از داده‌های اختیار معامله"
+    >
+    <title>دیدبان بازار سهام</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css') }}">
+    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}" type="image/png">
 </head>
-<body>
+<body class="dashboard-shell">
+    <div class="ambient-grid" aria-hidden="true"></div>
 
-<h1>Options <p style="display: inline; margin: 0 5px;"> </p> Market</h1>
-
-
-<div class="tabs">
-
-    <button class="tab-btn active" data-tab="market">Market</button>
-    <button class="tab-btn" data-tab="spread">Bull Spread</button>
-    <button class="tab-btn" data-tab="expectations">Market Expectations</button>
-</div>
-
-<div id="market" class="tab-content active">
-
-<!-- 🔍 FILTER BOX -->
-<div id="filter-box">
-
-    <h2></h2>
-
-    <div
-    id="filter-base-symbol"
-    class="check-dropdown"
-    data-placeholder="نماد پایه"
->
-    <button
-        type="button"
-        class="check-dropdown-toggle"
-        aria-expanded="false"
-    >
-        <span class="check-dropdown-label">
-            نماد پایه
-        </span>
-
-        <span class="check-dropdown-arrow">
-            ▼
-        </span>
-    </button>
-
-    <div class="check-dropdown-menu"></div>
-</div>
-
-    <!-- نماد -->
-    <input type="text" id="filter-symbol" placeholder="نماد اختیار">
-
-    <!-- وضعیت -->
-    <div id="filter-status" class="check-dropdown single-select-dropdown" data-value="" data-default-value="">
-        <button type="button" class="check-dropdown-toggle" aria-expanded="false">
-            <span class="check-dropdown-label">همه وضعیت‌ها</span>
-            <span class="check-dropdown-arrow">▼</span>
-        </button>
-        <div class="check-dropdown-menu">
-            <div class="check-dropdown-option selected" data-value="" role="option" tabindex="0">همه وضعیت‌ها</div>
-            <div class="check-dropdown-option" data-value="ITM" role="option" tabindex="0">در سود (ITM)</div>
-            <div class="check-dropdown-option" data-value="ATM" role="option" tabindex="0">در نقطه (ATM)</div>
-            <div class="check-dropdown-option" data-value="OTM" role="option" tabindex="0">خارج از سود (OTM)</div>
-        </div>
-    </div>
-    <!-- ارزش معاملات -->
-    <div class="filter-group">
-        <input type="number" id="filter-value" placeholder="ارزش معاملات (میلیون ریال)">
-        
-        <div class="arrow-buttons">
-            <button onclick="setValueFilter('gt')" id="value-up">⬆</button>
-            <button onclick="setValueFilter('lt')" id="value-down">⬇</button>
-        </div>
-<div id="market-data-source" class="check-dropdown data-source-dropdown" data-value="live" data-default-value="live">
-    <button type="button" class="check-dropdown-toggle" aria-expanded="false">
-        <span class="check-dropdown-label">آخرین دیتا</span>
-        <span class="check-dropdown-arrow">▼</span>
-    </button>
-    <div class="check-dropdown-menu">
-        <div class="check-dropdown-option selected" data-value="live" role="option" tabindex="0">آخرین دیتا</div>
-        <div class="check-dropdown-option" data-value="saved_trade" role="option" tabindex="0">ارزش معاملات دیروز</div>
-        <div class="check-dropdown-option" data-value="saved_trade_orders" role="option" tabindex="0">ارزش و سفارشات دیروز</div>
-    </div>
-</div>
-    </div>
-
-    <!-- روز باقی‌مانده -->
-    <div class="filter-group">
-        <input type="number" id="filter-days" placeholder="روز تا سررسید">
-        
-        <div class="arrow-buttons">
-            <button onclick="setDaysFilter('gt')" id="days-up">⬆</button>
-            <button onclick="setDaysFilter('lt')" id="days-down">⬇</button>
-        </div>
-    </div>
-
-    <br><br>
-
-    <!-- دکمه‌ها -->
-    <button onclick="applyFilters(), loadData()">اعمال فیلتر</button>
-    <button onclick="resetFilters()">ریست</button>
-<br>
-
-<div class="result">
-<span
-    id="market-refresh-status"
-    class="refresh-status"
-></span>
-<table id="table">
-    <thead></thead>
-    <tbody>
-        <tr>
-            <td>
-                برای مشاهده نتایج، فیلترها را اعمال کنید
-            </td>
-        </tr>
-    </tbody>
-</table>
-</div>
-</div>
-
-
-
-
-</div>
-
-<div id="spread" class="tab-content">
-
-    <div class="spread">
-
-        <h2 style="width: 100%; text-align: center;"></h2>
-
-        <div class="spread-filter">
-
-<div
-    id="spread-base-symbol"
-    class="check-dropdown"
-    data-placeholder="نماد پایه"
->
-    <button
-        type="button"
-        class="check-dropdown-toggle"
-        aria-expanded="false"
-    >
-        <span class="check-dropdown-label">
-            نماد پایه
-        </span>
-
-        <span class="check-dropdown-arrow">
-            ▼
-        </span>
-    </button>
-
-    <div class="check-dropdown-menu"></div>
-</div>
-    <!-- ارزش معاملات (فقط بیشتر از) -->
-    <input type="number" id="spread-value" placeholder="ارزش معاملات (میلیون ریال)">
-<div id="spread-data-source" class="check-dropdown data-source-dropdown" data-value="live" data-default-value="live">
-    <button type="button" class="check-dropdown-toggle" aria-expanded="false">
-        <span class="check-dropdown-label">آخرین دیتا</span>
-        <span class="check-dropdown-arrow">▼</span>
-    </button>
-    <div class="check-dropdown-menu">
-        <div class="check-dropdown-option selected" data-value="live" role="option" tabindex="0">آخرین دیتا</div>
-        <div class="check-dropdown-option" data-value="saved_trade" role="option" tabindex="0">ارزش معاملات دیروز</div>
-        <div class="check-dropdown-option" data-value="saved_trade_orders" role="option" tabindex="0">ارزش و سفارشات دیروز</div>
-    </div>
-</div>
-    <!-- روز باقی‌مانده -->
-    <div class="spread-days-box">
-
-        <input style="height: 44px;" type="number" id="spread-days" placeholder="روز تا سررسید">
-<div class="checkbox-group arrow-buttons">
-    <div class="checkbox-group arrow-buttons">
-
-    <button
-        type="button"
-        id="days-up-spread"
-        onclick="setSpreadDaysFilter('gte')"
-        title="بیشتر یا مساوی"
-    >
-        ⬆
-    </button>
-
-    <button
-        type="button"
-        id="days-down-spread"
-        onclick="setSpreadDaysFilter('lte')"
-        title="کمتر یا مساوی"
-    >
-        ⬇
-    </button>
-
-    <button
-        type="button"
-        id="days-equal-spread"
-        onclick="setSpreadDaysFilter('eq')"
-        title="مساوی"
-    >
-        =
-    </button>
-
-</div>
-</div>
-
-    </div>
-
-    <br>
-<div
-    class="spread-filter-btn"
-    style="margin-top: 25px;"
->
-    <button
-        type="button"
-        id="apply-spread-filter"
-        onclick="applySpreadFilterAndCalculate()"
-    >
-        اعمال فیلتر
-    </button>
-</div>
-<div class="spread-result">
-<span
-    id="spread-refresh-status"
-    class="refresh-status"
-></span>
-<table id="spread-table">
-
-    <!-- سرستون‌ها توسط JavaScript ساخته می‌شوند -->
-    <thead></thead>
-
-    <tbody>
-        <tr>
-            <td>
-                برای مشاهده نتایج، فیلترها را اعمال کنید
-            </td>
-        </tr>
-    </tbody>
-
-</table>
-
-</div>
-
-<div
-    id="spread-calculation-section"
-    class="spread-calculation-section"
-    style="display: none;"
->
-
-<div class="spread-calculation-result">
-
-    <!-- کنترل نمایش ستون‌ها -->
-    <div class="spread-column-selector">
-
-        <div class="spread-column-selector-header">
-
-            <span>
-                نمایش ستون‌ها
+    <header class="app-header">
+        <a class="app-brand" href="/" aria-label="دیدبان بازار سهام، صفحه اصلی">
+            <span class="app-brand-mark" aria-hidden="true">
+                <img src="{{ url_for('static', filename='logo.png') }}" alt="">
             </span>
+            <span class="app-brand-copy">
+                <strong>دیدبان بازار سهام</strong>
+                <small>Stock Intelligence</small>
+            </span>
+        </a>
 
-            <button
-                type="button"
-                id="show-all-spread-columns"
-                onclick="showAllSpreadColumns()"
-            >
-                نمایش همه
-            </button>
+        <nav class="app-navigation" aria-label="بخش‌های سامانه">
+            <span class="app-navigation-current" aria-current="page">
+                انتظارات بازار
+            </span>
+        </nav>
 
+        <div class="market-connection" id="market-connection" role="status" aria-live="polite">
+            <span class="market-connection-dot" aria-hidden="true"></span>
+            <span class="market-connection-label">داده‌های بازار</span>
+            <time id="market-connection-time">در حال اتصال</time>
         </div>
+    </header>
 
-        <div
-            id="spread-column-options"
-            class="spread-column-options"
+    <main class="app-main">
+        <section class="expectations-hero" aria-labelledby="page-title">
+            <h1 id="page-title">دیدبان بازار سهام</h1>
+        </section>
+
+        <div id="expectations" class="tab-content active">
+            <section class="expectations-panel" aria-label="انتظارات بازار">
+                <div class="expectations-toolbar" aria-label="فیلترهای انتظارات بازار">
+                    <label class="expectations-search-box" for="expectations-search">
+                        <span class="search-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" focusable="false">
+                                <circle cx="11" cy="11" r="6.5"></circle>
+                                <path d="m16 16 4.25 4.25"></path>
+                            </svg>
+                        </span>
+                        <input
+                            id="expectations-search"
+                            type="search"
+                            placeholder="جست‌وجوی نماد پایه..."
+                            autocomplete="off"
+                        >
+                    </label>
+
+                    <label class="expectations-saved-toggle" for="expectations-use-saved-value">
+                        <input id="expectations-use-saved-value" type="checkbox" role="switch">
+                        <span class="expectations-toggle-track" aria-hidden="true">
+                            <span class="expectations-toggle-thumb"></span>
+                        </span>
+                        <span>استفاده از ارزش معاملات ذخیره‌شده دیروز</span>
+                    </label>
+
+                    <div class="expectations-days-filter">
+                        <label class="field-with-label">
+                            <span>از روز</span>
+                            <input
+                                id="expectations-min-days"
+                                type="number"
+                                min="0"
+                                step="1"
+                                inputmode="numeric"
+                                placeholder="۰"
+                                aria-label="حداقل روز تا سررسید"
+                            >
+                        </label>
+                        <span class="expectations-days-separator">تا</span>
+                        <label class="field-with-label">
+                            <span>تا روز</span>
+                            <input
+                                id="expectations-max-days"
+                                type="number"
+                                min="0"
+                                step="1"
+                                inputmode="numeric"
+                                placeholder="۳۶۵"
+                                aria-label="حداکثر روز تا سررسید"
+                            >
+                        </label>
+                        <button id="show-expiring-options" class="button-secondary" type="button" disabled>
+                            نمایش سررسیدها
+                        </button>
+                    </div>
+
+                    <div class="expectations-market-share-filter">
+                        <label class="field-with-label">
+                            <span>تعداد نماد</span>
+                            <input
+                                id="expectations-market-share-count"
+                                type="number"
+                                min="1"
+                                step="1"
+                                inputmode="numeric"
+                                placeholder="۱۰"
+                                aria-label="تعداد نمادهای برتر"
+                            >
+                        </label>
+                        <button id="show-market-share-options" class="button-secondary" type="button" disabled>
+                            برترین ارزش معاملات
+                        </button>
+                    </div>
+
+                    <div class="expectations-header-actions">
+                        <button id="nearest-expiry-summary" class="button-secondary" type="button" disabled>
+                            خلاصه نزدیک‌ترین سررسیدها
+                        </button>
+                        <button id="refresh-expectations" class="button-primary" type="button">
+                            <span class="button-icon refresh-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" focusable="false">
+                                    <path d="M20 6v5h-5"></path>
+                                    <path d="M4 18v-5h5"></path>
+                                    <path d="M18.1 9A7 7 0 0 0 6.7 6.3L4 9"></path>
+                                    <path d="M5.9 15A7 7 0 0 0 17.3 17.7L20 15"></path>
+                                </svg>
+                            </span>
+                            <span>به‌روزرسانی</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div id="expectations-loading" class="expectations-state expectations-state-loading">
+                    <span class="loading-orbit" aria-hidden="true"></span>
+                    <span>در حال دریافت و محاسبه اطلاعات...</span>
+                </div>
+                <div id="expectations-list" class="expectations-list" hidden></div>
+                <div id="expectations-empty" class="expectations-state" hidden>
+                    اطلاعاتی برای نمایش وجود ندارد.
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <div id="expiring-options-modal" class="expectations-modal" hidden>
+        <div class="expectations-modal-backdrop" data-close-expiring-options-modal></div>
+        <section
+            class="expectations-modal-card nearest-expiry-modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="expiring-options-modal-title"
         >
-            <!-- گزینه‌ها توسط JavaScript ساخته می‌شوند -->
-        </div>
-
-    </div>
-
-
-    <h2 class="spread-calculation-title">
-        محاسبات اسپرد
-    </h2>
-
-
-    <table id="spread-calculation-table">
-
-        <thead></thead>
-
-        <tbody>
-            <tr>
-                <td>
-                    پس از اعمال فیلتر، محاسبات اسپرد نمایش داده می‌شود.
-                </td>
-            </tr>
-        </tbody>
-
-    </table>
-
-</div>
-<div
-    id="spread-orderbook-box"
-    class="spread-orderbook-box"
-    style="display: none;"
->
-
-    <div class="spread-orderbook-header">
-
-        <div>
-            <h3>
-             نمودار و سفارشات
-            </h3>
-
-            <p id="spread-orderbook-description">
-                -
-            </p>
-        </div>
-
-        <button
-            type="button"
-            class="spread-orderbook-close"
-            onclick="hideSpreadOrderBooks()"
-            title="بستن"
-        >
-            ×
-        </button>
-
-    </div>
-
-    <div class="spread-orderbook-grid">
-
-
-        <!-- =====================
-             نماد خرید
-             ===================== -->
-
-        <div class="spread-orderbook-card">
-
-            <h4>
-                نماد خرید:
-                <span id="buy-orderbook-symbol">
-                    -
-                </span>
-            </h4>
-
-
-            <div class="orderbook-table-wrapper">
-
-                <table id="buy-orderbook-table">
-
+            <header>
+                <h3 id="expiring-options-modal-title">سررسیدهای انتخاب‌شده</h3>
+                <button
+                    type="button"
+                    class="expectations-modal-close"
+                    data-close-expiring-options-modal
+                    aria-label="بستن"
+                >×</button>
+            </header>
+            <div class="expectations-detail-table-wrap">
+                <table class="expectations-table expectations-summary-table expiring-options-table">
                     <thead>
-
                         <tr>
-                            <th>ردیف</th>
-
-                            <th>
-                                تعداد خرید
-                            </th>
-
-                            <th>
-                                حجم خرید
-                            </th>
-
-                            <th>
-                                قیمت خرید
-                            </th>
-
-                            <th>
-                                قیمت فروش
-                            </th>
-
-                            <th>
-                                حجم فروش
-                            </th>
-
-                            <th>
-                                تعداد فروش
-                            </th>
+                            <th data-sort-type="text" tabindex="0">نماد پایه <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">روز تا سررسید <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="text" tabindex="0">تاریخ سررسید <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">کمینه فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">بیشینه فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">میانگین وزنی <span class="expectations-sort-indicator">↕</span></th>
+                            <th>جزئیات</th>
                         </tr>
-
                     </thead>
-
                     <tbody></tbody>
-
                 </table>
-
             </div>
+        </section>
+    </div>
 
-        </div>
-
-
-        <!-- =====================
-             نماد فروش
-             ===================== -->
-
-        <div class="spread-orderbook-card">
-
-            <h4>
-                نماد فروش:
-                <span id="sell-orderbook-symbol">
-                    -
-                </span>
-            </h4>
-
-
-            <div class="orderbook-table-wrapper">
-
-                <table id="sell-orderbook-table">
-
+    <div id="market-share-options-modal" class="expectations-modal" hidden>
+        <div class="expectations-modal-backdrop" data-close-market-share-options-modal></div>
+        <section
+            class="expectations-modal-card market-share-options-modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="market-share-options-modal-title"
+        >
+            <header>
+                <h3 id="market-share-options-modal-title">برترین نمادها از نظر سهم ارزش معاملات</h3>
+                <button
+                    type="button"
+                    class="expectations-modal-close"
+                    data-close-market-share-options-modal
+                    aria-label="بستن"
+                >×</button>
+            </header>
+            <div class="expectations-detail-table-wrap">
+                <table class="expectations-table expectations-summary-table market-share-options-table">
                     <thead>
-
                         <tr>
-                            <th>ردیف</th>
-
-                            <th>
-                                تعداد خرید
-                            </th>
-
-                            <th>
-                                حجم خرید
-                            </th>
-
-                            <th>
-                                قیمت خرید
-                            </th>
-
-                            <th>
-                                قیمت فروش
-                            </th>
-
-                            <th>
-                                حجم فروش
-                            </th>
-
-                            <th>
-                                تعداد فروش
-                            </th>
+                            <th data-sort-type="number" tabindex="0">رتبه <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="text" tabindex="0">نماد اختیار <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="text" tabindex="0">نماد پایه <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">روز تا سررسید <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">ارزش معاملات (میلیون ریال) <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">سهم از کل بازار اختیار <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">بازدهی مؤثر <span class="expectations-sort-indicator">↕</span></th>
                         </tr>
-
                     </thead>
-
                     <tbody></tbody>
-
                 </table>
-
             </div>
-
-        </div>
-
-
+        </section>
     </div>
 
-    <div class="spread-payoff-layout">
-
-        <aside
-            class="spread-market-report-card spread-payoff-side-card spread-payoff-side-card--buy"
-            aria-labelledby="report-buy-title"
+    <div id="nearest-expiry-modal" class="expectations-modal" hidden>
+        <div class="expectations-modal-backdrop" data-close-nearest-expiry-modal></div>
+        <section
+            class="expectations-modal-card nearest-expiry-modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="nearest-expiry-modal-title"
         >
-            <h4 id="report-buy-title">
-                نماد خرید:
-                <span id="report-buy-symbol">-</span>
-            </h4>
-
-            <div class="spread-market-report-items">
-
-
-                <div>
-                    <span>آخرین قیمت:</span>
-                    <strong id="report-buy-last-price">-</strong>
-                </div>
-
-                <div>
-                    <span>قیمت پایانی:</span>
-                    <strong id="report-buy-close-price">-</strong>
-                </div>
-
-                <div>
-                    <span>ارزش معاملات (میلیون ریال):</span>
-                    <strong id="report-buy-trade-value">-</strong>
-                </div>
-
-                <div>
-                    <span>حجم معاملات:</span>
-                    <strong id="report-buy-trade-volume">-</strong>
-                </div>
-                                <div>
-                    <span>موقعیت باز:</span>
-                    <strong id="report-buy-open-interest">-</strong>
-                </div>
-
-                <div>
-                    <span>وضعیت:</span>
-                    <strong id="report-buy-status">-</strong>
-                </div>
+            <header>
+                <h3 id="nearest-expiry-modal-title">نزدیک‌ترین سررسید هر نماد</h3>
+                <button
+                    type="button"
+                    class="expectations-modal-close"
+                    data-close-nearest-expiry-modal
+                    aria-label="بستن"
+                >×</button>
+            </header>
+            <div class="expectations-detail-table-wrap">
+                <table class="expectations-table expectations-summary-table nearest-expiry-table">
+                    <thead>
+                        <tr>
+                            <th data-sort-type="text" tabindex="0">نماد پایه <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">روز تا سررسید <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="text" tabindex="0">تاریخ سررسید <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">کمینه فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">بیشینه فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">میانگین وزنی <span class="expectations-sort-indicator">↕</span></th>
+                            <th>جزئیات</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
             </div>
-        </aside>
+        </section>
+    </div>
 
-    <section
-        class="spread-payoff-card"
-        aria-labelledby="spread-payoff-title"
-    >
-        <div class="spread-payoff-header">
-            <div>
-                <h4 id="spread-payoff-title">
-                    نمودار سود و زیان در سررسید
-                </h4>
-
-                <p id="spread-payoff-summary">
-                    -
-                </p>
-            </div>
-
-        </div>
-
-        <div class="spread-payoff-chart">
-            <svg
-                id="spread-payoff-svg"
-                viewBox="0 0 920 440"
-                role="img"
-                aria-labelledby="spread-payoff-svg-title spread-payoff-svg-description"
-            ></svg>
-
-            <div
-                id="spread-payoff-tooltip"
-                class="spread-payoff-tooltip"
-                role="status"
-                aria-live="polite"
-                hidden
-            >
-                <div>
-                    <span>قیمت نماد پایه</span>
-                    <strong id="spread-payoff-tooltip-price">-</strong>
-                    <small id="spread-payoff-tooltip-price-percent">-</small>
-                </div>
-
-                <div>
-                    <span>سود و زیان</span>
-                    <strong id="spread-payoff-tooltip-value">-</strong>
-                    <small id="spread-payoff-tooltip-value-percent">-</small>
-                </div>
-
-                <div>
-                    <span>ماهیانه</span>
-                    <strong id="spread-payoff-tooltip-monthly">-</strong>
-                </div>
-            </div>
-
-            <p
-                id="spread-payoff-empty"
-                class="spread-payoff-empty"
-                hidden
-            >
-                اطلاعات کافی برای رسم نمودار موجود نیست.
-            </p>
-        </div>
-    </section>
-
-        <aside
-            class="spread-market-report-card spread-payoff-side-card spread-payoff-side-card--sell"
-            aria-labelledby="report-sell-title"
+    <div id="expectations-modal" class="expectations-modal" hidden>
+        <div class="expectations-modal-backdrop" data-close-expectations-modal></div>
+        <section
+            class="expectations-modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="expectations-modal-title"
         >
-            <h4 id="report-sell-title">
-                نماد فروش:
-                <span id="report-sell-symbol">-</span>
-            </h4>
-
-            <div class="spread-market-report-items">
-
-
-                <div>
-                    <span>آخرین قیمت:</span>
-                    <strong id="report-sell-last-price">-</strong>
-                </div>
-
-                <div>
-                    <span>قیمت پایانی:</span>
-                    <strong id="report-sell-close-price">-</strong>
-                </div>
-
-                <div>
-                    <span>ارزش معاملات (میلیون ریال):</span>
-                    <strong id="report-sell-trade-value">-</strong>
-                </div>
-
-                <div>
-                    <span>حجم معاملات:</span>
-                    <strong id="report-sell-trade-volume">-</strong>
-                </div>
-                                <div>
-                    <span>موقعیت باز:</span>
-                    <strong id="report-sell-open-interest">-</strong>
-                </div>
-
-                <div>
-                    <span>وضعیت:</span>
-                    <strong id="report-sell-status">-</strong>
-                </div>
+            <header>
+                <h3 id="expectations-modal-title">جزئیات محاسبات</h3>
+                <button
+                    type="button"
+                    class="expectations-modal-close"
+                    data-close-expectations-modal
+                    aria-label="بستن"
+                >×</button>
+            </header>
+            <div id="expectations-modal-summary" class="expectations-modal-summary"></div>
+            <div class="expectations-detail-table-wrap">
+                <table class="expectations-table expectations-detail-table">
+                    <thead></thead>
+                    <tbody></tbody>
+                </table>
             </div>
-        </aside>
-
+        </section>
     </div>
 
-</div>
-        </div>
-        </div>
-    
-
-    </div>
-
-
-</div>
-
-<div id="expectations" class="tab-content">
-    <section class="expectations-panel">
-        <header class="expectations-header">
-            <h2>Market Expectations</h2>
-            <div class="expectations-header-actions">
-                <button id="nearest-expiry-summary" type="button" disabled>خلاصه نزدیک‌ترین سررسیدها</button>
-                <button id="refresh-expectations" type="button">به‌روزرسانی</button>
-            </div>
-        </header>
-
-        <div class="expectations-toolbar">
-            <label class="expectations-search-box" for="expectations-search">
-                <span aria-hidden="true">⌕</span>
-                <input
-                    id="expectations-search"
-                    type="search"
-                    placeholder="جست‌وجوی نماد پایه..."
-                    autocomplete="off"
-                >
-            </label>
-
-            <label class="expectations-saved-toggle" for="expectations-use-saved-value">
-                <input id="expectations-use-saved-value" type="checkbox">
-                <span class="expectations-toggle-track" aria-hidden="true">
-                    <span class="expectations-toggle-thumb"></span>
-                </span>
-                <span>استفاده از ارزش معاملات ذخیره‌شده دیروز</span>
-            </label>
-
-            <div class="expectations-days-filter">
-                <input
-                    id="expectations-min-days"
-                    type="number"
-                    min="0"
-                    step="1"
-                    inputmode="numeric"
-                    placeholder="از روز"
-                >
-                <span class="expectations-days-separator">تا</span>
-                <input
-                    id="expectations-max-days"
-                    type="number"
-                    min="0"
-                    step="1"
-                    inputmode="numeric"
-                    placeholder="تا روز"
-                >
-                <button id="show-expiring-options" type="button" disabled>نمایش سررسیدها</button>
-            </div>
-
-            <div class="expectations-market-share-filter">
-                <input
-                    id="expectations-market-share-count"
-                    type="number"
-                    min="1"
-                    step="1"
-                    inputmode="numeric"
-                    placeholder="تعداد نماد"
-                >
-                <button id="show-market-share-options" type="button" disabled>برترین ارزش معاملات</button>
-            </div>
-        </div>
-
-        <div id="expectations-loading" class="expectations-state">در حال دریافت و محاسبه اطلاعات...</div>
-        <div id="expectations-list" class="expectations-list" hidden></div>
-        <div id="expectations-empty" class="expectations-state" hidden>اطلاعاتی برای نمایش وجود ندارد.</div>
-    </section>
-</div>
-
-<div id="expiring-options-modal" class="expectations-modal" hidden>
-    <div class="expectations-modal-backdrop" data-close-expiring-options-modal></div>
-    <section class="expectations-modal-card nearest-expiry-modal-card" role="dialog" aria-modal="true" aria-labelledby="expiring-options-modal-title">
-        <header>
-            <h3 id="expiring-options-modal-title">سررسیدهای انتخاب‌شده</h3>
-            <button type="button" class="expectations-modal-close" data-close-expiring-options-modal aria-label="بستن">×</button>
-        </header>
-        <div class="expectations-detail-table-wrap">
-            <table class="expectations-table expectations-summary-table expiring-options-table">
-                <thead>
-                    <tr>
-                        <th data-sort-type="text" tabindex="0">نماد پایه <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">روز تا سررسید <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="text" tabindex="0">تاریخ سررسید <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">مینیمم فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">ماکسیمم فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">میانگین وزنی <span class="expectations-sort-indicator">↕</span></th>
-                        <th>جزئیات</th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            </table>
-        </div>
-    </section>
-</div>
-
-<div id="market-share-options-modal" class="expectations-modal" hidden>
-    <div class="expectations-modal-backdrop" data-close-market-share-options-modal></div>
-    <section class="expectations-modal-card market-share-options-modal-card" role="dialog" aria-modal="true" aria-labelledby="market-share-options-modal-title">
-        <header>
-            <h3 id="market-share-options-modal-title">برترین نمادها از نظر سهم ارزش معاملات</h3>
-            <button type="button" class="expectations-modal-close" data-close-market-share-options-modal aria-label="بستن">×</button>
-        </header>
-        <div class="expectations-detail-table-wrap">
-            <table class="expectations-table expectations-summary-table market-share-options-table">
-                <thead>
-                    <tr>
-                        <th data-sort-type="number" tabindex="0">رتبه <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="text" tabindex="0">نماد اختیار <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="text" tabindex="0">نماد پایه <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">روز تا سررسید <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">ارزش معاملات (میلیون ریال) <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">سهم از کل بازار اختیار <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">بازدهی مؤثر <span class="expectations-sort-indicator">↕</span></th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            </table>
-        </div>
-    </section>
-</div>
-
-<div id="nearest-expiry-modal" class="expectations-modal" hidden>
-    <div class="expectations-modal-backdrop" data-close-nearest-expiry-modal></div>
-    <section class="expectations-modal-card nearest-expiry-modal-card" role="dialog" aria-modal="true" aria-labelledby="nearest-expiry-modal-title">
-        <header>
-            <h3 id="nearest-expiry-modal-title">خلاصه نزدیک‌ترین سررسید هر نماد</h3>
-            <button type="button" class="expectations-modal-close" data-close-nearest-expiry-modal aria-label="بستن">×</button>
-        </header>
-        <div class="expectations-detail-table-wrap">
-            <table class="expectations-table expectations-summary-table nearest-expiry-table">
-                <thead>
-                    <tr>
-                        <th data-sort-type="text" tabindex="0">نماد پایه <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">روز تا سررسید <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="text" tabindex="0">تاریخ سررسید <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">مینیمم فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">ماکسیمم فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
-                        <th data-sort-type="number" tabindex="0">میانگین وزنی <span class="expectations-sort-indicator">↕</span></th>
-                        <th>جزئیات</th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-            </table>
-        </div>
-    </section>
-</div>
-
-<div id="expectations-modal" class="expectations-modal" hidden>
-    <div class="expectations-modal-backdrop" data-close-expectations-modal></div>
-    <section class="expectations-modal-card" role="dialog" aria-modal="true" aria-labelledby="expectations-modal-title">
-        <header>
-            <h3 id="expectations-modal-title">جزئیات محاسبات</h3>
-            <button type="button" class="expectations-modal-close" data-close-expectations-modal aria-label="بستن">×</button>
-        </header>
-        <div id="expectations-modal-summary" class="expectations-modal-summary"></div>
-        <div class="expectations-detail-table-wrap">
-            <table class="expectations-table expectations-detail-table">
-                <thead></thead>
-                <tbody></tbody>
-            </table>
-        </div>
-    </section>
-</div>
-
-<script src="{{ url_for('static', filename='scripttest.js') }}"></script>
-
+    <script src="{{ url_for('static', filename='scripttest.js') }}"></script>
 </body>
 </html>
