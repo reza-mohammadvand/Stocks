@@ -4,10 +4,11 @@ Stock Market Watch is a Persian, right-to-left dashboard for analysing the Irani
 
 ## Current interface
 
-The dashboard has two main tabs:
+The dashboard has three main tabs:
 
 - **Stocks**, the default first tab, reads immediately from SQLite and refreshes company, industry, and market-value data from TSETMC in the background.
 - **Options** presents option-based market-expectation analysis.
+- **Markets** presents six intraday Tehran-market charts today and is structured to expand with currency, gold, silver, copper, and other cross-market data.
 
 The former Market and Bull Spread views are no longer shown in the interface. Their data retrieval, processing logic, and endpoints remain in the project for future use.
 
@@ -33,6 +34,9 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 - Calculates separate buy-side and sell-side value, volume, and order-count totals across the first five order-book levels for every symbol.
 - Stores the latest complete catalogue in `data/stocks.db` and serves it immediately on page load.
 - Replaces the SQLite rows atomically only after a background refresh is ready, so the table never disappears while online data is loading.
+- Archives one complete row per symbol and trading day in SQLite. Standard symbols keep the first valid update received at or after 12:30 Tehran time; `عیار`, `طلا`, `کهربا`, `مثقال`, `نقرابی`, and `نقران` keep the first valid update received at or after their 18:00 close.
+- Verifies the TSETMC market date before archiving, so a stale previous-session response is not recorded as a new day.
+- Provides a manual refresh button without clearing the currently displayed table.
 - Provides normal and industry-grouped views.
 - Provides separate searches for symbol/company and industry.
 - Sorts every column using a three-state cycle: ascending, descending, then the default market-value order.
@@ -45,6 +49,18 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 - Lets users hide or restore columns; the selection is saved in browser storage.
 - Uses a responsive glass-style interface with Persian typography and right-to-left controls.
 
+### Markets
+
+- Shows a compact cross-market overview above the charts: US dollar, NIMA negotiated-market dollar, 18-karat gold, global gold and silver ounces, global copper, silver-bullion certificates, and copper-cathode deposit certificates.
+- Prefers Rahavard365's live last-trade WebSocket feed for listed prices. The US-dollar card never falls back to Rahavard's stale historical trade row; other assets may use their current `last_trade` response when no broadcast quote is available.
+- Shows the latest net real-money flow for all gold funds, all silver funds, and the stock market. Positive values are inflows and negative values are outflows.
+- Reads Rahavard365 asset and commodity-fund data through the Flask backend, and uses Yahoo Finance for the global copper futures quote.
+- Retrieves public intraday market series from TradersArena through the Flask backend.
+- Shows six responsive SVG charts covering buy/sell order value, last-trade price distribution, stock money flow, positive/negative breadth, current order and queue value, and market excitement.
+- Limits line charts to the regular 09:00–12:30 Tehran stock-market session.
+- Supports on-demand refresh while preserving the previous in-memory dataset if a live refresh fails.
+- Automatically refreshes the Stocks, Options, and Markets datasets every two minutes in the background, regardless of the active tab.
+
 ## Data endpoints
 
 | Endpoint | Purpose |
@@ -52,6 +68,8 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 | `/market-expectations` | Option-based market-expectation analysis |
 | `/option-bases` | Underlying-symbol discovery and option-root mapping |
 | `/stocks` | SQLite-backed online stock catalogue and trading indicators for the configured symbols |
+| `/stocks/history` | Latest archived daily stock rows; accepts optional `date=YYYY-MM-DD` and `symbol=...` filters |
+| `/watch-market` | Cross-market price/money-flow overview plus six intraday Markets-tab charts; use `refresh=1` to force a live refresh |
 | `/data` | Preserved data service for the former Market view |
 | `/spread-data` | Preserved Bull Call Spread data and calculations |
 
@@ -60,10 +78,14 @@ Local snapshots are stored in:
 - `data/trade_value_snapshot.json`
 - `data/order_book_snapshot.json`
 
-The stock catalogue is stored in `data/stocks.db`. The server checks for an
-online refresh every five minutes by default while always returning the current
-database rows immediately. Set `STOCK_DATA_CACHE_SECONDS` to change that
-interval, or request `/stocks?refresh=1` to start a background refresh.
+The latest stock catalogue and the daily `stock_daily_snapshots` archive are
+stored in `data/stocks.db`. Each archived row includes Gregorian and Jalali
+trade dates, the capture time, session type, and the complete stock-row payload.
+The browser requests a stock refresh every two minutes while always keeping the
+current database rows visible. The backend cache interval defaults to five
+minutes for ordinary non-forced requests and can be changed with
+`STOCK_DATA_CACHE_SECONDS`. Request `/stocks?refresh=1` to start a forced
+background refresh.
 
 ## Requirements
 

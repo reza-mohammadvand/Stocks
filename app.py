@@ -1,6 +1,8 @@
 import os
 import sqlite3
+import subprocess
 import threading
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request
@@ -69,6 +71,115 @@ stock_refresh_state = {
     "error": None
 }
 
+watch_market_cache_lock = threading.Lock()
+watch_market_cache = {
+    "data": None,
+    "fetched_at": 0,
+}
+
+watch_market_overview_cache_lock = threading.Lock()
+watch_market_overview_cache = {
+    "data": None,
+    "fetched_at": 0,
+}
+
+RAHAVARD_LIVE_QUOTES_FILE = os.path.join(
+    app.root_path,
+    "data",
+    "rahavard_live_quotes.json",
+)
+RAHAVARD_LIVE_COLLECTOR_FILE = os.path.join(
+    app.root_path,
+    "rahavard_live.js",
+)
+rahavard_live_quotes_lock = threading.Lock()
+rahavard_live_quotes_state = {
+    "data": {},
+    "process": None,
+}
+
+RAHAVARD_HEADERS = {
+    "Accept": "application/json",
+    "Application-Name": "rahavard",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "User-Agent": "com.rahavard365.v2.front",
+    "platform": "web",
+}
+
+WATCH_MARKET_ASSETS = (
+    {
+        "key": "dollar",
+        "asset_id": 2,
+        "name": "دلار آمریکا",
+        "unit": "تومان",
+        "divisor": 10,
+        "live_required": True,
+        "tone": "currency",
+        "source_url": "https://rahavard365.com/asset/2/دلار-آمریکا",
+    },
+    {
+        "key": "nimai_dollar",
+        "asset_id": 43157,
+        "name": "دلار نیمایی",
+        "unit": "تومان",
+        "divisor": 10,
+        "tone": "currency",
+        "source_url": (
+            "https://rahavard365.com/asset/43157/"
+            "دلار-آمریکا-حواله-بازار-توافقی-نیمایی"
+        ),
+    },
+    {
+        "key": "gold_18",
+        "asset_id": 1560,
+        "name": "طلای ۱۸ عیار",
+        "unit": "تومان/گرم",
+        "divisor": 10,
+        "tone": "gold",
+        "source_url": "https://rahavard365.com/asset/1560/طلای-۱۸-عیار",
+    },
+    {
+        "key": "gold_ounce",
+        "asset_id": 2016,
+        "name": "اونس جهانی طلا",
+        "unit": "دلار",
+        "divisor": 1,
+        "tone": "gold",
+        "source_url": "https://rahavard365.com/asset/2016/انس-طلا",
+    },
+    {
+        "key": "silver_ounce",
+        "asset_id": 2017,
+        "name": "اونس جهانی نقره",
+        "unit": "دلار",
+        "divisor": 1,
+        "tone": "silver",
+        "source_url": "https://rahavard365.com/asset/2017/انس-نقره",
+    },
+    {
+        "key": "silver_certificate",
+        "asset_id": 35945,
+        "name": "گواهی شمش نقره",
+        "unit": "تومان",
+        "divisor": 10,
+        "tone": "silver",
+        "source_url": "https://rahavard365.com/asset/35945",
+    },
+    {
+        "key": "copper_certificate",
+        "asset_id": 44055,
+        "name": "گواهی سپرده مس کاتد",
+        "unit": "تومان/کیلوگرم",
+        "divisor": 10,
+        "tone": "copper",
+        "source_url": "https://rahavard365.com/asset/44055",
+    },
+)
+
+WATCH_MARKET_OVERVIEW_TTL_SECONDS = 110
+RAHAVARD_LIVE_QUOTE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+
 STOCK_CACHE_TTL_SECONDS = max(
     30,
     int(os.environ.get("STOCK_DATA_CACHE_SECONDS", "300"))
@@ -79,8 +190,20 @@ TSETMC_HEADERS = {
     "User-Agent": "Mozilla/5.0 StockMarketWatch/1.0"
 }
 
+STOCK_STANDARD_SNAPSHOT_MINUTE = 12 * 60 + 30
+STOCK_EXTENDED_SNAPSHOT_MINUTE = 18 * 60
+STOCK_EXTENDED_SESSION_SYMBOLS = {
+    "عیار",
+    "طلا",
+    "کهربا",
+    "مثقال",
+    "نقرابی",
+    "نقران",
+}
+
 STOCK_DETAIL_FIELDS = (
     "ins_code",
+    "market_date",
     "company",
     "industry",
     "market_value",
@@ -114,6 +237,7 @@ STOCK_DETAIL_FIELDS = (
 
 STOCK_DATABASE_EXTRA_COLUMNS = {
     "ins_code": "TEXT",
+    "market_date": "TEXT",
     "last_price": "INTEGER",
     "last_price_change_percent": "REAL",
     "closing_price": "INTEGER",
@@ -199,10 +323,18 @@ def clean_stock_text(value):
     return re.sub(r"\s+", " ", text)
 
 
+@contextmanager
 def stock_database_connection():
     connection = sqlite3.connect(STOCK_DATABASE_FILE, timeout=15)
     connection.row_factory = sqlite3.Row
-    return connection
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def initialize_stock_database():
@@ -229,6 +361,7 @@ def initialize_stock_database():
                     industry TEXT,
                     market_value INTEGER,
                     ins_code TEXT,
+                    market_date TEXT,
                     last_price INTEGER,
                     last_price_change_percent REAL,
                     closing_price INTEGER,
@@ -274,6 +407,25 @@ def initialize_stock_database():
                     key TEXT PRIMARY KEY,
                     value TEXT
                 )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_daily_snapshots (
+                    trade_date TEXT NOT NULL,
+                    trade_date_jalali TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    session_type TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    data_json TEXT NOT NULL,
+                    PRIMARY KEY (trade_date, symbol)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_stock_daily_snapshots_symbol_date
+                ON stock_daily_snapshots (symbol, trade_date DESC)
                 """
             )
 
@@ -386,6 +538,764 @@ def replace_stock_database(rows, updated_at, resolved_count):
             """,
             metadata.items()
         )
+
+
+def normalize_stock_market_date(value):
+    """Convert TSETMC's YYYYMMDD market date to an ISO date."""
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) != 8:
+        return None
+
+    try:
+        return datetime.strptime(digits, "%Y%m%d").date().isoformat()
+    except ValueError:
+        return None
+
+
+def save_daily_stock_snapshots(rows, captured_at=None):
+    """Keep the first eligible close snapshot per symbol and Tehran day."""
+    current_time = captured_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+
+    current_minute = current_time.hour * 60 + current_time.minute
+    trade_date = current_time.date().isoformat()
+    trade_date_jalali = jdatetime.date.fromgregorian(
+        date=current_time.date()
+    ).strftime("%Y-%m-%d")
+    captured_at_iso = current_time.isoformat()
+    extended_symbols = {
+        normalize_symbol(symbol)
+        for symbol in STOCK_EXTENDED_SESSION_SYMBOLS
+    }
+    inserted_count = 0
+
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("symbol"):
+                continue
+            if row.get("market_date") != trade_date:
+                continue
+
+            normalized_symbol = normalize_symbol(row["symbol"])
+            is_extended = normalized_symbol in extended_symbols
+            threshold = (
+                STOCK_EXTENDED_SNAPSHOT_MINUTE
+                if is_extended
+                else STOCK_STANDARD_SNAPSHOT_MINUTE
+            )
+            if current_minute < threshold:
+                continue
+
+            session_type = "extended" if is_extended else "standard"
+            snapshot_payload = json.dumps(
+                row,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO stock_daily_snapshots (
+                    trade_date,
+                    trade_date_jalali,
+                    symbol,
+                    session_type,
+                    captured_at,
+                    data_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trade_date,
+                    trade_date_jalali,
+                    row["symbol"],
+                    session_type,
+                    captured_at_iso,
+                    snapshot_payload,
+                ),
+            )
+            inserted_count += max(cursor.rowcount, 0)
+
+    return {
+        "trade_date": trade_date,
+        "trade_date_jalali": trade_date_jalali,
+        "inserted_count": inserted_count,
+    }
+
+
+def read_daily_stock_snapshots(trade_date=None, symbol=None):
+    """Read archived rows, defaulting to the latest available trading day."""
+    initialize_stock_database()
+    normalized_symbol = normalize_symbol(symbol) if symbol else None
+
+    with stock_database_connection() as connection:
+        selected_date = trade_date
+        if not selected_date:
+            selected_date_row = connection.execute(
+                "SELECT MAX(trade_date) AS trade_date FROM stock_daily_snapshots"
+            ).fetchone()
+            selected_date = (
+                selected_date_row["trade_date"]
+                if selected_date_row
+                else None
+            )
+
+        if not selected_date:
+            return [], None
+
+        query = """
+            SELECT
+                trade_date,
+                trade_date_jalali,
+                symbol,
+                session_type,
+                captured_at,
+                data_json
+            FROM stock_daily_snapshots
+            WHERE trade_date = ?
+        """
+        query += " ORDER BY symbol COLLATE NOCASE"
+
+        database_rows = connection.execute(query, [selected_date]).fetchall()
+
+    if normalized_symbol:
+        database_rows = [
+            row
+            for row in database_rows
+            if normalize_symbol(row["symbol"]) == normalized_symbol
+        ]
+
+    snapshots = []
+    for database_row in database_rows:
+        try:
+            data = json.loads(database_row["data_json"])
+        except (TypeError, json.JSONDecodeError):
+            data = {}
+        snapshots.append(
+            {
+                "trade_date": database_row["trade_date"],
+                "trade_date_jalali": database_row["trade_date_jalali"],
+                "symbol": database_row["symbol"],
+                "session_type": database_row["session_type"],
+                "captured_at": database_row["captured_at"],
+                "data": data,
+            }
+        )
+
+    return snapshots, selected_date
+
+
+def watch_market_number(value):
+    """Convert an upstream numeric field without accepting booleans."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_rahavard_live_quotes(wait_seconds=4):
+    """Return fresh last-trade quotes broadcast by Rahavard's live channel."""
+    now = int(time.time())
+    required_currency_ids = {2, 43157}
+    with rahavard_live_quotes_lock:
+        process = rahavard_live_quotes_state.get("process")
+        if process is None or process.poll() is not None:
+            try:
+                rahavard_live_quotes_state["process"] = subprocess.Popen(
+                    ["node", RAHAVARD_LIVE_COLLECTOR_FILE],
+                    cwd=app.root_path,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except OSError:
+                rahavard_live_quotes_state["process"] = None
+
+        deadline = time.time() + max(0, wait_seconds)
+        while True:
+            try:
+                with open(
+                    RAHAVARD_LIVE_QUOTES_FILE,
+                    "r",
+                    encoding="utf-8",
+                ) as file:
+                    payload = json.load(file)
+                fresh_quotes = {
+                    int(asset_id): quote
+                    for asset_id, quote in payload.items()
+                    if (
+                        isinstance(quote, dict)
+                        and now - int(quote.get("fetched_at", 0))
+                        < RAHAVARD_LIVE_QUOTE_MAX_AGE_SECONDS
+                    )
+                }
+                if fresh_quotes:
+                    rahavard_live_quotes_state["data"] = fresh_quotes
+                if required_currency_ids.issubset(fresh_quotes):
+                    break
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                fresh_quotes = {}
+
+            if time.time() >= deadline:
+                break
+            time.sleep(0.15)
+
+        return dict(rahavard_live_quotes_state.get("data") or {})
+
+
+def normalize_rahavard_live_quote(quote, config):
+    raw_price = watch_market_number(quote.get("price"))
+    if raw_price is None or raw_price <= 0:
+        raise ValueError("قیمت زنده معتبر از ره‌آورد دریافت نشد.")
+    divisor = float(config.get("divisor") or 1)
+    raw_change = watch_market_number(quote.get("price_change"))
+    raw_percent = watch_market_number(quote.get("change_percent"))
+    if raw_percent is not None and abs(raw_percent) <= 1:
+        raw_percent *= 100
+    return {
+        "key": config["key"],
+        "name": config["name"],
+        "price": raw_price / divisor,
+        "unit": config["unit"],
+        "change": raw_change / divisor if raw_change is not None else None,
+        "change_percent": raw_percent,
+        "market_time": quote.get("market_time"),
+        "tone": config.get("tone", "currency"),
+        "source": "rahavard365-live",
+        "source_url": config["source_url"],
+    }
+
+
+def parse_rahavard_quote(asset_data, config):
+    """Normalize one Rahavard asset response for the Markets summary cards."""
+    trades = asset_data.get("trades") or []
+    preferred_payloads = (
+        list(trades)
+        + [asset_data.get("last_trade"), asset_data.get("header_last_trade")]
+        if config.get("prefer_daily_trade")
+        else [asset_data.get("last_trade"), asset_data.get("header_last_trade")]
+        + list(trades)
+    )
+
+    payload = None
+    raw_price = None
+    uses_real_price = False
+    for candidate in preferred_payloads:
+        if not isinstance(candidate, dict):
+            continue
+        candidate_real_price = watch_market_number(
+            candidate.get("real_close_price")
+        )
+        candidate_close_price = watch_market_number(candidate.get("close_price"))
+        if candidate_real_price is not None and candidate_real_price > 0:
+            payload = candidate
+            raw_price = candidate_real_price
+            uses_real_price = True
+            break
+        if candidate_close_price is not None and candidate_close_price > 0:
+            payload = candidate
+            raw_price = candidate_close_price
+            break
+
+    if payload is None or raw_price is None:
+        raise ValueError("قیمت معتبر از ره‌آورد دریافت نشد.")
+
+    change_field = (
+        "real_close_price_change"
+        if uses_real_price
+        else "close_price_change"
+    )
+    percent_field = (
+        "real_close_price_change_percent"
+        if uses_real_price
+        else "close_price_change_percent"
+    )
+    divisor = float(config.get("divisor") or 1)
+    raw_change = watch_market_number(payload.get(change_field))
+    raw_percent = watch_market_number(payload.get(percent_field))
+
+    return {
+        "key": config["key"],
+        "name": config["name"],
+        "price": raw_price / divisor,
+        "unit": config["unit"],
+        "change": raw_change / divisor if raw_change is not None else None,
+        "change_percent": (
+            raw_percent * 100
+            if raw_percent is not None
+            else None
+        ),
+        "market_time": (
+            payload.get("end_date_time")
+            or payload.get("end_time")
+            or payload.get("date_time")
+        ),
+        "tone": config.get("tone", "currency"),
+        "source": "rahavard365",
+        "source_url": config["source_url"],
+    }
+
+
+def fetch_rahavard_watch_asset(config, live_quotes=None):
+    live_quote = (live_quotes or {}).get(config["asset_id"])
+    if live_quote:
+        try:
+            return normalize_rahavard_live_quote(live_quote, config)
+        except (ValueError, TypeError):
+            pass
+    if config.get("live_required"):
+        raise ValueError("قیمت زنده آخرین معامله هنوز دریافت نشده است.")
+
+    response = requests.get(
+        f"https://rahavard365.com/api/v2/asset/{config['asset_id']}",
+        headers=RAHAVARD_HEADERS,
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    asset_data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(asset_data, dict):
+        raise ValueError("پاسخ دارایی ره‌آورد معتبر نیست.")
+    return parse_rahavard_quote(asset_data, config)
+
+
+def fetch_global_copper_quote():
+    response = requests.get(
+        "https://query1.finance.yahoo.com/v8/finance/chart/HG=F",
+        params={"range": "1d", "interval": "5m"},
+        headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+        timeout=15,
+    )
+    response.raise_for_status()
+    result = response.json()["chart"]["result"][0]
+    meta = result["meta"]
+    price = watch_market_number(meta.get("regularMarketPrice"))
+    if price is None or price <= 0:
+        raise ValueError("قیمت معتبر مس جهانی دریافت نشد.")
+
+    change = watch_market_number(meta.get("regularMarketChange"))
+    change_percent = watch_market_number(meta.get("regularMarketChangePercent"))
+    previous_close = watch_market_number(meta.get("chartPreviousClose"))
+    if change is None and previous_close is not None:
+        change = price - previous_close
+    if (
+        change_percent is None
+        and previous_close is not None
+        and previous_close > 0
+    ):
+        change_percent = (price / previous_close - 1) * 100
+
+    return {
+        "key": "global_copper",
+        "name": "مس جهانی",
+        "price": price,
+        "unit": "دلار/پوند",
+        "change": change,
+        "change_percent": change_percent,
+        "market_time": meta.get("regularMarketTime"),
+        "tone": "copper",
+        "source": "yahoo-finance",
+        "source_url": "https://finance.yahoo.com/quote/HG=F/",
+    }
+
+
+def fetch_rahavard_fund_ids(kind):
+    response = requests.get(
+        f"https://rahavard365.com/api/v2/{kind}/funds",
+        headers=RAHAVARD_HEADERS,
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError("فهرست صندوق‌های کالایی معتبر نیست.")
+    return {
+        int(row["asset_id"])
+        for row in rows
+        if isinstance(row, dict) and row.get("asset_id")
+    }
+
+
+def fetch_rahavard_fund_money(asset_id):
+    response = requests.get(
+        (
+            "https://rahavard365.com/api/v2/market-data/assets/"
+            f"{asset_id}/last-trade"
+        ),
+        headers=RAHAVARD_HEADERS,
+        timeout=15,
+    )
+    if response.status_code == 404:
+        return {"money": 0.0, "market_date": None}
+    response.raise_for_status()
+    payload = response.json()
+    row = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(row, dict):
+        raise ValueError("داده جریان پول صندوق معتبر نیست.")
+
+    person_buy_value = watch_market_number(row.get("person_buy_value")) or 0
+    person_sell_value = watch_market_number(row.get("person_sell_value")) or 0
+    market_time = row.get("end_time") or row.get("end_date_time") or ""
+    return {
+        "money": (
+            person_buy_value - person_sell_value
+        ) / 10 / 1_000_000_000,
+        "market_date": str(market_time)[:10] or None,
+    }
+
+
+def fetch_commodity_fund_money_totals():
+    groups = {
+        kind: fetch_rahavard_fund_ids(kind)
+        for kind in ("gold", "silver")
+    }
+    rows = {"gold": [], "silver": []}
+    errors = []
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        futures = {
+            executor.submit(fetch_rahavard_fund_money, asset_id): kind
+            for kind, asset_ids in groups.items()
+            for asset_id in asset_ids
+        }
+        for future in as_completed(futures):
+            kind = futures[future]
+            try:
+                rows[kind].append(future.result())
+            except (requests.RequestException, ValueError, TypeError):
+                errors.append(f"{kind}-fund")
+
+    totals = {}
+    for kind, items in rows.items():
+        latest_date = max(
+            (
+                item["market_date"]
+                for item in items
+                if item.get("market_date")
+            ),
+            default=None,
+        )
+        current_items = [
+            item
+            for item in items
+            if item.get("market_date") == latest_date
+        ]
+        totals[kind] = {
+            "value": sum(item["money"] for item in current_items),
+            "count": len(current_items),
+            "market_date": latest_date,
+        }
+    return totals, errors
+
+
+def watch_market_flow_item(key, name, value, count=None, market_date=None):
+    return {
+        "key": key,
+        "name": name,
+        "value": value,
+        "unit": "میلیارد تومان",
+        "count": count,
+        "market_date": market_date,
+    }
+
+
+def get_watch_market_overview(force=False):
+    """Fetch the cross-market prices and commodity-fund money flows."""
+    now = int(time.time())
+    with watch_market_overview_cache_lock:
+        cached_data = watch_market_overview_cache["data"]
+        cached_at = watch_market_overview_cache["fetched_at"]
+        if (
+            not force
+            and cached_data
+            and now - cached_at < WATCH_MARKET_OVERVIEW_TTL_SECONDS
+        ):
+            return dict(cached_data)
+
+    previous_prices = {
+        item.get("key"): item
+        for item in (cached_data or {}).get("prices", [])
+        if item.get("key")
+    }
+    previous_flows = {
+        item.get("key"): item
+        for item in (cached_data or {}).get("flows", [])
+        if item.get("key")
+    }
+    prices = dict(previous_prices)
+    flows = dict(previous_flows)
+    errors = []
+
+    try:
+        live_quotes = get_rahavard_live_quotes()
+    except Exception:
+        live_quotes = {}
+
+    with ThreadPoolExecutor(max_workers=9) as executor:
+        asset_futures = {
+            executor.submit(
+                fetch_rahavard_watch_asset,
+                config,
+                live_quotes,
+            ): config["key"]
+            for config in WATCH_MARKET_ASSETS
+        }
+        copper_future = executor.submit(fetch_global_copper_quote)
+        fund_money_future = executor.submit(fetch_commodity_fund_money_totals)
+
+        for future in as_completed(asset_futures):
+            key = asset_futures[future]
+            try:
+                prices[key] = future.result()
+            except (requests.RequestException, ValueError, TypeError, KeyError):
+                errors.append(key)
+
+        try:
+            copper = copper_future.result()
+            prices[copper["key"]] = copper
+        except (requests.RequestException, ValueError, TypeError, KeyError):
+            errors.append("global_copper")
+
+        try:
+            fund_totals, fund_errors = fund_money_future.result()
+            errors.extend(fund_errors)
+            for kind, name in (
+                ("gold", "خالص پول صندوق‌های طلا"),
+                ("silver", "خالص پول صندوق‌های نقره"),
+            ):
+                total = fund_totals.get(kind, {})
+                flows[f"{kind}_funds"] = watch_market_flow_item(
+                    f"{kind}_funds",
+                    name,
+                    total.get("value"),
+                    count=total.get("count"),
+                    market_date=total.get("market_date"),
+                )
+        except (requests.RequestException, ValueError, TypeError, KeyError):
+            errors.append("fund-money")
+
+    price_order = [config["key"] for config in WATCH_MARKET_ASSETS]
+    price_order.insert(5, "global_copper")
+    flow_order = ("gold_funds", "silver_funds")
+    result = {
+        "prices": [prices[key] for key in price_order if key in prices],
+        "flows": [flows[key] for key in flow_order if key in flows],
+        "fetched_at": now if prices or flows else (cached_data or {}).get("fetched_at"),
+        "errors": sorted(set(errors)),
+    }
+    if result["prices"] or result["flows"]:
+        with watch_market_overview_cache_lock:
+            watch_market_overview_cache.update(data=result, fetched_at=now)
+    return result
+
+
+def latest_watch_market_value(values):
+    for value in reversed(values or []):
+        number = watch_market_number(value)
+        if number is not None:
+            return number
+    return None
+
+
+def fetch_tradersarena_json(path):
+    """Fetch one public TradersArena market-chart payload."""
+    response = requests.get(
+        f"https://tradersarena.ir{path}",
+        headers={
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Cache-Control": "no-cache",
+            "Referer": "https://tradersarena.ir/",
+            "User-Agent": TSETMC_HEADERS["User-Agent"],
+            "X-Requested-With": "XMLHttpRequest",
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("پاسخ نمودارهای دیدبان معتبر نیست.")
+    return payload
+
+
+def get_watch_market(force=False):
+    """Return the Markets-tab overview and six live Tehran-market charts."""
+    now = int(time.time())
+    with watch_market_cache_lock:
+        cached_data = watch_market_cache["data"]
+        cached_at = watch_market_cache["fetched_at"]
+        if not force and cached_data and now - cached_at < 45:
+            return dict(cached_data)
+
+    try:
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            summary_future = executor.submit(
+                fetch_tradersarena_json,
+                "/data/market0",
+            )
+            totals_future = executor.submit(
+                fetch_tradersarena_json,
+                "/data/market/chart/totals0",
+            )
+            overview_future = executor.submit(
+                get_watch_market_overview,
+                force,
+            )
+            overview = overview_future.result()
+            summary = summary_future.result()
+            totals = totals_future.result()
+
+        timestamps = [int(value) for value in totals.get("time", [])]
+
+        def numeric_series(key, scale=1):
+            values = totals.get(key, [])
+            size = min(len(timestamps), len(values))
+            return [
+                float(value) / scale if value is not None else None
+                for value in values[:size]
+            ]
+
+        positive_values = numeric_series("plus")
+        negative_values = numeric_series("minus")
+        excitement = []
+        for positive, negative in zip(positive_values, negative_values):
+            if positive is None or negative is None:
+                excitement.append(None)
+                continue
+            total = positive + negative
+            excitement.append(
+                round((positive - negative) / total * 100, 2)
+                if total
+                else 0
+            )
+
+        # TradersArena monetary values are in rials. 10^10 rials equals
+        # one billion tomans, which is the unit shown in the charts.
+        money_scale = 10_000_000_000
+        price_range = [
+            float(value)
+            for value in summary.get("s", [])
+            if value is not None
+        ]
+        range_labels = [
+            "کمتر از ‎−۵٪",
+            "‎−۵ تا ‎−۴٪",
+            "‎−۴ تا ‎−۳٪",
+            "‎−۳ تا ‎−۲٪",
+            "‎−۲ تا ‎−۱٪",
+            "‎−۱ تا ۰٪",
+            "۰ تا ‎+۱٪",
+            "‎+۱ تا ‎+۲٪",
+            "‎+۲ تا ‎+۳٪",
+            "‎+۳ تا ‎+۴٪",
+            "‎+۴ تا ‎+۵٪",
+            "بیشتر از ‎+۵٪",
+        ]
+        order_snapshot = [
+            float(value) / money_scale
+            for value in summary.get("o", [])
+            if value is not None
+        ]
+        result = {
+            "source": "tradersarena.ir",
+            "source_url": "https://tradersarena.ir/",
+            "fetched_at": now,
+            "market_date": summary.get("j"),
+            "times": timestamps,
+            "charts": {
+                "order_flow": {
+                    "buy": numeric_series("bo", money_scale),
+                    "sell": numeric_series("so", money_scale),
+                    "unit": "میلیارد تومان",
+                },
+                "price_range": {
+                    "labels": range_labels[:len(price_range)],
+                    "values": price_range,
+                    "unit": "نماد",
+                },
+                "money_flow": {
+                    "values": numeric_series("stockTransfer", money_scale),
+                    "unit": "میلیارد تومان",
+                },
+                "breadth": {
+                    "positive": positive_values,
+                    "negative": negative_values,
+                    "unit": "نماد",
+                },
+                "order_snapshot": {
+                    "labels": [
+                        "فروش ۵ ردیف اول",
+                        "خرید ۵ ردیف اول",
+                        "صف فروش",
+                        "صف خرید",
+                    ][:len(order_snapshot)],
+                    "values": order_snapshot,
+                    "unit": "میلیارد تومان",
+                },
+                "excitement": {
+                    "values": excitement,
+                    "unit": "درصد",
+                    "formula": (
+                        "(تعداد نمادهای مثبت − تعداد نمادهای منفی) "
+                        "÷ مجموع نمادها × ۱۰۰"
+                    ),
+                },
+            },
+            "errors": [],
+        }
+        overview = dict(overview)
+        overview_flows = [
+            item
+            for item in overview.get("flows", [])
+            if item.get("key") != "stock_market"
+        ]
+        overview_flows.append(
+            watch_market_flow_item(
+                "stock_market",
+                "خالص پول بازار سهام",
+                latest_watch_market_value(
+                    result["charts"]["money_flow"]["values"]
+                ),
+                market_date=result.get("market_date"),
+            )
+        )
+        overview["flows"] = overview_flows
+        result["overview"] = overview
+        with watch_market_cache_lock:
+            watch_market_cache.update(data=result, fetched_at=now)
+        return result
+    except (requests.RequestException, ValueError, TypeError) as error:
+        print("Watch market refresh error:", error)
+        with watch_market_cache_lock:
+            cached_data = watch_market_cache["data"]
+        if cached_data:
+            result = dict(cached_data)
+            result["errors"] = ["watch-market-refresh"]
+            return result
+        try:
+            overview = get_watch_market_overview(force=force)
+        except Exception:
+            overview = {
+                "prices": [],
+                "flows": [],
+                "fetched_at": None,
+                "errors": ["market-overview-unavailable"],
+            }
+        return {
+            "source": "tradersarena.ir",
+            "source_url": "https://tradersarena.ir/",
+            "fetched_at": None,
+            "market_date": None,
+            "times": [],
+            "charts": {},
+            "overview": overview,
+            "errors": ["watch-market-unavailable"],
+        }
 
 
 def fetch_stock_market_map():
@@ -646,6 +1556,7 @@ def fetch_stock_row(symbol, market_map):
     return {
         "symbol": symbol,
         "ins_code": ins_code,
+        "market_date": normalize_stock_market_date(info.get("dEven")),
         "company": clean_stock_text(info.get("lVal30")),
         "industry": clean_stock_text(sector.get("lSecVal")),
         "market_value": market_value,
@@ -745,8 +1656,10 @@ def refresh_stock_database():
             raise RuntimeError("دریافت آنلاین اطلاعات سهام از TSETMC ناموفق بود.")
 
         merged_rows = merge_stock_rows(symbols, fresh_rows, database_rows)
-        updated_at = datetime.now(IRAN_TIMEZONE).isoformat()
+        captured_at = datetime.now(IRAN_TIMEZONE)
+        updated_at = captured_at.isoformat()
         replace_stock_database(merged_rows, updated_at, len(fresh_rows))
+        save_daily_stock_snapshots(merged_rows, captured_at)
 
         if errors:
             error_message = (
@@ -2820,6 +3733,64 @@ def get_stocks():
             status=500,
             content_type="application/json; charset=utf-8",
         )
+
+
+@app.route("/stocks/history")
+def get_stock_history():
+    try:
+        trade_date = request.args.get("date", default="", type=str).strip()
+        symbol = request.args.get("symbol", default="", type=str).strip()
+        if trade_date:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+
+        snapshots, selected_date = read_daily_stock_snapshots(
+            trade_date=trade_date or None,
+            symbol=symbol or None,
+        )
+        return Response(
+            json.dumps(
+                {
+                    "date": selected_date,
+                    "count": len(snapshots),
+                    "snapshots": snapshots,
+                },
+                ensure_ascii=False,
+            ),
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except ValueError:
+        return Response(
+            json.dumps(
+                {"error": "تاریخ باید با قالب YYYY-MM-DD ارسال شود."},
+                ensure_ascii=False,
+            ),
+            status=400,
+            content_type="application/json; charset=utf-8",
+        )
+    except (FileNotFoundError, OSError, RuntimeError) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=500,
+            content_type="application/json; charset=utf-8",
+        )
+
+
+@app.route("/watch-market")
+def get_watch_market_charts():
+    force_refresh = request.args.get(
+        "refresh",
+        default="0",
+        type=str,
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    return Response(
+        json.dumps(
+            get_watch_market(force=force_refresh),
+            ensure_ascii=False,
+        ),
+        content_type="application/json; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.route("/")

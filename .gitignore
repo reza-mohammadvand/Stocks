@@ -11,3 +11,4 @@ Thumbs.db
 .DS_Store
 data/*.db-shm
 data/*.db-wal
+data/rahavard_live_quotes.json
