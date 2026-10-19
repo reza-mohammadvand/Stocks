@@ -28,9 +28,22 @@
         </a>
 
         <nav class="app-navigation" aria-label="بخش‌های سامانه">
-            <span class="app-navigation-current" aria-current="page">
-                انتظارات بازار
-            </span>
+            <button
+                id="stocks-tab-button"
+                class="app-tab-button active"
+                type="button"
+                data-app-tab="stocks-tab"
+                aria-controls="stocks-tab"
+                aria-selected="true"
+            >سهام</button>
+            <button
+                id="options-tab-button"
+                class="app-tab-button"
+                type="button"
+                data-app-tab="options-tab"
+                aria-controls="options-tab"
+                aria-selected="false"
+            >آپشن</button>
         </nav>
 
         <div class="market-connection" id="market-connection" role="status" aria-live="polite">
@@ -42,10 +55,17 @@
 
     <main class="app-main">
         <section class="expectations-hero" aria-labelledby="page-title">
-            <h1 id="page-title">دیدبان بازار سهام</h1>
+            <h1 id="page-title" class="visually-hidden">دیدبان بازار سهام</h1>
+            <img
+                id="page-hero-image"
+                src="{{ url_for('static', filename='Stocks.png') }}"
+                data-stocks-src="{{ url_for('static', filename='Stocks.png') }}"
+                data-options-src="{{ url_for('static', filename='Options.png') }}"
+                alt="تصویر تحلیلی بازار سهام"
+            >
         </section>
 
-        <div id="expectations" class="tab-content active">
+        <div id="options-tab" class="tab-content">
             <section class="expectations-panel" aria-label="انتظارات بازار">
                 <div class="expectations-toolbar" aria-label="فیلترهای انتظارات بازار">
                     <label class="expectations-search-box" for="expectations-search">
@@ -145,6 +165,128 @@
                 <div id="expectations-list" class="expectations-list" hidden></div>
                 <div id="expectations-empty" class="expectations-state" hidden>
                     اطلاعاتی برای نمایش وجود ندارد.
+                </div>
+            </section>
+        </div>
+
+        <div id="stocks-tab" class="tab-content active">
+            <section class="stocks-panel" aria-labelledby="stocks-title">
+                <div class="stocks-filter-bar" aria-label="فیلترهای فهرست سهام">
+                    <label class="stock-search-box" for="stock-search">
+                        <span class="search-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" focusable="false">
+                                <circle cx="11" cy="11" r="6.5"></circle>
+                                <path d="m16 16 4.25 4.25"></path>
+                            </svg>
+                        </span>
+                        <input
+                            id="stock-search"
+                            type="search"
+                            placeholder="جست‌وجوی نماد یا شرکت..."
+                            autocomplete="off"
+                        >
+                    </label>
+
+                    <div class="stock-industry-search">
+                        <label class="stock-search-box stock-industry-search-box" for="stock-industry-search">
+                            <span class="search-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" focusable="false">
+                                    <circle cx="11" cy="11" r="6.5"></circle>
+                                    <path d="m16 16 4.25 4.25"></path>
+                                </svg>
+                            </span>
+                            <input
+                                id="stock-industry-search"
+                                type="search"
+                                placeholder="جست‌وجوی صنعت..."
+                                autocomplete="off"
+                                aria-autocomplete="list"
+                                aria-controls="stock-industry-suggestions"
+                                aria-expanded="false"
+                            >
+                        </label>
+                        <div
+                            id="stock-industry-suggestions"
+                            class="stock-industry-suggestions"
+                            role="listbox"
+                            hidden
+                        ></div>
+                    </div>
+
+                    <div class="stock-market-filter" aria-label="فیلتر ارزش بازار">
+                        <span class="stock-filter-title">ارزش بازار (همت)</span>
+                        <label aria-label="حداقل ارزش بازار">
+                            <input id="stock-market-min" type="number" min="0" step="1" inputmode="decimal" placeholder="حداقل">
+                        </label>
+                        <label aria-label="حداکثر ارزش بازار">
+                            <input id="stock-market-max" type="number" min="0" step="1" inputmode="decimal" placeholder="حداکثر">
+                        </label>
+
+                        <label class="stock-industry-toggle" for="stock-group-by-industry">
+                            <input id="stock-group-by-industry" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <span>تفکیک بر اساس صنعت</span>
+                        </label>
+
+                        <div id="stock-column-selector" class="stock-column-selector">
+                            <button
+                                id="stock-column-toggle"
+                                class="button-secondary stock-column-toggle"
+                                type="button"
+                                aria-expanded="false"
+                                aria-controls="stock-column-menu"
+                            >
+                                <span class="stock-column-button-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" focusable="false">
+                                        <rect x="3" y="4" width="5" height="16" rx="1.5"></rect>
+                                        <rect x="10" y="4" width="5" height="16" rx="1.5"></rect>
+                                        <rect x="17" y="4" width="4" height="16" rx="1.5"></rect>
+                                    </svg>
+                                </span>
+                                <span>انتخاب ستون‌ها</span>
+                                <span class="stock-column-button-chevron" aria-hidden="true">
+                                    <svg viewBox="0 0 16 16" focusable="false">
+                                        <path d="m3 6 5 5 5-5"></path>
+                                    </svg>
+                                </span>
+                            </button>
+                            <div id="stock-column-menu" class="stock-column-menu" hidden>
+                                <div id="stock-column-options" class="stock-column-options"></div>
+                                <button id="show-all-stock-columns" type="button">
+                                    نمایش همه ستون‌ها
+                                </button>
+                            </div>
+                        </div>
+
+                        <button id="apply-stock-filter" type="button">اعمال</button>
+                        <button id="clear-stock-filter" type="button">پاک‌کردن</button>
+                    </div>
+                </div>
+
+                <div class="stocks-toolbar">
+                    <div class="stocks-heading">
+                        <h2 id="stocks-title">فهرست سهام</h2>
+                        <span id="stocks-count" aria-live="polite">در حال بارگذاری...</span>
+                    </div>
+                    <span id="stocks-sync-status" class="stocks-sync-status" aria-live="polite"></span>
+                </div>
+
+                <div id="stocks-loading" class="expectations-state expectations-state-loading">
+                    <span class="loading-orbit" aria-hidden="true"></span>
+                    <span>در حال دریافت فهرست سهام...</span>
+                </div>
+
+                <div id="stocks-table-wrap" class="stocks-table-wrap" hidden>
+                    <table id="stocks-table" class="stocks-table">
+                        <thead></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <div id="stocks-empty" class="expectations-state" hidden>
+                    نمادی برای نمایش وجود ندارد.
                 </div>
             </section>
         </div>

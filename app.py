@@ -1,9 +1,10 @@
 import os
+import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request
 import requests
-import pandas as pd
 import re
 import jdatetime
 import time
@@ -45,8 +46,789 @@ ORDER_BOOK_SNAPSHOT_FILE = os.path.join(
     "order_book_snapshot.json"
 )
 
+# فهرست ثابت نمادهای تب سهام؛ بقیه اطلاعات از TSETMC دریافت می‌شود.
+STOCK_SYMBOLS_FILE = os.path.join(
+    app.root_path,
+    "data",
+    "stock_symbols.json"
+)
+
+STOCK_DATABASE_FILE = os.path.join(
+    app.root_path,
+    "data",
+    "stocks.db"
+)
+
+stock_database_lock = threading.Lock()
+stock_database_ready = False
+stock_refresh_lock = threading.Lock()
+stock_refresh_state = {
+    "running": False,
+    "started_at": None,
+    "last_attempt_at": 0.0,
+    "error": None
+}
+
+STOCK_CACHE_TTL_SECONDS = max(
+    30,
+    int(os.environ.get("STOCK_DATA_CACHE_SECONDS", "300"))
+)
+
+TSETMC_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "User-Agent": "Mozilla/5.0 StockMarketWatch/1.0"
+}
+
+STOCK_DETAIL_FIELDS = (
+    "ins_code",
+    "company",
+    "industry",
+    "market_value",
+    "last_price",
+    "last_price_change_percent",
+    "closing_price",
+    "closing_price_change_percent",
+    "trade_value",
+    "trade_volume",
+    "share_count",
+    "floating_share_percent",
+    "real_buy_volume",
+    "real_buy_count",
+    "legal_buy_volume",
+    "legal_buy_count",
+    "real_sell_volume",
+    "real_sell_count",
+    "legal_sell_volume",
+    "legal_sell_count",
+    "monthly_average_volume",
+    "order_book_value",
+    "order_book_volume",
+    "order_book_count",
+    "order_book_buy_value",
+    "order_book_buy_volume",
+    "order_book_buy_count",
+    "order_book_sell_value",
+    "order_book_sell_volume",
+    "order_book_sell_count",
+)
+
+STOCK_DATABASE_EXTRA_COLUMNS = {
+    "ins_code": "TEXT",
+    "last_price": "INTEGER",
+    "last_price_change_percent": "REAL",
+    "closing_price": "INTEGER",
+    "closing_price_change_percent": "REAL",
+    "trade_value": "INTEGER",
+    "trade_volume": "INTEGER",
+    "share_count": "INTEGER",
+    "floating_share_percent": "REAL",
+    "real_buy_volume": "INTEGER",
+    "real_buy_count": "INTEGER",
+    "legal_buy_volume": "INTEGER",
+    "legal_buy_count": "INTEGER",
+    "real_sell_volume": "INTEGER",
+    "real_sell_count": "INTEGER",
+    "legal_sell_volume": "INTEGER",
+    "legal_sell_count": "INTEGER",
+    "monthly_average_volume": "INTEGER",
+    "order_book_value": "INTEGER",
+    "order_book_volume": "INTEGER",
+    "order_book_count": "INTEGER",
+    "order_book_buy_value": "INTEGER",
+    "order_book_buy_volume": "INTEGER",
+    "order_book_buy_count": "INTEGER",
+    "order_book_sell_value": "INTEGER",
+    "order_book_sell_volume": "INTEGER",
+    "order_book_sell_count": "INTEGER",
+}
+
 # جلوگیری از خواندن/نوشتن همزمان فایل سفارشات
 order_book_snapshot_lock = threading.Lock()
+
+
+def load_stock_symbols():
+    """Load the small, ordered symbol allow-list kept by the application."""
+    with open(STOCK_SYMBOLS_FILE, "r", encoding="utf-8") as file:
+        values = json.load(file)
+
+    if not isinstance(values, list):
+        raise ValueError("ساختار فایل نمادهای سهام معتبر نیست.")
+
+    symbols = []
+    seen = set()
+    for value in values:
+        symbol = str(value or "").strip()
+        normalized = normalize_symbol(symbol)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        symbols.append(symbol)
+
+    if not symbols:
+        raise ValueError("فهرست نمادهای سهام خالی است.")
+
+    return symbols
+
+
+def stock_number(value):
+    """Convert numeric TSETMC fields without treating zero as missing."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = str(value).strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def stock_integer(value):
+    """Return an integer for count/volume fields while preserving missing values."""
+    number = stock_number(value)
+    return int(round(number)) if number is not None else None
+
+
+def clean_stock_text(value):
+    text = str(value or "").strip().translate(
+        str.maketrans({"ي": "ی", "ى": "ی", "ك": "ک"})
+    )
+    return re.sub(r"\s+", " ", text)
+
+
+def stock_database_connection():
+    connection = sqlite3.connect(STOCK_DATABASE_FILE, timeout=15)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def initialize_stock_database():
+    global stock_database_ready
+
+    if stock_database_ready:
+        return
+
+    with stock_database_lock:
+        if stock_database_ready:
+            return
+
+        os.makedirs(os.path.dirname(STOCK_DATABASE_FILE), exist_ok=True)
+        symbols = load_stock_symbols()
+
+        with stock_database_connection() as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stocks (
+                    symbol TEXT PRIMARY KEY,
+                    position INTEGER NOT NULL,
+                    company TEXT,
+                    industry TEXT,
+                    market_value INTEGER,
+                    ins_code TEXT,
+                    last_price INTEGER,
+                    last_price_change_percent REAL,
+                    closing_price INTEGER,
+                    closing_price_change_percent REAL,
+                    trade_value INTEGER,
+                    trade_volume INTEGER,
+                    share_count INTEGER,
+                    floating_share_percent REAL,
+                    real_buy_volume INTEGER,
+                    real_buy_count INTEGER,
+                    legal_buy_volume INTEGER,
+                    legal_buy_count INTEGER,
+                    real_sell_volume INTEGER,
+                    real_sell_count INTEGER,
+                    legal_sell_volume INTEGER,
+                    legal_sell_count INTEGER,
+                    monthly_average_volume INTEGER,
+                    order_book_value INTEGER,
+                    order_book_volume INTEGER,
+                    order_book_count INTEGER,
+                    order_book_buy_value INTEGER,
+                    order_book_buy_volume INTEGER,
+                    order_book_buy_count INTEGER,
+                    order_book_sell_value INTEGER,
+                    order_book_sell_volume INTEGER,
+                    order_book_sell_count INTEGER,
+                    updated_at TEXT
+                )
+                """
+            )
+            existing_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(stocks)")
+            }
+            for column_name, column_type in STOCK_DATABASE_EXTRA_COLUMNS.items():
+                if column_name not in existing_columns:
+                    connection.execute(
+                        f"ALTER TABLE stocks ADD COLUMN {column_name} {column_type}"
+                    )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+                """
+            )
+
+            existing_count = connection.execute(
+                "SELECT COUNT(*) FROM stocks"
+            ).fetchone()[0]
+
+            if existing_count == 0:
+                for position, symbol in enumerate(symbols):
+                    connection.execute(
+                        """
+                        INSERT INTO stocks (symbol, position)
+                        VALUES (?, ?)
+                        """,
+                        (symbol, position)
+                    )
+            else:
+                for position, symbol in enumerate(symbols):
+                    connection.execute(
+                        """
+                        INSERT INTO stocks (symbol, position)
+                        VALUES (?, ?)
+                        ON CONFLICT(symbol) DO UPDATE SET position = excluded.position
+                        """,
+                        (symbol, position)
+                    )
+
+            placeholders = ",".join("?" for _ in symbols)
+            connection.execute(
+                f"DELETE FROM stocks WHERE symbol NOT IN ({placeholders})",
+                symbols
+            )
+
+        stock_database_ready = True
+
+
+def read_stock_database():
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        rows = [
+            {
+                "symbol": row["symbol"],
+                **{
+                    field: row[field]
+                    for field in STOCK_DETAIL_FIELDS
+                },
+            }
+            for row in connection.execute(
+                f"""
+                SELECT symbol, {", ".join(STOCK_DETAIL_FIELDS)}
+                FROM stocks
+                ORDER BY position
+                """
+            ).fetchall()
+        ]
+        metadata = {
+            row["key"]: row["value"]
+            for row in connection.execute(
+                "SELECT key, value FROM stock_metadata"
+            ).fetchall()
+        }
+    return rows, metadata
+
+
+def replace_stock_database(rows, updated_at, resolved_count):
+    """Atomically replace the catalogue so readers keep seeing old data until commit."""
+    initialize_stock_database()
+    symbols = load_stock_symbols()
+    by_symbol = {
+        normalize_symbol(row.get("symbol")): row
+        for row in rows
+        if isinstance(row, dict) and row.get("symbol")
+    }
+
+    with stock_database_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("DELETE FROM stocks")
+        insert_columns = (
+            "symbol",
+            "position",
+            *STOCK_DETAIL_FIELDS,
+            "updated_at",
+        )
+        insert_sql = (
+            f"INSERT INTO stocks ({', '.join(insert_columns)}) "
+            f"VALUES ({', '.join('?' for _ in insert_columns)})"
+        )
+        for position, symbol in enumerate(symbols):
+            row = by_symbol.get(normalize_symbol(symbol), {})
+            connection.execute(
+                insert_sql,
+                (
+                    symbol,
+                    position,
+                    *(row.get(field) for field in STOCK_DETAIL_FIELDS),
+                    updated_at,
+                ),
+            )
+
+        metadata = {
+            "last_successful_update": updated_at,
+            "last_successful_update_epoch": str(time.time()),
+            "resolved_count": str(resolved_count)
+        }
+        connection.executemany(
+            """
+            INSERT INTO stock_metadata (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            metadata.items()
+        )
+
+
+def fetch_stock_market_map():
+    """Fetch current price, volume, and value in one Market Watch request."""
+    response = requests.get(
+        "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
+        headers=TSETMC_HEADERS,
+        timeout=20
+    )
+    response.raise_for_status()
+    response.encoding = "utf-8"
+
+    market_data = {}
+    for market_row in response.text.strip().split(";"):
+        fields = market_row.split(",")
+        if len(fields) < 11:
+            continue
+        symbol = normalize_symbol(fields[2])
+        closing_price = stock_number(fields[6])
+        last_price = stock_number(fields[7])
+        yesterday_price = stock_number(fields[13]) if len(fields) > 13 else None
+        price = closing_price if closing_price and closing_price > 0 else last_price
+        if symbol:
+            market_data[symbol] = {
+                "ins_code": str(fields[0]).strip(),
+                "price": price if price and price > 0 else None,
+                "closing_price": (
+                    stock_integer(closing_price)
+                    if closing_price and closing_price > 0
+                    else None
+                ),
+                "last_price": (
+                    stock_integer(last_price)
+                    if last_price and last_price > 0
+                    else None
+                ),
+                "yesterday_price": (
+                    stock_integer(yesterday_price)
+                    if yesterday_price and yesterday_price > 0
+                    else None
+                ),
+                "trade_volume": stock_integer(fields[9]),
+                "trade_value": stock_integer(fields[10]),
+            }
+    return market_data
+
+
+def fetch_closing_data(ins_code):
+    data = fetch_tsetmc_json(
+        f"https://cdn.tsetmc.com/api/ClosingPrice/GetClosingPriceInfo/{ins_code}"
+    )
+    info = data.get("closingPriceInfo") or {}
+    closing_price = stock_number(info.get("pClosing"))
+    last_price = stock_number(info.get("pDrCotVal"))
+    yesterday_price = stock_number(info.get("priceYesterday"))
+    price = (
+        closing_price
+        if closing_price and closing_price > 0
+        else last_price
+    )
+    if not price or price <= 0:
+        price = yesterday_price if yesterday_price and yesterday_price > 0 else None
+    return {
+        "price": price,
+        "closing_price": (
+            stock_integer(closing_price)
+            if closing_price and closing_price > 0
+            else None
+        ),
+        "last_price": (
+            stock_integer(last_price)
+            if last_price and last_price > 0
+            else None
+        ),
+        "yesterday_price": (
+            stock_integer(yesterday_price)
+            if yesterday_price and yesterday_price > 0
+            else None
+        ),
+        "trade_volume": stock_integer(info.get("qTotTran5J")),
+        "trade_value": stock_integer(info.get("qTotCap")),
+    }
+
+
+def calculate_stock_change_percent(price, yesterday_price):
+    price_value = stock_number(price)
+    yesterday_value = stock_number(yesterday_price)
+    if (
+        price_value is None
+        or yesterday_value is None
+        or yesterday_value <= 0
+    ):
+        return None
+    return round(((price_value - yesterday_value) / yesterday_value) * 100, 2)
+
+
+def fetch_stock_client_type(ins_code):
+    data = fetch_tsetmc_json(
+        f"https://cdn.tsetmc.com/api/ClientType/GetClientType/{ins_code}/1/0"
+    )
+    client_type = data.get("clientType") or {}
+    return {
+        "real_buy_volume": stock_integer(client_type.get("buy_I_Volume")),
+        "real_buy_count": stock_integer(client_type.get("buy_CountI")),
+        "legal_buy_volume": stock_integer(client_type.get("buy_N_Volume")),
+        "legal_buy_count": stock_integer(client_type.get("buy_CountN")),
+        "real_sell_volume": stock_integer(client_type.get("sell_I_Volume")),
+        "real_sell_count": stock_integer(client_type.get("sell_CountI")),
+        "legal_sell_volume": stock_integer(client_type.get("sell_N_Volume")),
+        "legal_sell_count": stock_integer(client_type.get("sell_CountN")),
+    }
+
+
+def fetch_stock_order_book_totals(ins_code):
+    """Sum value, volume, and order count across the first five price levels."""
+    data = fetch_tsetmc_json(
+        f"https://cdn.tsetmc.com/api/BestLimits/{ins_code}"
+    )
+    best_limits = data.get("bestLimits") or []
+    if not isinstance(best_limits, list):
+        best_limits = []
+
+    buy_value = 0
+    buy_volume = 0
+    buy_count = 0
+    sell_value = 0
+    sell_volume = 0
+    sell_count = 0
+
+    for row in best_limits[:5]:
+        if not isinstance(row, dict):
+            continue
+
+        row_buy_price = stock_number(row.get("pMeDem")) or 0
+        row_sell_price = stock_number(row.get("pMeOf")) or 0
+        row_buy_volume = stock_integer(row.get("qTitMeDem")) or 0
+        row_sell_volume = stock_integer(row.get("qTitMeOf")) or 0
+        row_buy_count = stock_integer(row.get("zOrdMeDem")) or 0
+        row_sell_count = stock_integer(row.get("zOrdMeOf")) or 0
+
+        buy_value += row_buy_price * row_buy_volume
+        buy_volume += row_buy_volume
+        buy_count += row_buy_count
+        sell_value += row_sell_price * row_sell_volume
+        sell_volume += row_sell_volume
+        sell_count += row_sell_count
+
+    return {
+        "order_book_value": int(round(buy_value + sell_value)),
+        "order_book_volume": int(buy_volume + sell_volume),
+        "order_book_count": int(buy_count + sell_count),
+        "order_book_buy_value": int(round(buy_value)),
+        "order_book_buy_volume": int(buy_volume),
+        "order_book_buy_count": int(buy_count),
+        "order_book_sell_value": int(round(sell_value)),
+        "order_book_sell_volume": int(sell_volume),
+        "order_book_sell_count": int(sell_count),
+    }
+
+
+def fetch_tsetmc_json(url, attempts=3):
+    """Read a TSETMC JSON endpoint with short retries for transient CDN errors."""
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            response = requests.get(
+                url,
+                headers=TSETMC_HEADERS,
+                timeout=15
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("پاسخ JSON معتبر نیست.")
+            return payload
+        except (requests.RequestException, ValueError) as error:
+            last_error = error
+            if attempt + 1 < attempts:
+                time.sleep(0.4 * (attempt + 1))
+
+    raise last_error
+
+
+def find_stock_instrument(symbol):
+    data = fetch_tsetmc_json(
+        f"https://cdn.tsetmc.com/api/Instrument/GetInstrumentSearch/{symbol}",
+    )
+    candidates = data.get("instrumentSearch") or []
+    target = normalize_symbol(symbol)
+
+    exact_candidates = [
+        candidate
+        for candidate in candidates
+        if normalize_symbol(candidate.get("lVal18AFC")) == target
+        and str(candidate.get("flow")) != "3"
+    ]
+    exact_candidates.sort(
+        key=lambda item: (
+            str(item.get("flow")) not in {"1", "2"},
+            str(item.get("lastDate")) not in {"0", "1"}
+        )
+    )
+
+    fallback = None
+    for candidate in exact_candidates[:6]:
+        ins_code = str(candidate.get("insCode") or "").strip()
+        if not ins_code:
+            continue
+        info = fetch_tsetmc_json(
+            f"https://cdn.tsetmc.com/api/Instrument/GetInstrumentInfo/{ins_code}"
+        )
+        info = info.get("instrumentInfo") or {}
+        if normalize_symbol(info.get("lVal18AFC")) != target:
+            continue
+        if fallback is None:
+            fallback = info
+        if str(info.get("lastDate")) == "0":
+            return info
+
+    return fallback
+
+
+def fetch_stock_row(symbol, market_map):
+    info = find_stock_instrument(symbol)
+    if not info:
+        raise ValueError(f"نماد {symbol} در TSETMC پیدا نشد.")
+
+    sector = info.get("sector") or {}
+    issued_units = stock_number(info.get("etfIssuedUnit"))
+    listed_shares = stock_number(info.get("zTitad"))
+    units = issued_units if issued_units and issued_units > 0 else listed_shares
+    ins_code = str(info.get("insCode") or "").strip()
+    market_data = dict(market_map.get(normalize_symbol(symbol)) or {})
+    if (
+        market_data.get("price") is None
+        or market_data.get("closing_price") is None
+        or market_data.get("last_price") is None
+        or market_data.get("yesterday_price") is None
+        or market_data.get("trade_volume") is None
+        or market_data.get("trade_value") is None
+    ):
+        closing_data = fetch_closing_data(ins_code)
+        for field, value in closing_data.items():
+            if market_data.get(field) is None:
+                market_data[field] = value
+
+    price = market_data.get("price")
+    closing_price = market_data.get("closing_price")
+    last_price = market_data.get("last_price")
+    yesterday_price = market_data.get("yesterday_price")
+    client_type = fetch_stock_client_type(ins_code)
+    order_book_totals = fetch_stock_order_book_totals(ins_code)
+
+    market_value = None
+    if units and units > 0 and price and price > 0:
+        market_value = int(round(units * price))
+
+    return {
+        "symbol": symbol,
+        "ins_code": ins_code,
+        "company": clean_stock_text(info.get("lVal30")),
+        "industry": clean_stock_text(sector.get("lSecVal")),
+        "market_value": market_value,
+        "last_price": last_price,
+        "last_price_change_percent": calculate_stock_change_percent(
+            last_price,
+            yesterday_price,
+        ),
+        "closing_price": closing_price,
+        "closing_price_change_percent": calculate_stock_change_percent(
+            closing_price,
+            yesterday_price,
+        ),
+        "trade_value": market_data.get("trade_value"),
+        "trade_volume": market_data.get("trade_volume"),
+        "share_count": stock_integer(units),
+        "floating_share_percent": stock_number(info.get("kAjCapValCpsIdx")),
+        **client_type,
+        "monthly_average_volume": stock_integer(info.get("qTotTran5JAvg")),
+        **order_book_totals,
+    }
+
+
+def merge_stock_rows(symbols, fresh_rows, fallback_rows):
+    fresh_by_symbol = {
+        normalize_symbol(row.get("symbol")): row
+        for row in fresh_rows
+        if isinstance(row, dict)
+    }
+    fallback_by_symbol = {
+        normalize_symbol(row.get("symbol")): row
+        for row in fallback_rows
+        if isinstance(row, dict)
+    }
+
+    merged = []
+    for symbol in symbols:
+        key = normalize_symbol(symbol)
+        fresh = fresh_by_symbol.get(key, {})
+        fallback = fallback_by_symbol.get(key, {})
+        row = {"symbol": symbol}
+        for field in STOCK_DETAIL_FIELDS:
+            value = fresh.get(field)
+            if value in (None, ""):
+                value = fallback.get(field)
+            row[field] = value if value not in (None, "") else None
+        merged.append(row)
+    return merged
+
+
+def fetch_live_stock_catalog(symbols):
+    try:
+        market_map = fetch_stock_market_map()
+    except requests.RequestException as error:
+        print("Stock Market Watch price error:", error)
+        market_map = {}
+
+    rows = []
+    failed_symbols = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {
+            executor.submit(fetch_stock_row, symbol, market_map): symbol
+            for symbol in symbols
+        }
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                rows.append(future.result())
+            except (requests.RequestException, ValueError, TypeError) as error:
+                failed_symbols.append(symbol)
+
+    # A quieter second pass avoids losing rows during brief CDN throttling.
+    errors = []
+    if failed_symbols:
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            retry_futures = {
+                executor.submit(fetch_stock_row, symbol, market_map): symbol
+                for symbol in failed_symbols
+            }
+            for future in as_completed(retry_futures):
+                symbol = retry_futures[future]
+                try:
+                    rows.append(future.result())
+                except (requests.RequestException, ValueError, TypeError) as error:
+                    errors.append(f"{symbol}: {error}")
+
+    return rows, errors
+
+
+def refresh_stock_database():
+    error_message = None
+    try:
+        symbols = load_stock_symbols()
+        database_rows, _ = read_stock_database()
+        fresh_rows, errors = fetch_live_stock_catalog(symbols)
+        if not fresh_rows:
+            raise RuntimeError("دریافت آنلاین اطلاعات سهام از TSETMC ناموفق بود.")
+
+        merged_rows = merge_stock_rows(symbols, fresh_rows, database_rows)
+        updated_at = datetime.now(IRAN_TIMEZONE).isoformat()
+        replace_stock_database(merged_rows, updated_at, len(fresh_rows))
+
+        if errors:
+            error_message = (
+                f"اطلاعات {len(errors)} نماد از آخرین داده دیتابیس حفظ شد."
+            )
+    except Exception as error:
+        error_message = str(error)
+        print("Stock database refresh error:", error)
+    finally:
+        with stock_refresh_lock:
+            stock_refresh_state["running"] = False
+            stock_refresh_state["error"] = error_message
+
+
+def start_stock_database_refresh(force=False):
+    """Start a single background refresh without delaying the HTTP response."""
+    with stock_refresh_lock:
+        now_timestamp = time.time()
+        if stock_refresh_state["running"]:
+            return False
+        if (
+            not force
+            and now_timestamp - stock_refresh_state["last_attempt_at"] < 30
+        ):
+            return False
+
+        stock_refresh_state["running"] = True
+        stock_refresh_state["started_at"] = datetime.now(
+            IRAN_TIMEZONE
+        ).isoformat()
+        stock_refresh_state["last_attempt_at"] = now_timestamp
+        stock_refresh_state["error"] = None
+
+    threading.Thread(
+        target=refresh_stock_database,
+        name="stock-database-refresh",
+        daemon=True
+    ).start()
+    return True
+
+
+def get_stock_catalog(force_refresh=False):
+    """Return SQLite rows immediately and refresh stale online data in background."""
+    rows, metadata = read_stock_database()
+    try:
+        last_update_epoch = float(
+            metadata.get("last_successful_update_epoch", "0") or 0
+        )
+    except (TypeError, ValueError):
+        last_update_epoch = 0
+
+    refresh_due = (
+        not last_update_epoch
+        or time.time() - last_update_epoch >= STOCK_CACHE_TTL_SECONDS
+    )
+    if force_refresh or refresh_due:
+        start_stock_database_refresh(force=force_refresh)
+
+    with stock_refresh_lock:
+        refresh_status = dict(stock_refresh_state)
+
+    complete_count = sum(
+        1
+        for row in rows
+        if row.get("company")
+        and row.get("industry")
+        and stock_number(row.get("market_value")) not in (None, 0)
+    )
+
+    payload = {
+        "count": len(rows),
+        "resolved_count": int(metadata.get("resolved_count", complete_count)),
+        "source_updated_at": metadata.get("last_successful_update"),
+        "data_source": "database",
+        "stale": refresh_due,
+        "refreshing": refresh_status["running"],
+        "refresh_started_at": refresh_status["started_at"],
+        "stocks": rows
+    }
+    if refresh_status["error"]:
+        payload["warning"] = refresh_status["error"]
+    return payload
 
 
 def normalize_symbol(value):
@@ -2015,6 +2797,27 @@ def get_market_expectations():
         return Response(
             json.dumps({"error": str(error)}, ensure_ascii=False),
             status=400,
+            content_type="application/json; charset=utf-8",
+        )
+
+
+@app.route("/stocks")
+def get_stocks():
+    try:
+        force_refresh = request.args.get(
+            "refresh", default="0", type=str
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        payload = get_stock_catalog(force_refresh=force_refresh)
+
+        return Response(
+            json.dumps(payload, ensure_ascii=False),
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except (FileNotFoundError, ValueError, OSError, RuntimeError) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=500,
             content_type="application/json; charset=utf-8",
         )
 

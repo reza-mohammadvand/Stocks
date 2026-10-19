@@ -9,3 +9,5 @@ __pycache__/
 .vscode/
 Thumbs.db
 .DS_Store
+data/*.db-shm
+data/*.db-wal

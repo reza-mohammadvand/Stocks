@@ -1,50 +1,76 @@
-# دیدبان بازار سهام
+# Stock Market Watch
 
-یک داشبورد فارسی و راست‌به‌چپ برای تحلیل بازار سهام ایران است. در مرحلهٔ فعلی،
-داده‌های اختیار معامله به‌عنوان سیگنال انتظارات معامله‌گران نسبت به نمادهای پایه
-تحلیل می‌شوند. ساختار پروژه برای اضافه‌شدن تب‌ها و ابزارهای تحلیلی جدید در مراحل
-بعدی آماده نگه داشته شده است.
+Stock Market Watch is a Persian, right-to-left dashboard for analysing the Iranian stock market. The current application uses options data to estimate market expectations for underlying stocks and includes a separate stock catalogue that can be expanded with additional indicators over time.
 
-## وضعیت مرحلهٔ اول
+## Current interface
 
-- تب‌های قدیمی `Market` و `Bull Spread` از رابط کاربری حذف شده‌اند.
-- صفحهٔ «انتظارات بازار» اکنون نمای اصلی برنامه است.
-- دریافت، پردازش و مدل‌های دادهٔ دو بخش حذف‌شده همچنان در بک‌اند و جاوااسکریپت
-  نگه‌داری می‌شوند تا در مراحل بعدی قابل استفاده باشند.
-- رابط کاربری با سبک شیشه‌ای، چیدمان واکنش‌گرا و هویت متناسب با تحلیل بازار سهام
-  بازطراحی شده است.
+The dashboard has two main tabs:
 
-## قابلیت‌های فعلی
+- **Stocks**, the default first tab, reads immediately from SQLite and refreshes company, industry, and market-value data from TSETMC in the background.
+- **Options** presents option-based market-expectation analysis.
 
-- دریافت داده‌های زندهٔ Market Watch و سفارش‌های برتر از TSETMC
-- استخراج خودکار نمادهای اختیار و نگاشت آن‌ها به سهم پایه
-- محاسبهٔ فاصله تا سر‌به‌سر، میانگین وزنی و بازدهی مؤثر
-- مشاهدهٔ نزدیک‌ترین سررسیدهای هر نماد پایه
-- رتبه‌بندی نمادهای اختیار بر اساس سهم ارزش معاملات
-- استفاده از snapshot ارزش معاملات و سفارش‌های روز قبل
-- جست‌وجو، فیلتر روز تا سررسید، مرتب‌سازی و جزئیات محاسبات
-- به‌روزرسانی خودکار داده‌های انتظارات بازار
+The former Market and Bull Spread views are no longer shown in the interface. Their data retrieval, processing logic, and endpoints remain in the project for future use.
 
-## سرویس‌های دادهٔ حفظ‌شده
+## Features
 
-| مسیر | کاربرد |
+### Options
+
+- Retrieves live Market Watch and best-order data from TSETMC.
+- Detects option symbols and maps them to their underlying stocks.
+- Calculates break-even distance, weighted averages, and effective returns.
+- Shows the nearest expiries for every underlying symbol.
+- Ranks options by their share of traded value.
+- Supports symbol search, expiry-day filters, sorting, and calculation details.
+- Keeps the last successful dataset visible during refresh and replaces it only after a new response is ready.
+- Refreshes market-expectation data automatically.
+
+### Stocks
+
+- Retrieves official company and industry data from TSETMC for the configured symbols.
+- Calculates market value from the latest closing price and listed shares, or issued ETF units for funds.
+- Shows the latest traded price and closing price, with each price's percentage change from the previous close displayed underneath.
+- Includes trading value and volume, listed-share count, free-float percentage, monthly average volume, and individual/institutional buy and sell volumes and participant counts.
+- Calculates separate buy-side and sell-side value, volume, and order-count totals across the first five order-book levels for every symbol.
+- Stores the latest complete catalogue in `data/stocks.db` and serves it immediately on page load.
+- Replaces the SQLite rows atomically only after a background refresh is ready, so the table never disappears while online data is loading.
+- Provides normal and industry-grouped views.
+- Provides separate searches for symbol/company and industry.
+- Sorts every column using a three-state cycle: ascending, descending, then the default market-value order.
+- Filters rows by a minimum and/or maximum market value.
+- Displays market value as a whole number in **HEMAT** (trillion tomans), with the unit shown in the column heading.
+- Scales share and volume figures to fixed million/billion units shown on a second header line while retaining the exact value as a tooltip.
+- Links every stock symbol directly to its official TSETMC instrument page.
+- Supports horizontal table scrolling with the scrollbar, touch gestures, or mouse drag.
+- Keeps the stock-table header visible inside a height-limited, vertically scrollable table area.
+- Lets users hide or restore columns; the selection is saved in browser storage.
+- Uses a responsive glass-style interface with Persian typography and right-to-left controls.
+
+## Data endpoints
+
+| Endpoint | Purpose |
 |---|---|
-| `/market-expectations` | تحلیل انتظارات بازار با داده‌های اختیار معامله |
-| `/option-bases` | کشف نمادهای پایه و نگاشت ریشهٔ اختیار |
-| `/data` | دادهٔ کامل نمای قدیمی بازار؛ برای استفادهٔ آینده حفظ شده است |
-| `/spread-data` | داده و محاسبات Bull Call Spread؛ برای استفادهٔ آینده حفظ شده است |
+| `/market-expectations` | Option-based market-expectation analysis |
+| `/option-bases` | Underlying-symbol discovery and option-root mapping |
+| `/stocks` | SQLite-backed online stock catalogue and trading indicators for the configured symbols |
+| `/data` | Preserved data service for the former Market view |
+| `/spread-data` | Preserved Bull Call Spread data and calculations |
 
-داده‌های snapshot در فایل‌های زیر نگه‌داری می‌شوند:
+Local snapshots are stored in:
 
 - `data/trade_value_snapshot.json`
 - `data/order_book_snapshot.json`
 
-## پیش‌نیازها
+The stock catalogue is stored in `data/stocks.db`. The server checks for an
+online refresh every five minutes by default while always returning the current
+database rows immediately. Set `STOCK_DATA_CACHE_SECONDS` to change that
+interval, or request `/stocks?refresh=1` to start a background refresh.
 
-- Python 3.10 یا جدیدتر
-- دسترسی اینترنت برای حالت دادهٔ زنده
+## Requirements
 
-## نصب
+- Python 3.10 or later
+- Internet access when live market data is required
+
+## Installation
 
 ```powershell
 git clone https://github.com/reza-mohammadvand/Stocks.git
@@ -54,65 +80,68 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-## اجرا
+## Running the application
 
-پورت پیش‌فرض جدید پروژه `5050` است:
+The default application port is `5050`:
 
 ```powershell
 python app.py
 ```
 
-سپس آدرس زیر را باز کنید:
+Open:
 
 ```text
 http://127.0.0.1:5050
 ```
 
-برای اجرای برنامه روی یک پورت دیگر در PowerShell:
+To use another port in PowerShell:
 
 ```powershell
 $env:STOCK_DASHBOARD_PORT = "6060"
 python app.py
 ```
 
-برای فعال‌کردن حالت debug فقط در محیط توسعه:
+Enable Flask debug mode only during local development:
 
 ```powershell
 $env:STOCK_DASHBOARD_DEBUG = "1"
 python app.py
 ```
 
-در Linux یا macOS می‌توان پورت را به این شکل تعیین کرد:
+On Linux or macOS:
 
 ```bash
 STOCK_DASHBOARD_PORT=6060 python app.py
 ```
 
-## ساختار پروژه
+## Project structure
 
 ```text
 Stocks/
-├── app.py                         # برنامه Flask و سرویس‌های دریافت/تحلیل داده
-├── requirements.txt              # وابستگی‌های پایتون
-├── templates/
-│   ├── indextest.html             # رابط اصلی فعلی
-│   └── index.html                 # نمای قدیمی نگه‌داری‌شده
-├── static/
-│   ├── scripttest.js              # رفتار رابط و منطق تحلیل سمت کاربر
-│   ├── script.js                  # اسکریپت نمای قدیمی
-│   ├── style.css                  # استایل‌های پایه و طراحی شیشه‌ای
-│   ├── theme.css                  # پالت سرمه‌ای و فیروزه‌ای رابط فعلی
-│   ├── fonts/
-│   │   ├── Vazirmatn-Variable.woff2
-│   │   └── OFL-Vazirmatn.txt
-│   ├── logo.png
-│   └── iransans.ttf
-└── data/
-    ├── trade_value_snapshot.json
-    └── order_book_snapshot.json
+|-- app.py                         # Flask app and market-data services
+|-- requirements.txt               # Python dependencies
+|-- templates/
+|   |-- indextest.html             # Current dashboard interface
+|   `-- index.html                 # Preserved legacy view
+|-- static/
+|   |-- scripttest.js              # Current UI behaviour and analysis logic
+|   |-- script.js                  # Preserved legacy UI script
+|   |-- style.css                  # Base styles
+|   |-- theme.css                  # Current glass theme and responsive layout
+|   |-- Stocks.png                 # Hero image for the Stocks tab
+|   |-- Options.png                # Hero image for the Options tab
+|   |-- fonts/
+|   |   |-- Vazirmatn-Variable.woff2
+|   |   `-- OFL-Vazirmatn.txt
+|   |-- logo.png
+|   `-- iransans.ttf
+`-- data/
+    |-- stock_symbols.json          # Ordered symbol allow-list
+    |-- stocks.db                    # SQLite stock catalogue and update metadata
+    |-- trade_value_snapshot.json
+    `-- order_book_snapshot.json
 ```
 
-## نکته
+## Disclaimer
 
-این پروژه ابزار تحلیل و آموزش است، معامله‌ای اجرا نمی‌کند و توصیهٔ سرمایه‌گذاری
-محسوب نمی‌شود.
+This project is an analysis and educational tool. It does not execute trades and does not constitute investment advice.

@@ -41,6 +41,51 @@ let spreadCalculationSort = {
 // ستون‌هایی که کاربر تیک آن‌ها را برداشته است
 const hiddenSpreadCalculationColumns = new Set();
 
+const stockTableColumns = [
+    { key: "symbol", label: "نماد", type: "text", width: 150 },
+    { key: "company", label: "نام شرکت", type: "text", width: 220 },
+    { key: "industry", label: "صنعت", type: "text", width: 220 },
+    { key: "market_value", label: "ارزش بازار", unit: "همت", type: "number", format: "marketValue", width: 120 },
+    { key: "last_price", label: "آخرین قیمت", unit: "ریال", type: "number", format: "price", percentKey: "last_price_change_percent", width: 125 },
+    { key: "closing_price", label: "قیمت پایانی", unit: "ریال", type: "number", format: "price", percentKey: "closing_price_change_percent", width: 125 },
+    { key: "trade_value", label: "ارزش معاملات", unit: "میلیارد تومان", type: "number", format: "tradeValue", width: 145 },
+    { key: "trade_volume", label: "حجم معاملات", unit: "میلیون", type: "number", format: "million", width: 125 },
+    { key: "share_count", label: "تعداد سهام", unit: "میلیارد", type: "number", format: "billion", width: 125 },
+    { key: "floating_share_percent", label: "درصد سهام شناور", type: "number", format: "percent", width: 145 },
+    { key: "real_buy_volume", label: "حجم خرید حقیقی", unit: "میلیون", type: "number", format: "million", width: 130 },
+    { key: "real_buy_count", label: "تعداد خریدار حقیقی", type: "number", format: "integer", width: 155 },
+    { key: "legal_buy_volume", label: "حجم خرید حقوقی", unit: "میلیون", type: "number", format: "million", width: 130 },
+    { key: "legal_buy_count", label: "تعداد خریدار حقوقی", type: "number", format: "integer", width: 155 },
+    { key: "real_sell_volume", label: "حجم فروش حقیقی", unit: "میلیون", type: "number", format: "million", width: 130 },
+    { key: "real_sell_count", label: "تعداد فروشنده حقیقی", type: "number", format: "integer", width: 165 },
+    { key: "legal_sell_volume", label: "حجم فروش حقوقی", unit: "میلیون", type: "number", format: "million", width: 130 },
+    { key: "legal_sell_count", label: "تعداد فروشنده حقوقی", type: "number", format: "integer", width: 165 },
+    { key: "monthly_average_volume", label: "میانگین حجم ماه", unit: "میلیون", type: "number", format: "million", width: 135 },
+    { key: "order_book_buy_value", label: "مجموع ارزش سفارش‌ها", side: "خرید", sideKey: "buy", unit: "میلیارد تومان", type: "number", format: "tradeValue", width: 160 },
+    { key: "order_book_buy_volume", label: "مجموع حجم سفارش‌ها", side: "خرید", sideKey: "buy", unit: "میلیون", type: "number", format: "million", width: 150 },
+    { key: "order_book_buy_count", label: "مجموع تعداد سفارش‌ها", side: "خرید", sideKey: "buy", type: "number", format: "integer", width: 150 },
+    { key: "order_book_sell_value", label: "مجموع ارزش سفارش‌ها", side: "فروش", sideKey: "sell", unit: "میلیارد تومان", type: "number", format: "tradeValue", width: 160 },
+    { key: "order_book_sell_volume", label: "مجموع حجم سفارش‌ها", side: "فروش", sideKey: "sell", unit: "میلیون", type: "number", format: "million", width: 150 },
+    { key: "order_book_sell_count", label: "مجموع تعداد سفارش‌ها", side: "فروش", sideKey: "sell", type: "number", format: "integer", width: 150 }
+];
+
+let stockCatalogRows = [];
+let stockCatalogLoaded = false;
+let stockCatalogLoading = false;
+const defaultStockTableSort = { key: "market_value", direction: "desc" };
+let stockTableSort = { ...defaultStockTableSort };
+let stockSortInteractionStarted = false;
+let stockGroupByIndustry = false;
+let stockMarketFilter = { min: null, max: null };
+let stockSearchQuery = "";
+let stockIndustryQuery = "";
+let stockRefreshPollTimer = null;
+let stockAutoRefreshTimer = null;
+const hiddenStockColumns = new Set();
+
+const STOCK_REFRESH_POLL_INTERVAL = 1_500;
+const STOCK_AUTO_REFRESH_INTERVAL = 5 * 60_000;
+
 // =====================================================
 // AUTO REFRESH
 // =====================================================
@@ -5136,9 +5181,1051 @@ function closeExpectationDetails() {
     syncExpectationModalBodyState();
 }
 
+function setActiveAppTab(tabId) {
+    const isStocksTab = tabId === "stocks-tab";
+
+    document.querySelectorAll("[data-app-tab]").forEach(button => {
+        const isActive = button.dataset.appTab === tabId;
+        button.classList.toggle("active", isActive);
+        button.setAttribute("aria-selected", String(isActive));
+
+        if (isActive) {
+            button.setAttribute("aria-current", "page");
+        } else {
+            button.removeAttribute("aria-current");
+        }
+    });
+
+    document.querySelectorAll(".app-main > .tab-content").forEach(panel => {
+        panel.classList.toggle("active", panel.id === tabId);
+    });
+
+    const heroImage = document.getElementById("page-hero-image");
+    const pageTitle = document.getElementById("page-title");
+
+    if (heroImage) {
+        heroImage.src = isStocksTab
+            ? heroImage.dataset.stocksSrc
+            : heroImage.dataset.optionsSrc;
+        heroImage.alt = isStocksTab
+            ? "تصویر تحلیلی بازار سهام"
+            : "تصویر تحلیلی بازار آپشن";
+    }
+
+    if (pageTitle) {
+        pageTitle.textContent = isStocksTab
+            ? "دیدبان بازار سهام"
+            : "تحلیل بازار آپشن";
+    }
+
+    if (isStocksTab) {
+        loadStockCatalog();
+    } else {
+        setStockColumnMenu(false);
+    }
+}
+
+function initializeAppTabs() {
+    document.querySelectorAll("[data-app-tab]").forEach(button => {
+        button.addEventListener("click", () => {
+            setActiveAppTab(button.dataset.appTab);
+            const hash = button.dataset.appTab === "stocks-tab"
+                ? "#stocks"
+                : "#options";
+            history.replaceState(null, "", hash);
+        });
+    });
+
+    setActiveAppTab(
+        window.location.hash === "#options"
+            ? "options-tab"
+            : "stocks-tab"
+    );
+}
+
+function loadStockColumnPreferences() {
+    try {
+        const saved = JSON.parse(
+            localStorage.getItem("stock-dashboard-hidden-columns") || "[]"
+        );
+        const validKeys = new Set(stockTableColumns.map(column => column.key));
+
+        if (Array.isArray(saved)) {
+            saved.forEach(key => {
+                if (validKeys.has(key)) hiddenStockColumns.add(key);
+            });
+        }
+    } catch (error) {
+        console.warn("Could not restore stock column preferences.", error);
+    }
+}
+
+function saveStockColumnPreferences() {
+    try {
+        localStorage.setItem(
+            "stock-dashboard-hidden-columns",
+            JSON.stringify([...hiddenStockColumns])
+        );
+    } catch (error) {
+        console.warn("Could not save stock column preferences.", error);
+    }
+}
+
+function setStockColumnMenu(open) {
+    const selector = document.getElementById("stock-column-selector");
+    const toggle = document.getElementById("stock-column-toggle");
+    const menu = document.getElementById("stock-column-menu");
+    if (!selector || !toggle || !menu) return;
+
+    selector.classList.toggle("open", open);
+    toggle.setAttribute("aria-expanded", String(open));
+    menu.hidden = !open;
+}
+
+function renderStockColumnControls() {
+    const container = document.getElementById("stock-column-options");
+    if (!container) return;
+
+    const fragment = document.createDocumentFragment();
+
+    stockTableColumns.forEach(column => {
+        const label = document.createElement("label");
+        label.className = "stock-column-option";
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = column.key;
+        checkbox.checked = !hiddenStockColumns.has(column.key);
+
+        const text = document.createElement("span");
+        text.textContent = column.side
+            ? `${column.label} — ${column.side}`
+            : column.label;
+
+        checkbox.addEventListener("change", () => {
+            if (checkbox.checked) {
+                hiddenStockColumns.delete(column.key);
+            } else {
+                hiddenStockColumns.add(column.key);
+            }
+
+            saveStockColumnPreferences();
+            renderStockTable();
+        });
+
+        label.append(checkbox, text);
+        fragment.appendChild(label);
+    });
+
+    container.replaceChildren(fragment);
+}
+
+function initializeStockColumnSelector() {
+    loadStockColumnPreferences();
+    renderStockColumnControls();
+
+    document.getElementById("stock-column-toggle")?.addEventListener(
+        "click",
+        event => {
+            event.stopPropagation();
+            const isOpen = event.currentTarget.getAttribute("aria-expanded") === "true";
+            setStockColumnMenu(!isOpen);
+        }
+    );
+
+    document.getElementById("stock-column-menu")?.addEventListener(
+        "click",
+        event => event.stopPropagation()
+    );
+
+    document.getElementById("show-all-stock-columns")?.addEventListener(
+        "click",
+        () => {
+            hiddenStockColumns.clear();
+            saveStockColumnPreferences();
+            renderStockColumnControls();
+            renderStockTable();
+        }
+    );
+
+    document.addEventListener("click", event => {
+        if (!event.target.closest("#stock-column-selector")) {
+            setStockColumnMenu(false);
+        }
+    });
+}
+
+function initializeStockViewControls() {
+    document.getElementById("stock-search")?.addEventListener(
+        "input",
+        event => {
+            stockSearchQuery = normalizeSymbol(
+                event.target.value
+            ).toLocaleLowerCase("fa");
+            renderStockTable();
+        }
+    );
+
+    document.getElementById("stock-industry-search")?.addEventListener(
+        "input",
+        event => {
+            stockIndustryQuery = normalizeSymbol(
+                event.target.value
+            ).toLocaleLowerCase("fa");
+            renderStockTable();
+            renderStockIndustryOptions();
+            setStockIndustrySuggestionMenu(true);
+        }
+    );
+
+    document.getElementById("stock-industry-search")?.addEventListener(
+        "focus",
+        () => {
+            renderStockIndustryOptions();
+            setStockIndustrySuggestionMenu(true);
+        }
+    );
+
+    document.getElementById("stock-industry-search")?.addEventListener(
+        "keydown",
+        event => {
+            if (event.key === "Escape") {
+                setStockIndustrySuggestionMenu(false);
+                event.currentTarget.blur();
+            } else if (event.key === "ArrowDown") {
+                const firstOption = document.querySelector(
+                    "#stock-industry-suggestions button"
+                );
+                if (firstOption) {
+                    event.preventDefault();
+                    firstOption.focus();
+                }
+            }
+        }
+    );
+
+    document.addEventListener("click", event => {
+        if (!event.target.closest(".stock-industry-search")) {
+            setStockIndustrySuggestionMenu(false);
+        }
+    });
+
+    document.getElementById("stock-group-by-industry")?.addEventListener(
+        "change",
+        event => {
+            stockGroupByIndustry = event.target.checked;
+            renderStockTable();
+        }
+    );
+
+    const applyFilter = () => {
+        const minInput = document.getElementById("stock-market-min");
+        const maxInput = document.getElementById("stock-market-max");
+        if (!minInput || !maxInput) return;
+
+        minInput.setCustomValidity("");
+        maxInput.setCustomValidity("");
+
+        const minValue = minInput.value === "" ? null : Number(minInput.value);
+        const maxValue = maxInput.value === "" ? null : Number(maxInput.value);
+
+        if (minValue !== null && (!Number.isFinite(minValue) || minValue < 0)) {
+            minInput.setCustomValidity("حداقل ارزش بازار باید یک عدد مثبت باشد.");
+            minInput.reportValidity();
+            return;
+        }
+
+        if (maxValue !== null && (!Number.isFinite(maxValue) || maxValue < 0)) {
+            maxInput.setCustomValidity("حداکثر ارزش بازار باید یک عدد مثبت باشد.");
+            maxInput.reportValidity();
+            return;
+        }
+
+        if (minValue !== null && maxValue !== null && minValue > maxValue) {
+            maxInput.setCustomValidity("حداکثر ارزش بازار باید از حداقل بزرگ‌تر باشد.");
+            maxInput.reportValidity();
+            return;
+        }
+
+        stockMarketFilter = { min: minValue, max: maxValue };
+        renderStockTable();
+    };
+
+    document.getElementById("apply-stock-filter")?.addEventListener(
+        "click",
+        applyFilter
+    );
+
+    document.getElementById("clear-stock-filter")?.addEventListener(
+        "click",
+        () => {
+            const minInput = document.getElementById("stock-market-min");
+            const maxInput = document.getElementById("stock-market-max");
+            if (minInput) {
+                minInput.value = "";
+                minInput.setCustomValidity("");
+            }
+            if (maxInput) {
+                maxInput.value = "";
+                maxInput.setCustomValidity("");
+            }
+            const searchInput = document.getElementById("stock-search");
+            if (searchInput) searchInput.value = "";
+            const industryInput = document.getElementById("stock-industry-search");
+            if (industryInput) industryInput.value = "";
+            stockSearchQuery = "";
+            stockIndustryQuery = "";
+            stockMarketFilter = { min: null, max: null };
+            setStockIndustrySuggestionMenu(false);
+            renderStockTable();
+        }
+    );
+
+    ["stock-market-min", "stock-market-max"].forEach(inputId => {
+        document.getElementById(inputId)?.addEventListener("keydown", event => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            applyFilter();
+        });
+    });
+}
+
+function initializeStockTableDragScroll() {
+    const wrapper = document.getElementById("stocks-table-wrap");
+    if (!wrapper) return;
+
+    let activePointerId = null;
+    let startX = 0;
+    let startScrollLeft = 0;
+    let dragged = false;
+    let suppressClick = false;
+
+    wrapper.addEventListener("pointerdown", event => {
+        if (event.button !== 0 || event.pointerType === "touch") return;
+
+        activePointerId = event.pointerId;
+        startX = event.clientX;
+        startScrollLeft = wrapper.scrollLeft;
+        dragged = false;
+    });
+
+    wrapper.addEventListener("pointermove", event => {
+        if (event.pointerId !== activePointerId) return;
+
+        const deltaX = event.clientX - startX;
+        if (!dragged && Math.abs(deltaX) < 5) return;
+
+        if (!dragged) {
+            dragged = true;
+            wrapper.setPointerCapture?.(event.pointerId);
+        }
+        wrapper.classList.add("is-dragging");
+        event.preventDefault();
+
+        wrapper.scrollLeft = startScrollLeft - deltaX;
+    });
+
+    const finishDrag = event => {
+        if (event.pointerId !== activePointerId) return;
+
+        if (dragged) {
+            suppressClick = true;
+            window.setTimeout(() => {
+                suppressClick = false;
+            }, 0);
+        }
+
+        wrapper.classList.remove("is-dragging");
+        if (wrapper.hasPointerCapture?.(event.pointerId)) {
+            wrapper.releasePointerCapture(event.pointerId);
+        }
+        activePointerId = null;
+        dragged = false;
+    };
+
+    window.addEventListener("pointerup", finishDrag);
+    window.addEventListener("pointercancel", finishDrag);
+    wrapper.addEventListener("dragstart", event => event.preventDefault());
+    wrapper.addEventListener(
+        "click",
+        event => {
+            if (!suppressClick) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            suppressClick = false;
+        },
+        true
+    );
+}
+
+function formatCompactMarketValue(value) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return "—";
+
+    const hemmat = numericValue / 10_000_000_000_000;
+    return new Intl.NumberFormat("fa-IR", {
+        maximumFractionDigits: 0
+    }).format(hemmat);
+}
+
+function formatTradeValue(value) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return "—";
+
+    const billionToman = numericValue / 10_000_000_000;
+    return new Intl.NumberFormat("fa-IR", {
+        maximumFractionDigits: 2
+    }).format(billionToman);
+}
+
+function formatStockInteger(value) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return "—";
+
+    return new Intl.NumberFormat("fa-IR", {
+        maximumFractionDigits: 0
+    }).format(numericValue);
+}
+
+function formatStockChangePercent(value) {
+    if (value === null || value === undefined || value === "") return "—";
+
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return "—";
+
+    return `${new Intl.NumberFormat("fa-IR", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+        signDisplay: "exceptZero"
+    }).format(numericValue)}٪`;
+}
+
+function formatScaledStockNumber(value, divisor) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return "—";
+
+    const scaledValue = numericValue / divisor;
+    const scaledAbsoluteValue = Math.abs(scaledValue);
+    const maximumFractionDigits = scaledAbsoluteValue >= 10 ? 1 : 2;
+
+    return `${new Intl.NumberFormat("fa-IR", {
+        maximumFractionDigits
+    }).format(scaledValue)}`;
+}
+
+function formatStockCell(column, value) {
+    if (value === null || value === undefined || value === "") return "—";
+
+    if (column.format === "marketValue") {
+        return formatCompactMarketValue(value);
+    }
+    if (column.format === "tradeValue") {
+        return formatTradeValue(value);
+    }
+    if (column.format === "percent") {
+        const numericValue = Number(value);
+        if (!Number.isFinite(numericValue)) return "—";
+        return `${new Intl.NumberFormat("fa-IR", {
+            maximumFractionDigits: 2
+        }).format(numericValue)}٪`;
+    }
+    if (column.format === "integer") {
+        return formatStockInteger(value);
+    }
+    if (column.format === "price") {
+        return formatStockInteger(value);
+    }
+    if (column.format === "million") {
+        return formatScaledStockNumber(value, 1_000_000);
+    }
+    if (column.format === "billion") {
+        return formatScaledStockNumber(value, 1_000_000_000);
+    }
+
+    return String(value);
+}
+
+function getFilteredStockRows() {
+    return stockCatalogRows.filter(stock => {
+        if (stockSearchQuery) {
+            const searchableValue = [
+                stock.symbol,
+                stock.company
+            ]
+                .map(value => normalizeSymbol(value).toLocaleLowerCase("fa"))
+                .join("|");
+
+            if (!searchableValue.includes(stockSearchQuery)) return false;
+        }
+
+        if (stockIndustryQuery) {
+            const industry = normalizeSymbol(
+                stock.industry
+            ).toLocaleLowerCase("fa");
+            if (!industry.includes(stockIndustryQuery)) return false;
+        }
+
+        const marketValue = Number(stock.market_value);
+
+        if (stockMarketFilter.min !== null) {
+            if (!Number.isFinite(marketValue)) return false;
+            if ((marketValue / 10_000_000_000_000) < stockMarketFilter.min) {
+                return false;
+            }
+        }
+
+        if (stockMarketFilter.max !== null) {
+            if (!Number.isFinite(marketValue)) return false;
+            if ((marketValue / 10_000_000_000_000) > stockMarketFilter.max) {
+                return false;
+            }
+        }
+
+        return true;
+    });
+}
+
+function updateStockCount(visibleCount) {
+    const count = document.getElementById("stocks-count");
+    if (!count) return;
+
+    const formatter = new Intl.NumberFormat("fa-IR");
+    count.textContent = visibleCount === stockCatalogRows.length
+        ? `${formatter.format(stockCatalogRows.length)} نماد`
+        : `${formatter.format(visibleCount)} از ${formatter.format(stockCatalogRows.length)} نماد`;
+}
+
+function getSortedStockRows(rows) {
+    if (!stockTableSort.key || !stockTableSort.direction) {
+        return [...rows];
+    }
+
+    const column = stockTableColumns.find(
+        item => item.key === stockTableSort.key
+    );
+    if (!column) return [...rows];
+
+    const direction = stockTableSort.direction === "asc" ? 1 : -1;
+
+    return [...rows].sort((left, right) => {
+        const leftValue = left[column.key];
+        const rightValue = right[column.key];
+        const leftMissing = leftValue === null || leftValue === undefined || leftValue === "";
+        const rightMissing = rightValue === null || rightValue === undefined || rightValue === "";
+
+        if (leftMissing && rightMissing) return 0;
+        if (leftMissing) return 1;
+        if (rightMissing) return -1;
+
+        if (column.type === "number") {
+            return (Number(leftValue) - Number(rightValue)) * direction;
+        }
+
+        return String(leftValue).localeCompare(
+            String(rightValue),
+            "fa",
+            { sensitivity: "base", numeric: true }
+        ) * direction;
+    });
+}
+
+function sortStockTable(columnKey) {
+    const column = stockTableColumns.find(item => item.key === columnKey);
+    if (!column) return;
+
+    if (!stockSortInteractionStarted || stockTableSort.key !== columnKey) {
+        stockTableSort = {
+            key: columnKey,
+            direction: "asc"
+        };
+        stockSortInteractionStarted = true;
+    } else if (stockTableSort.direction === "asc") {
+        stockTableSort.direction = "desc";
+    } else {
+        stockTableSort = { ...defaultStockTableSort };
+        stockSortInteractionStarted = false;
+    }
+
+    renderStockTable();
+}
+
+function renderStockTable() {
+    const table = document.getElementById("stocks-table");
+    if (!table) return;
+
+    const tableHead = table.querySelector("thead");
+    const tableBody = table.querySelector("tbody");
+    const visibleColumns = stockTableColumns.filter(
+        column => !hiddenStockColumns.has(column.key)
+    );
+    const filteredRows = getFilteredStockRows();
+    const displayRows = getSortedStockRows(filteredRows);
+
+    updateStockCount(filteredRows.length);
+
+    table.querySelector("colgroup")?.remove();
+    const columnGroup = document.createElement("colgroup");
+    visibleColumns.forEach(column => {
+        const columnElement = document.createElement("col");
+        columnElement.style.width = `${column.width || 140}px`;
+        columnGroup.appendChild(columnElement);
+    });
+    table.prepend(columnGroup);
+    table.style.minWidth = `${Math.max(
+        760,
+        visibleColumns.reduce(
+            (total, column) => total + (column.width || 140),
+            0
+        )
+    )}px`;
+
+    const headRow = document.createElement("tr");
+
+    visibleColumns.forEach(column => {
+        const header = document.createElement("th");
+        const isActive = stockTableSort.key === column.key;
+        header.dataset.stockColumn = column.key;
+        if (column.sideKey) header.dataset.stockSide = column.sideKey;
+        header.tabIndex = 0;
+        header.setAttribute(
+            "aria-sort",
+            isActive
+                ? (stockTableSort.direction === "asc" ? "ascending" : "descending")
+                : "none"
+        );
+
+        const heading = document.createElement("span");
+        heading.className = "stocks-column-heading";
+
+        const label = document.createElement("span");
+        label.className = "stocks-column-title";
+        label.textContent = column.label;
+        heading.appendChild(label);
+
+        const headerDetails = [column.side, column.unit].filter(Boolean);
+        if (headerDetails.length > 0) {
+            const unit = document.createElement("small");
+            unit.className = "stocks-column-unit";
+            unit.textContent = `(${headerDetails.join(" · ")})`;
+            heading.appendChild(unit);
+        }
+
+        const indicator = document.createElement("span");
+        indicator.className = "stocks-sort-indicator";
+        indicator.textContent = isActive
+            ? (stockTableSort.direction === "asc" ? "▲" : "▼")
+            : "↕";
+
+        header.append(heading, indicator);
+        header.addEventListener("click", () => sortStockTable(column.key));
+        header.addEventListener("keydown", event => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            sortStockTable(column.key);
+        });
+        headRow.appendChild(header);
+    });
+
+    tableHead.replaceChildren(headRow);
+
+    if (visibleColumns.length === 0) {
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+        cell.className = "stocks-no-columns";
+        cell.textContent = "هیچ ستونی برای نمایش انتخاب نشده است.";
+        row.appendChild(cell);
+        tableBody.replaceChildren(row);
+        return;
+    }
+
+    const rowsFragment = document.createDocumentFragment();
+
+    if (displayRows.length === 0) {
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+        cell.className = "stocks-no-columns";
+        cell.colSpan = visibleColumns.length;
+        cell.textContent = "نمادی مطابق فیلتر انتخاب‌شده پیدا نشد.";
+        row.appendChild(cell);
+        tableBody.replaceChildren(row);
+        return;
+    }
+
+    const appendStockRow = (stock, grouped = false) => {
+        const row = document.createElement("tr");
+        if (grouped) row.classList.add("stock-industry-member");
+
+        visibleColumns.forEach(column => {
+            const cell = document.createElement("td");
+            cell.dataset.column = column.key;
+            if (column.sideKey) cell.dataset.stockSide = column.sideKey;
+
+            if (column.type === "number") {
+                cell.classList.add("stocks-numeric-value");
+                cell.textContent = formatStockCell(column, stock[column.key]);
+
+                if (stock[column.key] !== null && stock[column.key] !== undefined) {
+                    cell.title = new Intl.NumberFormat("fa-IR", {
+                        maximumFractionDigits: 2
+                    }).format(stock[column.key]);
+                }
+            } else {
+                cell.textContent = formatStockCell(column, stock[column.key]);
+            }
+
+            if (column.key === "market_value") {
+                cell.className = "stocks-market-value";
+
+                if (Number.isFinite(Number(stock[column.key]))) {
+                    cell.title = `${new Intl.NumberFormat("fa-IR").format(stock[column.key])} ریال`;
+                }
+            } else if ([
+                "trade_value",
+                "order_book_value",
+                "order_book_buy_value",
+                "order_book_sell_value"
+            ].includes(column.key)) {
+                if (Number.isFinite(Number(stock[column.key]))) {
+                    cell.title = `${new Intl.NumberFormat("fa-IR").format(stock[column.key])} ریال`;
+                }
+            }
+
+            if (column.percentKey) {
+                const priceStack = document.createElement("span");
+                priceStack.className = "stocks-price-stack";
+
+                const priceValue = document.createElement("span");
+                priceValue.className = "stocks-price-main";
+                priceValue.textContent = formatStockInteger(stock[column.key]);
+
+                const percentValue = stock[column.percentKey];
+                const numericPercent = (
+                    percentValue === null
+                    || percentValue === undefined
+                    || percentValue === ""
+                ) ? null : Number(percentValue);
+                const percent = document.createElement("small");
+                percent.className = "stocks-price-change";
+                percent.textContent = formatStockChangePercent(percentValue);
+                if (Number.isFinite(numericPercent)) {
+                    percent.classList.add(
+                        numericPercent > 0
+                            ? "is-positive"
+                            : (numericPercent < 0 ? "is-negative" : "is-neutral")
+                    );
+                }
+
+                priceStack.append(priceValue, percent);
+                cell.replaceChildren(priceStack);
+                if (stock[column.key] !== null && stock[column.key] !== undefined) {
+                    cell.title = `${new Intl.NumberFormat("fa-IR").format(stock[column.key])} ریال · ${formatStockChangePercent(percentValue)}`;
+                }
+            }
+
+            if (column.key === "symbol") {
+                const symbolContent = document.createElement("span");
+                symbolContent.className = "stocks-symbol-content";
+
+                const symbolText = document.createElement("span");
+                symbolText.textContent = stock.symbol || "—";
+                symbolContent.appendChild(symbolText);
+
+                if (stock.ins_code) {
+                    const symbolLink = document.createElement("a");
+                    symbolLink.className = "stocks-symbol-link";
+                    symbolLink.href = `https://www.tsetmc.com/instInfo/${encodeURIComponent(stock.ins_code)}`;
+                    symbolLink.target = "_blank";
+                    symbolLink.rel = "noopener noreferrer";
+                    symbolLink.title = `نمایش ${stock.symbol} در TSETMC`;
+                    symbolLink.setAttribute(
+                        "aria-label",
+                        `نمایش نماد ${stock.symbol} در TSETMC`
+                    );
+                    symbolLink.addEventListener(
+                        "pointerdown",
+                        event => event.stopPropagation()
+                    );
+                    symbolLink.innerHTML = `
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <path d="M14 5h5v5"></path>
+                            <path d="m19 5-8 8"></path>
+                            <path d="M18 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path>
+                        </svg>
+                    `;
+                    symbolContent.appendChild(symbolLink);
+                }
+
+                cell.replaceChildren(symbolContent);
+            }
+
+            row.appendChild(cell);
+        });
+
+        rowsFragment.appendChild(row);
+    };
+
+    if (stockGroupByIndustry) {
+        const industryGroups = new Map();
+
+        displayRows.forEach(stock => {
+            const industry = stock.industry || "بدون صنعت";
+            if (!industryGroups.has(industry)) {
+                industryGroups.set(industry, []);
+            }
+            industryGroups.get(industry).push(stock);
+        });
+
+        industryGroups.forEach((stocks, industry) => {
+            const groupRow = document.createElement("tr");
+            groupRow.className = "stock-industry-group";
+
+            const groupCell = document.createElement("td");
+            groupCell.colSpan = visibleColumns.length;
+
+            const groupName = document.createElement("span");
+            groupName.className = "stock-industry-group-name";
+            groupName.textContent = industry;
+
+            const groupCount = document.createElement("span");
+            groupCount.className = "stock-industry-group-count";
+            groupCount.textContent = `${new Intl.NumberFormat("fa-IR").format(stocks.length)} نماد`;
+
+            groupCell.append(groupName, groupCount);
+            groupRow.appendChild(groupCell);
+            rowsFragment.appendChild(groupRow);
+            stocks.forEach(stock => appendStockRow(stock, true));
+        });
+    } else {
+        displayRows.forEach(appendStockRow);
+    }
+
+    tableBody.replaceChildren(rowsFragment);
+}
+
+function setStockIndustrySuggestionMenu(open) {
+    const menu = document.getElementById("stock-industry-suggestions");
+    const input = document.getElementById("stock-industry-search");
+    if (!menu || !input) return;
+
+    menu.hidden = !open;
+    input.setAttribute("aria-expanded", String(open));
+    document.querySelector(".stock-industry-search")
+        ?.classList.toggle("open", open);
+}
+
+function selectStockIndustry(industry) {
+    const input = document.getElementById("stock-industry-search");
+    if (input) input.value = industry;
+    stockIndustryQuery = normalizeSymbol(industry).toLocaleLowerCase("fa");
+    setStockIndustrySuggestionMenu(false);
+    renderStockTable();
+}
+
+function renderStockIndustryOptions() {
+    const list = document.getElementById("stock-industry-suggestions");
+    if (!list) return;
+
+    const industryCounts = new Map();
+    stockCatalogRows.forEach(stock => {
+        const industry = String(stock.industry || "").trim();
+        if (!industry) return;
+        industryCounts.set(industry, (industryCounts.get(industry) || 0) + 1);
+    });
+
+    const industries = [...industryCounts.keys()]
+        .filter(industry => (
+            !stockIndustryQuery
+            || normalizeSymbol(industry)
+                .toLocaleLowerCase("fa")
+                .includes(stockIndustryQuery)
+        ))
+        .sort((left, right) => left.localeCompare(right, "fa"));
+    const fragment = document.createDocumentFragment();
+
+    const appendOption = (industry, count, label = industry) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "stock-industry-suggestion";
+        button.setAttribute("role", "option");
+
+        const name = document.createElement("span");
+        name.className = "stock-industry-suggestion-name";
+        name.textContent = label;
+
+        const badge = document.createElement("span");
+        badge.className = "stock-industry-suggestion-count";
+        badge.textContent = `${new Intl.NumberFormat("fa-IR").format(count)} نماد`;
+
+        button.append(name, badge);
+        button.addEventListener("click", () => selectStockIndustry(industry));
+        button.addEventListener("keydown", event => {
+            if (event.key === "Escape") {
+                setStockIndustrySuggestionMenu(false);
+                document.getElementById("stock-industry-search")?.focus();
+            }
+        });
+        fragment.appendChild(button);
+    };
+
+    if (stockIndustryQuery) {
+        appendOption("", stockCatalogRows.length, "همه صنایع");
+    }
+
+    industries.forEach(industry => {
+        appendOption(industry, industryCounts.get(industry));
+    });
+
+    if (industries.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "stock-industry-suggestions-empty";
+        empty.textContent = "صنعتی مطابق جست‌وجو پیدا نشد.";
+        fragment.appendChild(empty);
+    }
+
+    list.replaceChildren(fragment);
+}
+
+function updateStockSyncStatus(payload) {
+    const status = document.getElementById("stocks-sync-status");
+    if (!status) return;
+
+    if (payload?.refreshing) {
+        status.textContent = "در حال به‌روزرسانی آنلاین…";
+        status.classList.add("is-refreshing");
+        return;
+    }
+
+    status.classList.remove("is-refreshing");
+    status.textContent = payload?.warning
+        ? "نمایش آخرین دادهٔ ذخیره‌شده"
+        : "";
+}
+
+function applyStockCatalogPayload(payload) {
+    const tableWrap = document.getElementById("stocks-table-wrap");
+    const empty = document.getElementById("stocks-empty");
+    const rows = Array.isArray(payload?.stocks) ? payload.stocks : [];
+
+    stockCatalogRows = rows;
+    stockCatalogLoaded = true;
+    renderStockIndustryOptions();
+    updateStockSyncStatus(payload);
+
+    if (rows.length === 0) {
+        if (tableWrap) tableWrap.hidden = true;
+        if (empty) empty.hidden = false;
+        updateStockCount(0);
+        return;
+    }
+
+    if (empty) empty.hidden = true;
+    renderStockTable();
+    if (tableWrap) tableWrap.hidden = false;
+}
+
+function scheduleStockRefreshPoll(previousUpdatedAt, attempt = 0) {
+    window.clearTimeout(stockRefreshPollTimer);
+    if (attempt >= 80) return;
+
+    stockRefreshPollTimer = window.setTimeout(async () => {
+        try {
+            const response = await fetch(`/stocks?poll=1&_ts=${Date.now()}`, {
+                cache: "no-store"
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+                throw new Error(payload.error || "بررسی به‌روزرسانی سهام ناموفق بود.");
+            }
+
+            const hasNewData = Boolean(
+                payload.source_updated_at
+                && payload.source_updated_at !== previousUpdatedAt
+            );
+            if (hasNewData || !stockCatalogLoaded) {
+                applyStockCatalogPayload(payload);
+            } else {
+                updateStockSyncStatus(payload);
+            }
+
+            if (payload.refreshing) {
+                scheduleStockRefreshPoll(
+                    hasNewData ? payload.source_updated_at : previousUpdatedAt,
+                    attempt + 1
+                );
+            }
+        } catch (error) {
+            console.error("Stock refresh poll error:", error);
+        }
+    }, STOCK_REFRESH_POLL_INTERVAL);
+}
+
+async function requestStockCatalog({ forceRefresh = false, initialLoad = false } = {}) {
+    if (stockCatalogLoading) return;
+
+    const loading = document.getElementById("stocks-loading");
+    const tableWrap = document.getElementById("stocks-table-wrap");
+    const empty = document.getElementById("stocks-empty");
+    const count = document.getElementById("stocks-count");
+
+    stockCatalogLoading = true;
+    if (initialLoad && !stockCatalogLoaded) {
+        if (loading) loading.hidden = false;
+        if (tableWrap) tableWrap.hidden = true;
+        if (empty) empty.hidden = true;
+    }
+
+    try {
+        const parameters = new URLSearchParams({ _ts: Date.now().toString() });
+        if (forceRefresh) parameters.set("refresh", "1");
+        const response = await fetch(`/stocks?${parameters.toString()}`, {
+            cache: "no-store"
+        });
+        const payload = await response.json();
+
+        if (!response.ok) {
+            throw new Error(payload.error || "دریافت فهرست سهام ناموفق بود.");
+        }
+
+        applyStockCatalogPayload(payload);
+        if (payload.refreshing) {
+            scheduleStockRefreshPoll(payload.source_updated_at);
+        }
+    } catch (error) {
+        console.error("Stock catalog error:", error);
+        if (!stockCatalogLoaded) {
+            if (count) count.textContent = "خطا در دریافت اطلاعات";
+            if (empty) {
+                empty.textContent = error.message || "دریافت فهرست سهام ناموفق بود.";
+                empty.hidden = false;
+            }
+        }
+    } finally {
+        stockCatalogLoading = false;
+        if (loading) loading.hidden = true;
+    }
+}
+
+function loadStockCatalog() {
+    if (stockCatalogLoaded) return;
+    requestStockCatalog({ initialLoad: true });
+}
+
+function startStockAutoRefresh() {
+    window.clearInterval(stockAutoRefreshTimer);
+    stockAutoRefreshTimer = window.setInterval(() => {
+        requestStockCatalog({ forceRefresh: true });
+    }, STOCK_AUTO_REFRESH_INTERVAL);
+}
+
 document.addEventListener(
     "DOMContentLoaded",
     async function () {
+
+        initializeAppTabs();
+        initializeStockColumnSelector();
+        initializeStockViewControls();
+        initializeStockTableDragScroll();
+        startStockAutoRefresh();
 
         /*
             رابط دو نمای قدیمی فعلاً حذف شده است، اما تمام توابع دریافت
