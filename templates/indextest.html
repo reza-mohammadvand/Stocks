@@ -10,7 +10,7 @@
     >
     <title>دیدبان بازار سهام</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='market-overview') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='strategy-v5') }}">
     <link rel="icon" href="{{ url_for('static', filename='logo.png') }}" type="image/png">
 </head>
 <body class="dashboard-shell">
@@ -36,6 +36,22 @@
                 aria-controls="stocks-tab"
                 aria-selected="true"
             >سهام</button>
+            <button
+                id="watchlist-tab-button"
+                class="app-tab-button"
+                type="button"
+                data-app-tab="watchlist-tab"
+                aria-controls="watchlist-tab"
+                aria-selected="false"
+            >دیده‌بان</button>
+            <button
+                id="strategy-tab-button"
+                class="app-tab-button"
+                type="button"
+                data-app-tab="strategy-tab"
+                aria-controls="strategy-tab"
+                aria-selected="false"
+            >استراتژی</button>
             <button
                 id="options-tab-button"
                 class="app-tab-button"
@@ -66,11 +82,19 @@
             <h1 id="page-title" class="visually-hidden">دیدبان بازار سهام</h1>
             <img
                 id="page-hero-image"
+                class="hero-image-layer is-visible"
                 src="{{ url_for('static', filename='Stocks.png') }}"
                 data-stocks-src="{{ url_for('static', filename='Stocks.png') }}"
                 data-options-src="{{ url_for('static', filename='Options.png') }}"
                 data-markets-src="{{ url_for('static', filename='watch.png') }}"
                 alt="تصویر تحلیلی بازار سهام"
+            >
+            <img
+                id="page-hero-image-next"
+                class="hero-image-layer"
+                src="{{ url_for('static', filename='Stocks.png') }}"
+                alt=""
+                aria-hidden="true"
             >
         </section>
 
@@ -239,6 +263,14 @@
                             <span>تفکیک بر اساس صنعت</span>
                         </label>
 
+                        <label class="stock-industry-toggle stock-usd-toggle" for="stock-trade-value-usd">
+                            <input id="stock-trade-value-usd" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <span>ارزش معاملات به دلار آمریکا</span>
+                        </label>
+
                         <div id="stock-column-selector" class="stock-column-selector">
                             <button
                                 id="stock-column-toggle"
@@ -309,6 +341,241 @@
 
                 <div id="stocks-empty" class="expectations-state" hidden>
                     نمادی برای نمایش وجود ندارد.
+                </div>
+            </section>
+        </div>
+
+        <div id="watchlist-tab" class="tab-content">
+            <section class="stocks-panel watchlist-panel" aria-labelledby="watchlist-title">
+                <div class="stocks-filter-bar watchlist-filter-bar" aria-label="فیلترهای دیده‌بان">
+                    <form id="watchlist-add-form" class="watchlist-add-box" autocomplete="off">
+                        <label for="watchlist-symbol-input">افزودن نماد</label>
+                        <div class="watchlist-add-controls">
+                            <input
+                                id="watchlist-symbol-input"
+                                type="text"
+                                placeholder="نام نماد..."
+                                spellcheck="false"
+                                required
+                            >
+                            <button id="watchlist-add-button" class="button-primary" type="submit">
+                                افزودن
+                            </button>
+                        </div>
+                    </form>
+
+                    <label class="stock-search-box" for="watchlist-search">
+                        <span class="search-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" focusable="false">
+                                <circle cx="11" cy="11" r="6.5"></circle>
+                                <path d="m16 16 4.25 4.25"></path>
+                            </svg>
+                        </span>
+                        <input
+                            id="watchlist-search"
+                            type="search"
+                            placeholder="جست‌وجوی نماد، شرکت یا صنعت..."
+                            autocomplete="off"
+                        >
+                    </label>
+
+                    <div class="stock-market-filter watchlist-market-filter" aria-label="فیلتر دیده‌بان">
+                        <label class="stock-industry-toggle" for="watchlist-group-by-industry">
+                            <input id="watchlist-group-by-industry" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <span>تفکیک بر اساس صنعت</span>
+                        </label>
+
+                        <label class="stock-industry-toggle stock-usd-toggle" for="watchlist-trade-value-usd">
+                            <input id="watchlist-trade-value-usd" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <span>ارزش معاملات به دلار آمریکا</span>
+                        </label>
+
+                        <div id="watchlist-column-selector" class="stock-column-selector">
+                            <button
+                                id="watchlist-column-toggle"
+                                class="button-secondary stock-column-toggle"
+                                type="button"
+                                aria-expanded="false"
+                                aria-controls="watchlist-column-menu"
+                            >
+                                <span class="stock-column-button-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" focusable="false">
+                                        <rect x="3" y="4" width="5" height="16" rx="1.5"></rect>
+                                        <rect x="10" y="4" width="5" height="16" rx="1.5"></rect>
+                                        <rect x="17" y="4" width="4" height="16" rx="1.5"></rect>
+                                    </svg>
+                                </span>
+                                <span>انتخاب ستون‌ها</span>
+                                <span class="stock-column-button-chevron" aria-hidden="true">
+                                    <svg viewBox="0 0 16 16" focusable="false">
+                                        <path d="m3 6 5 5 5-5"></path>
+                                    </svg>
+                                </span>
+                            </button>
+                            <div id="watchlist-column-menu" class="stock-column-menu" hidden>
+                                <div id="watchlist-column-options" class="stock-column-options"></div>
+                                <button id="show-all-watchlist-columns" type="button">
+                                    نمایش همه ستون‌ها
+                                </button>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+
+                <div class="stocks-toolbar">
+                    <div class="stocks-heading">
+                        <h2 id="watchlist-title">دیده‌بان</h2>
+                        <span id="watchlist-count" aria-live="polite">در حال بارگذاری...</span>
+                    </div>
+                    <div class="stocks-toolbar-actions">
+                        <span id="watchlist-status" class="stocks-sync-status" aria-live="polite"></span>
+                        <button id="watchlist-refresh-button" class="button-primary stock-refresh-button" type="button">
+                            <span class="button-icon refresh-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" focusable="false">
+                                    <path d="M20 6v5h-5"></path>
+                                    <path d="M4 18v-5h5"></path>
+                                    <path d="M18.1 9A7 7 0 0 0 6.7 6.3L4 9"></path>
+                                    <path d="M5.9 15A7 7 0 0 0 17.3 17.7L20 15"></path>
+                                </svg>
+                            </span>
+                            <span>به‌روزرسانی</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div id="watchlist-loading" class="expectations-state expectations-state-loading">
+                    <span class="loading-orbit" aria-hidden="true"></span>
+                    <span>در حال دریافت دیده‌بان...</span>
+                </div>
+
+                <div id="watchlist-table-wrap" class="stocks-table-wrap" hidden>
+                    <table id="watchlist-table" class="stocks-table watchlist-table">
+                        <thead></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+
+                <div id="watchlist-empty" class="expectations-state" hidden>
+                    هنوز نمادی به دیده‌بان اضافه نشده است.
+                </div>
+            </section>
+        </div>
+
+        <div id="strategy-tab" class="tab-content">
+            <section class="strategy-panel" aria-labelledby="strategy-title">
+                <div class="strategy-toolbar">
+                    <div>
+                        <h2 id="strategy-title">استراتژی</h2>
+                        <p>نماد باید تمام شرط‌های فعال را هم‌زمان داشته باشد.</p>
+                    </div>
+                    <button id="strategy-run-button" class="button-primary" type="button">
+                        اجرای فیلتر
+                    </button>
+                </div>
+
+                <div class="strategy-rules" aria-label="شرط‌های استراتژی">
+                    <article class="strategy-rule" data-strategy-rule="trade_value">
+                        <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-trade-value-enabled">
+                            <input id="strategy-trade-value-enabled" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <strong>ارزش معاملات</strong>
+                        </label>
+                        <label class="strategy-field">
+                            <span>نوع مقایسه</span>
+                            <select id="strategy-trade-value-operator">
+                                <option value="gte">بزرگ‌تر یا مساوی</option>
+                                <option value="lte">کوچک‌تر یا مساوی</option>
+                                <option value="eq">مساوی</option>
+                            </select>
+                        </label>
+                        <label class="strategy-field">
+                            <span>میانگین چند روزه</span>
+                            <input id="strategy-trade-value-days" type="number" min="0" max="250" step="1" value="5" inputmode="numeric">
+                        </label>
+                    </article>
+
+                    <article class="strategy-rule" data-strategy-rule="trade_to_float_percent">
+                        <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-trade-to-float-enabled">
+                            <input id="strategy-trade-to-float-enabled" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <strong>نسبت معامله به شناوری</strong>
+                        </label>
+                        <label class="strategy-field">
+                            <span>نوع مقایسه</span>
+                            <select id="strategy-trade-to-float-operator">
+                                <option value="gte">بزرگ‌تر یا مساوی</option>
+                                <option value="lte">کوچک‌تر یا مساوی</option>
+                                <option value="eq">مساوی</option>
+                            </select>
+                        </label>
+                        <label class="strategy-field">
+                            <span>عدد ثابت (درصد)</span>
+                            <input id="strategy-trade-to-float-fixed" type="number" min="0" step="0.01" value="0" inputmode="decimal">
+                        </label>
+                        <label class="strategy-field">
+                            <span>میانگین چند روزه</span>
+                            <input id="strategy-trade-to-float-days" type="number" min="0" max="250" step="1" value="0" inputmode="numeric">
+                        </label>
+                    </article>
+
+                    <article class="strategy-rule" data-strategy-rule="real_buy_power">
+                        <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-real-buy-power-enabled">
+                            <input id="strategy-real-buy-power-enabled" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <strong>قدرت خرید حقیقی</strong>
+                        </label>
+                        <label class="strategy-field">
+                            <span>نوع مقایسه</span>
+                            <select id="strategy-real-buy-power-operator">
+                                <option value="gte">بزرگ‌تر یا مساوی</option>
+                                <option value="lte">کوچک‌تر یا مساوی</option>
+                                <option value="eq">مساوی</option>
+                            </select>
+                        </label>
+                        <label class="strategy-field">
+                            <span>عدد ثابت (برابر)</span>
+                            <input id="strategy-real-buy-power-fixed" type="number" min="0" step="0.01" value="0" inputmode="decimal">
+                        </label>
+                        <label class="strategy-field">
+                            <span>میانگین چند روزه</span>
+                            <input id="strategy-real-buy-power-days" type="number" min="0" max="250" step="1" value="0" inputmode="numeric">
+                        </label>
+                    </article>
+                </div>
+
+                <div class="strategy-results-toolbar">
+                    <div>
+                        <strong>نتایج استراتژی</strong>
+                        <span id="strategy-count" aria-live="polite">هنوز اجرا نشده است</span>
+                    </div>
+                    <span id="strategy-status" aria-live="polite"></span>
+                </div>
+
+                <div id="strategy-loading" class="expectations-state expectations-state-loading" hidden>
+                    <span class="loading-orbit" aria-hidden="true"></span>
+                    <span>در حال بررسی شروط...</span>
+                </div>
+                <div id="strategy-table-wrap" class="stocks-table-wrap strategy-table-wrap" hidden>
+                    <table id="strategy-table" class="stocks-table strategy-table">
+                        <thead></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div id="strategy-empty" class="expectations-state">
+                    برای مشاهده نتیجه، فیلتر را اجرا کنید.
                 </div>
             </section>
         </div>
@@ -489,6 +756,6 @@
         </section>
     </div>
 
-    <script src="{{ url_for('static', filename='scripttest.js', v='market-overview') }}"></script>
+    <script src="{{ url_for('static', filename='scripttest.js', v='strategy-v5') }}"></script>
 </body>
 </html>

@@ -31,6 +31,8 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 - Calculates market value from the latest closing price and listed shares, or issued ETF units for funds.
 - Shows the latest traded price and closing price, with each price's percentage change from the previous close displayed underneath.
 - Includes trading value and volume, listed-share count, free-float percentage, monthly average volume, and individual/institutional buy and sell volumes and participant counts.
+- Reapplies configured manual free-float percentages for instruments whose TSETMC metadata omits that value, so online refreshes cannot clear the supplied figures.
+- Derives free-float turnover, real-money flow, real buy/sell per-capita values, and real buy power from the stored TSETMC fields. Trading value and real-money flow can be viewed in thousand US dollars using the latest dollar quote already received by the Markets tab.
 - Calculates separate buy-side and sell-side value, volume, and order-count totals across the first five order-book levels for every symbol.
 - Stores the latest complete catalogue in `data/stocks.db` and serves it immediately on page load.
 - Replaces the SQLite rows atomically only after a background refresh is ready, so the table never disappears while online data is loading.
@@ -47,6 +49,8 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 - Supports horizontal table scrolling with the scrollbar, touch gestures, or mouse drag.
 - Keeps the stock-table header visible inside a height-limited, vertically scrollable table area.
 - Lets users hide or restore columns; the selection is saved in browser storage.
+- Includes a persistent watchlist tab where symbols can be added directly from the Stocks table or removed from the Watchlist. Watchlist rows are stored in SQLite, reuse the full stock-column set, and remain available after a page refresh.
+- Includes a Strategy tab that combines enabled filters with AND logic. Current trading value, free-float turnover, and real buy power can be compared with fixed thresholds and/or N-day averages calculated from daily SQLite snapshots. When fewer valid days are available, the average uses those days and the UI shows a warning and the actual day count; zero or missing values are excluded.
 - Uses a responsive glass-style interface with Persian typography and right-to-left controls.
 
 ### Markets
@@ -59,7 +63,7 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 - Shows six responsive SVG charts covering buy/sell order value, last-trade price distribution, stock money flow, positive/negative breadth, current order and queue value, and market excitement.
 - Limits line charts to the regular 09:00–12:30 Tehran stock-market session.
 - Supports on-demand refresh while preserving the previous in-memory dataset if a live refresh fails.
-- Automatically refreshes the Stocks, Options, and Markets datasets every two minutes in the background, regardless of the active tab.
+- Automatically refreshes the Stocks, Watchlist, Options, and Markets datasets every two minutes in the background, regardless of the active tab.
 
 ## Data endpoints
 
@@ -69,6 +73,9 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 | `/option-bases` | Underlying-symbol discovery and option-root mapping |
 | `/stocks` | SQLite-backed online stock catalogue and trading indicators for the configured symbols |
 | `/stocks/history` | Latest archived daily stock rows; accepts optional `date=YYYY-MM-DD` and `symbol=...` filters |
+| `/stock-watchlist` | Persistent watchlist collection: `GET` reads rows, `POST` adds a symbol, and `GET ?refresh=1` refreshes its live data |
+| `/stock-watchlist/<symbol>` | Removes a watchlist symbol with `DELETE` |
+| `/stock-strategy` | Evaluates enabled stock-strategy rules against current SQLite rows and archived daily averages |
 | `/watch-market` | Cross-market price/money-flow overview plus six intraday Markets-tab charts; use `refresh=1` to force a live refresh |
 | `/data` | Preserved data service for the former Market view |
 | `/spread-data` | Preserved Bull Call Spread data and calculations |

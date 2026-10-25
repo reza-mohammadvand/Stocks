@@ -190,6 +190,7 @@
 
 .dashboard-shell .expectations-hero {
     position: relative;
+    isolation: isolate;
     height: clamp(200px, 22vw, 300px);
     min-height: 0;
     margin-block: 16px 18px;
@@ -202,9 +203,33 @@
         inset 0 1px 0 rgba(114, 222, 255, 0.07);
 }
 
+.dashboard-shell .expectations-hero::before {
+    content: "";
+    position: absolute;
+    z-index: 3;
+    inset: -35% auto -35% -24%;
+    width: 24%;
+    pointer-events: none;
+    opacity: 0;
+    transform: skewX(-18deg);
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(83, 220, 255, 0.2),
+        rgba(190, 246, 255, 0.36),
+        transparent
+    );
+    filter: blur(10px);
+}
+
+.dashboard-shell .expectations-hero.is-switching::before {
+    animation: hero-image-glint 720ms cubic-bezier(0.22, 0.7, 0.2, 1);
+}
+
 .dashboard-shell .expectations-hero::after {
     content: "";
     position: absolute;
+    z-index: 2;
     inset: 0;
     pointer-events: none;
     background: linear-gradient(180deg, rgba(0, 19, 36, 0.02), rgba(0, 8, 18, 0.12));
@@ -213,10 +238,67 @@
 
 .dashboard-shell .expectations-hero img {
     display: block;
+    position: absolute;
+    z-index: 0;
+    inset: 0 auto 0 15%;
     width: 70%;
     height: 100%;
     object-fit: cover;
     object-position: center;
+    opacity: 0;
+    transform: translate3d(3.5%, 0, 0) scale(1.025);
+    filter: blur(7px) saturate(0.88) brightness(0.86);
+    transition:
+        opacity 460ms cubic-bezier(0.22, 0.7, 0.2, 1),
+        transform 680ms cubic-bezier(0.16, 1, 0.3, 1),
+        filter 520ms ease;
+    will-change: opacity, transform, filter;
+}
+
+.dashboard-shell .expectations-hero img.is-visible {
+    z-index: 1;
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0) saturate(1) brightness(1);
+}
+
+.dashboard-shell .expectations-hero img.is-leaving {
+    z-index: 0;
+    opacity: 0;
+    transform: translate3d(-2.5%, 0, 0) scale(0.99);
+    filter: blur(5px) saturate(0.82) brightness(0.78);
+}
+
+.dashboard-shell .expectations-hero[data-transition-direction="backward"] img:not(.is-visible):not(.is-leaving) {
+    transform: translate3d(-3.5%, 0, 0) scale(1.025);
+}
+
+.dashboard-shell .expectations-hero[data-transition-direction="backward"] img.is-leaving {
+    transform: translate3d(2.5%, 0, 0) scale(0.99);
+}
+
+@keyframes hero-image-glint {
+    0% {
+        left: -24%;
+        opacity: 0;
+    }
+    24% {
+        opacity: 0.72;
+    }
+    100% {
+        left: 112%;
+        opacity: 0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .dashboard-shell .expectations-hero img {
+        transition-duration: 1ms;
+    }
+
+    .dashboard-shell .expectations-hero.is-switching::before {
+        animation: none;
+    }
 }
 
 .dashboard-shell .visually-hidden {
@@ -733,6 +815,39 @@
     background: rgba(2, 82, 120, 0.34);
 }
 
+.dashboard-shell .expectation-option-status {
+    display: inline-flex;
+    min-width: 42px;
+    align-items: center;
+    justify-content: center;
+    padding: 3px 8px;
+    border: 1px solid rgba(124, 151, 166, 0.34);
+    border-radius: 999px;
+    direction: ltr;
+    color: #b7ced9;
+    background: rgba(72, 92, 105, 0.2);
+    font-size: 10px;
+    font-weight: 760;
+}
+
+.dashboard-shell .expectation-option-status.is-itm {
+    border-color: rgba(65, 236, 161, 0.4);
+    color: #5df0a9;
+    background: rgba(35, 185, 117, 0.12);
+}
+
+.dashboard-shell .expectation-option-status.is-atm {
+    border-color: rgba(255, 199, 82, 0.42);
+    color: #ffd06a;
+    background: rgba(204, 145, 31, 0.13);
+}
+
+.dashboard-shell .expectation-option-status.is-otm {
+    border-color: rgba(255, 122, 114, 0.38);
+    color: #ff918a;
+    background: rgba(207, 76, 69, 0.12);
+}
+
 .dashboard-shell .expectations-modal-backdrop {
     background: rgba(0, 7, 15, 0.86);
 }
@@ -769,6 +884,61 @@
         inset 0 1px 0 rgba(115, 222, 255, 0.065);
     backdrop-filter: blur(20px) saturate(120%);
     -webkit-backdrop-filter: blur(20px) saturate(120%);
+}
+
+.dashboard-shell .watchlist-filter-bar {
+    align-items: flex-end;
+}
+
+.dashboard-shell .watchlist-add-box {
+    display: grid;
+    flex: 0 1 300px;
+    gap: 5px;
+    min-width: 250px;
+    margin: 0;
+}
+
+.dashboard-shell .watchlist-add-box > label {
+    color: #91b4c7;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.dashboard-shell .watchlist-add-controls {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) auto;
+    gap: 7px;
+}
+
+.dashboard-shell .watchlist-add-controls input {
+    width: 100%;
+    min-width: 0;
+    height: 40px;
+    padding: 0 11px;
+    border: 1px solid rgba(39, 156, 211, 0.43);
+    border-radius: 10px;
+    outline: 0;
+    color: var(--copy);
+    background: rgba(0, 12, 25, 0.66);
+    font-family: inherit;
+    font-size: 12px;
+    text-align: right;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.dashboard-shell .watchlist-add-controls input:focus {
+    border-color: var(--line-active);
+    box-shadow: 0 0 0 3px rgba(27, 215, 255, 0.09);
+}
+
+.dashboard-shell .watchlist-add-controls button {
+    min-width: 74px;
+    min-height: 40px;
+    padding-inline: 14px;
+}
+
+.dashboard-shell .watchlist-market-filter {
+    flex-basis: 560px;
 }
 
 .dashboard-shell .stock-search-box {
@@ -976,6 +1146,10 @@
     white-space: nowrap;
 }
 
+.dashboard-shell .stocks-sync-status.is-error {
+    color: #ff918a;
+}
+
 .dashboard-shell .stocks-sync-status.is-refreshing::before {
     width: 7px;
     height: 7px;
@@ -1075,6 +1249,10 @@
 .dashboard-shell .stock-industry-toggle input:focus-visible + .stock-toggle-track {
     outline: 2px solid rgba(94, 232, 255, 0.72);
     outline-offset: 3px;
+}
+
+.dashboard-shell .stock-usd-toggle {
+    margin-right: 0;
 }
 
 .dashboard-shell .stock-market-filter {
@@ -1288,10 +1466,14 @@
 }
 
 .dashboard-shell .stocks-table-wrap {
+    position: relative;
+    isolation: isolate;
     width: 100%;
     min-width: 0;
     max-height: min(64vh, 620px);
-    overflow: auto;
+    overflow-x: auto;
+    overflow-y: auto;
+    direction: rtl;
     scrollbar-gutter: stable;
     cursor: grab;
     overscroll-behavior-inline: contain;
@@ -1320,6 +1502,11 @@
     border-spacing: 0;
     color: #d7e8f1;
     table-layout: fixed;
+    direction: rtl;
+}
+
+.dashboard-shell .stocks-table thead {
+    position: static;
 }
 
 .dashboard-shell .stocks-table th,
@@ -1339,9 +1526,10 @@
 }
 
 .dashboard-shell .stocks-table th {
-    position: sticky;
-    top: 0;
-    z-index: 5;
+    position: sticky !important;
+    top: 0 !important;
+    inset-block-start: 0 !important;
+    z-index: 20;
     height: 62px;
     color: #a9c9da;
     background: rgba(0, 18, 35, 0.97);
@@ -1349,6 +1537,7 @@
     font-weight: 720;
     cursor: pointer;
     user-select: none;
+    background-clip: padding-box;
     box-shadow: 0 1px 0 rgba(40, 192, 235, 0.22);
 }
 
@@ -1391,8 +1580,71 @@
 }
 
 .dashboard-shell .stocks-table th[data-stock-column="symbol"],
-.dashboard-shell .stocks-table td[data-column="symbol"] {
-    width: 150px;
+.dashboard-shell .stocks-table td[data-column="symbol"],
+.dashboard-shell .stocks-table .stocks-pinned-symbol {
+    width: 190px;
+    min-width: 190px;
+    max-width: 190px;
+    position: sticky !important;
+    right: 0 !important;
+    left: auto !important;
+    inset-inline-start: 0 !important;
+    inset-inline-end: auto !important;
+    border-inline-end-color: rgba(47, 193, 236, 0.34);
+    background-clip: padding-box;
+    box-shadow: -9px 0 18px rgba(0, 8, 18, 0.28);
+}
+
+.dashboard-shell .stocks-table th[data-stock-column="symbol"],
+.dashboard-shell .stocks-table th.stocks-pinned-symbol {
+    top: 0 !important;
+    inset-block-start: 0 !important;
+    z-index: 30;
+    background: rgba(0, 18, 35, 0.995);
+}
+
+.dashboard-shell .stocks-table td[data-column="symbol"],
+.dashboard-shell .stocks-table td.stocks-pinned-symbol {
+    z-index: 10;
+    background: rgba(0, 23, 43, 0.985);
+}
+
+/*
+ * Chromium may report table cells as sticky while still moving them inside an
+ * RTL scroll container. The JS controller applies exact compensating
+ * transforms in that case; these rules make the transformed cells independent
+ * of the browser's inconsistent table-sticky implementation.
+ */
+.dashboard-shell .stocks-table-wrap.has-frozen-pane-js .stocks-table th {
+    position: relative !important;
+    top: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    left: auto !important;
+    inset: auto !important;
+    z-index: 20;
+    will-change: transform;
+}
+
+.dashboard-shell .stocks-table-wrap.has-frozen-pane-js .stocks-table th.stocks-pinned-symbol {
+    z-index: 30;
+}
+
+.dashboard-shell .stocks-table-wrap.has-frozen-pane-js .stocks-table td.stocks-pinned-symbol {
+    position: relative !important;
+    right: auto !important;
+    left: auto !important;
+    inset: auto !important;
+    z-index: 10;
+    will-change: transform;
+}
+
+.dashboard-shell .watchlist-table th[data-stock-column="symbol"],
+.dashboard-shell .watchlist-table td[data-column="symbol"],
+.dashboard-shell .watchlist-table .stocks-pinned-symbol {
+    width: 190px;
+    min-width: 190px;
+    max-width: 190px;
 }
 
 .dashboard-shell .stocks-table th[data-stock-column="company"],
@@ -1422,6 +1674,10 @@
     background: rgba(27, 215, 255, 0.055);
 }
 
+.dashboard-shell .stocks-table tbody tr:hover td[data-column="symbol"] {
+    background: rgba(5, 43, 66, 0.995);
+}
+
 .dashboard-shell .stocks-table td {
     overflow: hidden;
     color: #bfd3df;
@@ -1446,13 +1702,37 @@
     max-width: 100%;
 }
 
-.dashboard-shell .stocks-symbol-link {
+.dashboard-shell .stocks-symbol-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-align: center;
+    text-overflow: ellipsis;
+}
+
+.dashboard-shell .stocks-symbol-actions {
     display: inline-flex;
     flex: 0 0 auto;
     align-items: center;
     justify-content: center;
-    width: 25px;
+    gap: 5px;
     height: 25px;
+    line-height: 0;
+}
+
+.dashboard-shell .stocks-symbol-link {
+    display: inline-flex;
+    flex: 0 0 25px;
+    align-items: center;
+    justify-content: center;
+    width: 25px;
+    min-width: 25px;
+    max-width: 25px;
+    height: 25px;
+    min-height: 25px;
+    max-height: 25px;
+    box-sizing: border-box;
+    margin: 0;
     border: 1px solid rgba(54, 217, 255, 0.34);
     border-radius: 8px;
     color: #43dfff;
@@ -1466,6 +1746,127 @@
     border-color: rgba(54, 217, 255, 0.74);
     background: rgba(31, 188, 229, 0.18);
     transform: translateY(-1px);
+}
+
+.dashboard-shell .stocks-watchlist-add-button {
+    display: inline-flex;
+    flex: 0 0 25px;
+    align-items: center;
+    justify-content: center;
+    width: 25px;
+    min-width: 25px;
+    max-width: 25px;
+    height: 25px;
+    min-height: 25px;
+    max-height: 25px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 1px solid rgba(77, 226, 161, 0.38);
+    border-radius: 8px;
+    color: #55e6a7;
+    background: rgba(34, 190, 126, 0.09);
+    cursor: pointer;
+    transition: color 150ms ease, border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.dashboard-shell .stocks-watchlist-add-button:hover:not(:disabled) {
+    color: #e9fff5;
+    border-color: rgba(91, 235, 174, 0.76);
+    background: rgba(34, 190, 126, 0.2);
+    transform: translateY(-1px);
+}
+
+.dashboard-shell .stocks-watchlist-add-button.is-added {
+    color: #8eb9a6;
+    border-color: rgba(91, 190, 147, 0.26);
+    background: rgba(38, 107, 78, 0.11);
+    cursor: default;
+}
+
+.dashboard-shell .stocks-watchlist-add-button:focus-visible {
+    outline: 2px solid rgba(91, 235, 174, 0.62);
+    outline-offset: 2px;
+}
+
+.dashboard-shell .stocks-watchlist-add-button svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.9;
+}
+
+.dashboard-shell .watchlist-symbol-content {
+    gap: 8px;
+}
+
+.dashboard-shell .watchlist-symbol-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-align: center;
+    text-overflow: ellipsis;
+}
+
+.dashboard-shell .watchlist-symbol-actions {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    height: 25px;
+    line-height: 0;
+}
+
+.dashboard-shell .watchlist-delete-button {
+    display: inline-flex;
+    flex: 0 0 25px;
+    align-items: center;
+    justify-content: center;
+    width: 25px;
+    min-width: 25px;
+    max-width: 25px;
+    height: 25px;
+    min-height: 25px;
+    max-height: 25px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 1px solid rgba(255, 113, 104, 0.34);
+    border-radius: 8px;
+    color: #ff8e87;
+    background: rgba(210, 66, 57, 0.08);
+    cursor: pointer;
+    transition: color 150ms ease, border-color 150ms ease, background 150ms ease;
+}
+
+.dashboard-shell .watchlist-delete-button svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+}
+
+.dashboard-shell .watchlist-delete-button:hover {
+    color: #ffd2cf;
+    border-color: rgba(255, 120, 112, 0.72);
+    background: rgba(210, 66, 57, 0.19);
+}
+
+.dashboard-shell .watchlist-delete-button:disabled {
+    opacity: 0.48;
+    cursor: wait;
+}
+
+.dashboard-shell .watchlist-delete-button:focus-visible {
+    outline: 2px solid rgba(255, 120, 112, 0.58);
+    outline-offset: 2px;
 }
 
 .dashboard-shell .stocks-symbol-link:focus-visible {
@@ -1485,7 +1886,15 @@
 
 .dashboard-shell .stocks-table .stock-industry-member td[data-column="symbol"] {
     border-inline-start: 3px solid rgba(54, 217, 255, 0.5);
-    background: linear-gradient(270deg, rgba(24, 176, 218, 0.08), transparent 54%);
+    background:
+        linear-gradient(270deg, rgba(24, 176, 218, 0.12), transparent 54%),
+        rgba(0, 23, 43, 0.995);
+}
+
+.dashboard-shell .stocks-table .stock-industry-member:hover td[data-column="symbol"] {
+    background:
+        linear-gradient(270deg, rgba(24, 176, 218, 0.18), transparent 54%),
+        rgba(5, 43, 66, 0.995);
 }
 
 .dashboard-shell .stocks-market-value {
@@ -1497,6 +1906,20 @@
 .dashboard-shell .stocks-numeric-value {
     font-variant-numeric: tabular-nums;
     direction: rtl;
+}
+
+.dashboard-shell .stocks-table td[data-column="real_money_flow"].is-positive {
+    color: var(--positive);
+    font-weight: 740;
+}
+
+.dashboard-shell .stocks-table td[data-column="real_money_flow"].is-negative {
+    color: var(--negative);
+    font-weight: 740;
+}
+
+.dashboard-shell .stocks-table td[data-column="real_money_flow"].is-neutral {
+    color: #819cab;
 }
 
 .dashboard-shell .stocks-price-stack {
@@ -1581,6 +2004,208 @@
     height: 120px !important;
     color: #7fa2b7 !important;
     text-align: center !important;
+}
+
+.dashboard-shell .strategy-panel {
+    display: grid;
+    gap: 14px;
+    min-width: 0;
+}
+
+.dashboard-shell .strategy-toolbar,
+.dashboard-shell .strategy-results-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 14px 16px;
+    border: 1px solid rgba(23, 166, 228, 0.58);
+    border-radius: 15px;
+    background: linear-gradient(135deg, rgba(2, 38, 68, 0.88), rgba(1, 22, 42, 0.8));
+    box-shadow: 0 16px 44px rgba(0, 5, 14, 0.25), inset 0 1px 0 rgba(115, 222, 255, 0.06);
+    backdrop-filter: blur(20px) saturate(120%);
+    -webkit-backdrop-filter: blur(20px) saturate(120%);
+}
+
+.dashboard-shell .strategy-toolbar h2 {
+    margin: 0 0 4px;
+    color: var(--copy);
+    font-size: 20px;
+}
+
+.dashboard-shell .strategy-toolbar p,
+.dashboard-shell .strategy-rule p {
+    margin: 0;
+    color: #7699ad;
+    font-size: 10px;
+    line-height: 1.8;
+}
+
+.dashboard-shell .strategy-toolbar button {
+    min-width: 120px;
+}
+
+.dashboard-shell .strategy-rules {
+    display: grid;
+    gap: 8px;
+}
+
+.dashboard-shell .strategy-rule {
+    display: grid;
+    grid-template-columns: 180px 145px 105px 105px;
+    align-items: end;
+    justify-content: start;
+    gap: 9px;
+    min-height: 58px;
+    padding: 8px 11px;
+    border: 1px solid rgba(25, 159, 216, 0.38);
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(2, 32, 57, 0.78), rgba(0, 18, 35, 0.72));
+    transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.dashboard-shell .strategy-rule.is-enabled {
+    border-color: rgba(46, 217, 255, 0.62);
+    background: linear-gradient(135deg, rgba(3, 48, 79, 0.84), rgba(0, 23, 43, 0.8));
+    box-shadow: inset 3px 0 0 rgba(63, 227, 255, 0.7);
+}
+
+.dashboard-shell .strategy-rule-toggle {
+    align-self: end;
+    justify-content: flex-start;
+    width: 180px;
+    height: 31px;
+    min-height: 31px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 4px 7px;
+    font-size: 10px;
+}
+
+.dashboard-shell .strategy-rule-toggle strong {
+    color: #d9edf6;
+    font-size: 11px;
+}
+
+.dashboard-shell .strategy-rule-toggle .stock-toggle-track {
+    width: 28px;
+    height: 16px;
+    padding: 2px;
+}
+
+.dashboard-shell .strategy-rule-toggle .stock-toggle-thumb {
+    width: 10px;
+    height: 10px;
+    transform: translateX(12px);
+}
+
+.dashboard-shell .strategy-rule-toggle input:checked + .stock-toggle-track .stock-toggle-thumb {
+    transform: translateX(0);
+}
+
+.dashboard-shell .strategy-field {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    color: #88aabd;
+    font-size: 9px;
+}
+
+.dashboard-shell .strategy-field > span {
+    min-height: 13px;
+    line-height: 13px;
+}
+
+.dashboard-shell .strategy-field input,
+.dashboard-shell .strategy-field select {
+    height: 31px;
+    min-width: 0;
+    padding: 0 8px;
+    border: 1px solid rgba(35, 165, 220, 0.38);
+    border-radius: 9px;
+    outline: 0;
+    color: #dff5ff;
+    background: rgba(0, 13, 27, 0.76);
+    font-family: inherit;
+    font-size: 10px;
+    text-align: right;
+}
+
+.dashboard-shell .strategy-field select {
+    width: 145px;
+}
+
+.dashboard-shell .strategy-field input {
+    width: 92px;
+}
+
+.dashboard-shell .strategy-field select {
+    cursor: pointer;
+}
+
+.dashboard-shell .strategy-field input:focus,
+.dashboard-shell .strategy-field select:focus {
+    border-color: rgba(48, 220, 255, 0.78);
+    box-shadow: 0 0 0 3px rgba(27, 215, 255, 0.08);
+}
+
+.dashboard-shell .strategy-rule p {
+    grid-column: 1 / -1;
+}
+
+.dashboard-shell .strategy-results-toolbar > div {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+}
+
+.dashboard-shell .strategy-results-toolbar strong {
+    color: #dff7ff;
+    font-size: 14px;
+}
+
+.dashboard-shell #strategy-count,
+.dashboard-shell #strategy-status {
+    color: #78a2b8;
+    font-size: 10px;
+}
+
+.dashboard-shell #strategy-status.is-error {
+    color: #ff918a;
+}
+
+.dashboard-shell #strategy-status.is-warning {
+    color: #ffc56f;
+}
+
+.dashboard-shell .strategy-table th[data-stock-column="symbol"],
+.dashboard-shell .strategy-table td[data-column="symbol"] {
+    width: 150px;
+    min-width: 150px;
+    max-width: 150px;
+}
+
+.dashboard-shell .strategy-table th {
+    cursor: default;
+}
+
+.dashboard-shell .strategy-comparison-stack {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+}
+
+.dashboard-shell .strategy-comparison-stack small {
+    color: #6e9bb2;
+    font-size: 9px;
+}
+
+@media (max-width: 1050px) {
+    .dashboard-shell .strategy-rule {
+        grid-template-columns: 180px 145px;
+    }
 }
 
 @media (max-width: 1220px) {
@@ -1693,6 +2318,11 @@
         max-width: none;
     }
 
+    .dashboard-shell .watchlist-add-box {
+        flex: 1 1 100%;
+        width: 100%;
+    }
+
     .dashboard-shell .expectations-header-actions {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1724,9 +2354,27 @@
         padding: 10px;
     }
 
+    .dashboard-shell .strategy-toolbar,
+    .dashboard-shell .strategy-results-toolbar {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .dashboard-shell .strategy-toolbar button {
+        width: 100%;
+    }
+
+    .dashboard-shell .strategy-rule {
+        grid-template-columns: 1fr;
+    }
+
     .dashboard-shell .stocks-filter-bar > .stock-search-box,
     .dashboard-shell .stock-industry-search {
         width: 100%;
+    }
+
+    .dashboard-shell .watchlist-add-box {
+        min-width: 0;
     }
 
     .dashboard-shell .stocks-toolbar {

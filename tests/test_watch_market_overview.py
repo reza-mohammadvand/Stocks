@@ -5,6 +5,16 @@ import app as stock_app
 
 
 class WatchMarketOverviewTests(unittest.TestCase):
+    def test_option_leverage_and_call_status(self):
+        self.assertEqual(
+            stock_app.calculate_option_leverage(1_200, 100),
+            12,
+        )
+        self.assertIsNone(stock_app.calculate_option_leverage(1_200, 0))
+        self.assertEqual(stock_app.calculate_call_option_status(1_200, 1_000), "ITM")
+        self.assertEqual(stock_app.calculate_call_option_status(1_000, 1_000), "ATM")
+        self.assertEqual(stock_app.calculate_call_option_status(800, 1_000), "OTM")
+
     def test_parse_rahavard_quote_uses_last_trade_and_converts_to_toman(self):
         config = {
             "key": "nimai_dollar",

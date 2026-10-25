@@ -108,6 +108,47 @@ class StockSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshots, [])
         self.assertIsNone(selected_date)
 
+    def test_calculate_stock_indicators(self):
+        indicators = stock_app.calculate_stock_indicators({
+            "trade_value": 1_000_000_000,
+            "trade_volume": 1_000,
+            "share_count": 10_000,
+            "floating_share_percent": 20,
+            "real_buy_volume": 600,
+            "legal_buy_volume": 400,
+            "real_sell_volume": 400,
+            "legal_sell_volume": 600,
+            "real_buy_count": 3,
+            "real_sell_count": 4,
+        })
+
+        self.assertEqual(indicators["trade_to_float_percent"], 50)
+        self.assertEqual(indicators["real_money_flow"], 200_000_000)
+        self.assertEqual(indicators["real_buy_per_capita"], 200_000_000)
+        self.assertEqual(indicators["real_sell_per_capita"], 100_000_000)
+        self.assertEqual(indicators["real_buy_power"], 2)
+
+        empty = stock_app.calculate_stock_indicators({})
+        self.assertTrue(all(value is None for value in empty.values()))
+
+    def test_manual_floating_share_overrides_survive_refresh_merge(self):
+        rows = stock_app.merge_stock_rows(
+            ["فزر", "سامان", "ومپنا", "شرانل", "دارا یکم", "کزغال"],
+            [
+                {"symbol": "فزر", "floating_share_percent": None},
+                {"symbol": "سامان", "floating_share_percent": 99},
+            ],
+            [],
+        )
+        by_symbol = {row["symbol"]: row for row in rows}
+
+        self.assertEqual(by_symbol["فزر"]["floating_share_percent"], 38)
+        self.assertEqual(by_symbol["سامان"]["floating_share_percent"], 5.7)
+        self.assertEqual(by_symbol["ومپنا"]["floating_share_percent"], 10)
+        self.assertEqual(by_symbol["شرانل"]["floating_share_percent"], 11)
+        self.assertEqual(by_symbol["دارا یکم"]["floating_share_percent"], 72)
+        self.assertEqual(by_symbol["کزغال"]["floating_share_percent"], 18)
+
 
 if __name__ == "__main__":
     unittest.main()

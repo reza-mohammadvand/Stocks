@@ -201,6 +201,47 @@ STOCK_EXTENDED_SESSION_SYMBOLS = {
     "نقران",
 }
 
+# TSETMC does not currently publish a usable free-float value for these
+# instruments. These user-supplied percentages are authoritative and are
+# reapplied after every online refresh.
+STOCK_FLOATING_SHARE_OVERRIDES = {
+    "فزر": 38,
+    "وشهر": 12,
+    "مارون": 28.8,
+    "آریا": 4.3,
+    "سامان": 5.7,
+    "ومپنا": 10,
+    "نیشکر": 0.95,
+    "فجهان": 13,
+    "شرانل": 11,
+    "ارفع": 10,
+    "هرمز": 11,
+    "فغدیر": 6,
+    "شگویا": 23,
+    "شاوان": 28,
+    "اهرم": 63,
+    "توان": 40.6,
+    "موج": 74,
+    "جوانه کوچک": 31.5,
+    "دزاگرس": 32,
+    "دارا یکم": 72,
+    "پالایش": 45,
+    "شتاب": 34.7,
+    "جهش": 50,
+    "فنقره": 25,
+    "قچار": 35,
+    "زاگرس": 10,
+    "ددانا": 9,
+    "حگهر": 12,
+    "حسینا": 16,
+    "غصینو": 22,
+    "غمینو": 31,
+    "دماوند": 13,
+    "بمپنا": 13,
+    "بپاس": 23,
+    "کزغال": 18,
+}
+
 STOCK_DETAIL_FIELDS = (
     "ins_code",
     "market_date",
@@ -212,6 +253,11 @@ STOCK_DETAIL_FIELDS = (
     "closing_price",
     "closing_price_change_percent",
     "trade_value",
+    "trade_to_float_percent",
+    "real_money_flow",
+    "real_buy_per_capita",
+    "real_sell_per_capita",
+    "real_buy_power",
     "trade_volume",
     "share_count",
     "floating_share_percent",
@@ -243,6 +289,11 @@ STOCK_DATABASE_EXTRA_COLUMNS = {
     "closing_price": "INTEGER",
     "closing_price_change_percent": "REAL",
     "trade_value": "INTEGER",
+    "trade_to_float_percent": "REAL",
+    "real_money_flow": "INTEGER",
+    "real_buy_per_capita": "INTEGER",
+    "real_sell_per_capita": "INTEGER",
+    "real_buy_power": "REAL",
     "trade_volume": "INTEGER",
     "share_count": "INTEGER",
     "floating_share_percent": "REAL",
@@ -367,6 +418,11 @@ def initialize_stock_database():
                     closing_price INTEGER,
                     closing_price_change_percent REAL,
                     trade_value INTEGER,
+                    trade_to_float_percent REAL,
+                    real_money_flow INTEGER,
+                    real_buy_per_capita INTEGER,
+                    real_sell_per_capita INTEGER,
+                    real_buy_power REAL,
                     trade_volume INTEGER,
                     share_count INTEGER,
                     floating_share_percent REAL,
@@ -406,6 +462,17 @@ def initialize_stock_database():
                 CREATE TABLE IF NOT EXISTS stock_metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_watchlist (
+                    symbol TEXT PRIMARY KEY,
+                    position INTEGER NOT NULL,
+                    data_json TEXT,
+                    added_at TEXT NOT NULL,
+                    updated_at TEXT
                 )
                 """
             )
@@ -458,6 +525,18 @@ def initialize_stock_database():
                 f"DELETE FROM stocks WHERE symbol NOT IN ({placeholders})",
                 symbols
             )
+            connection.executemany(
+                """
+                UPDATE stocks
+                SET floating_share_percent = ?
+                WHERE symbol = ?
+                """,
+                (
+                    (percentage, symbol)
+                    for symbol, percentage
+                    in STOCK_FLOATING_SHARE_OVERRIDES.items()
+                ),
+            )
 
         stock_database_ready = True
 
@@ -465,22 +544,24 @@ def initialize_stock_database():
 def read_stock_database():
     initialize_stock_database()
     with stock_database_connection() as connection:
-        rows = [
-            {
-                "symbol": row["symbol"],
+        rows = []
+        for database_row in connection.execute(
+            f"""
+            SELECT symbol, {", ".join(STOCK_DETAIL_FIELDS)}
+            FROM stocks
+            ORDER BY position
+            """
+        ).fetchall():
+            row = {
+                "symbol": database_row["symbol"],
                 **{
-                    field: row[field]
+                    field: database_row[field]
                     for field in STOCK_DETAIL_FIELDS
                 },
             }
-            for row in connection.execute(
-                f"""
-                SELECT symbol, {", ".join(STOCK_DETAIL_FIELDS)}
-                FROM stocks
-                ORDER BY position
-                """
-            ).fetchall()
-        ]
+            apply_stock_floating_share_override(row)
+            row.update(calculate_stock_indicators(row))
+            rows.append(row)
         metadata = {
             row["key"]: row["value"]
             for row in connection.execute(
@@ -488,6 +569,104 @@ def read_stock_database():
             ).fetchall()
         }
     return rows, metadata
+
+
+def read_stock_watchlist():
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        records = connection.execute(
+            """
+            SELECT symbol, data_json, added_at, updated_at
+            FROM stock_watchlist
+            ORDER BY position
+            """
+        ).fetchall()
+
+    rows = []
+    for record in records:
+        try:
+            row = json.loads(record["data_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            row = {}
+        if not isinstance(row, dict):
+            row = {}
+        row["symbol"] = record["symbol"]
+        apply_stock_floating_share_override(row)
+        row.update(calculate_stock_indicators(row))
+        rows.append(row)
+
+    return rows
+
+
+def save_stock_watchlist_row(row):
+    symbol = str(row.get("symbol") or "").strip()
+    if not symbol:
+        raise ValueError("نماد معتبر نیست.")
+
+    apply_stock_floating_share_override(row)
+    now = datetime.now(IRAN_TIMEZONE).isoformat()
+    payload = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        existing = connection.execute(
+            "SELECT position, added_at FROM stock_watchlist WHERE symbol = ?",
+            (symbol,),
+        ).fetchone()
+        if existing:
+            position = existing["position"]
+            added_at = existing["added_at"]
+        else:
+            position = connection.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM stock_watchlist"
+            ).fetchone()[0]
+            added_at = now
+
+        connection.execute(
+            """
+            INSERT INTO stock_watchlist (
+                symbol, position, data_json, added_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                data_json = excluded.data_json,
+                updated_at = excluded.updated_at
+            """,
+            (symbol, position, payload, added_at, now),
+        )
+
+    return row
+
+
+def delete_stock_watchlist_symbol(symbol):
+    target = normalize_symbol(symbol)
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        records = connection.execute(
+            "SELECT symbol FROM stock_watchlist ORDER BY position"
+        ).fetchall()
+        stored_symbol = next(
+            (
+                record["symbol"]
+                for record in records
+                if normalize_symbol(record["symbol"]) == target
+            ),
+            None,
+        )
+        if not stored_symbol:
+            return False
+
+        connection.execute(
+            "DELETE FROM stock_watchlist WHERE symbol = ?",
+            (stored_symbol,),
+        )
+        remaining = connection.execute(
+            "SELECT symbol FROM stock_watchlist ORDER BY position"
+        ).fetchall()
+        connection.executemany(
+            "UPDATE stock_watchlist SET position = ? WHERE symbol = ?",
+            ((position, record["symbol"]) for position, record in enumerate(remaining)),
+        )
+    return True
 
 
 def replace_stock_database(rows, updated_at, resolved_count):
@@ -514,7 +693,11 @@ def replace_stock_database(rows, updated_at, resolved_count):
             f"VALUES ({', '.join('?' for _ in insert_columns)})"
         )
         for position, symbol in enumerate(symbols):
-            row = by_symbol.get(normalize_symbol(symbol), {})
+            row = {
+                **by_symbol.get(normalize_symbol(symbol), {}),
+                "symbol": symbol,
+            }
+            apply_stock_floating_share_override(row)
             connection.execute(
                 insert_sql,
                 (
@@ -687,6 +870,212 @@ def read_daily_stock_snapshots(trade_date=None, symbol=None):
         )
 
     return snapshots, selected_date
+
+
+STOCK_STRATEGY_METRICS = (
+    "trade_value",
+    "trade_to_float_percent",
+    "real_buy_power",
+)
+
+
+def normalize_stock_strategy_rules(payload):
+    source = payload if isinstance(payload, dict) else {}
+    normalized = {}
+    for metric in STOCK_STRATEGY_METRICS:
+        rule = source.get(metric) if isinstance(source.get(metric), dict) else {}
+        operator = str(rule.get("operator") or "gte").strip().lower()
+        if operator not in {"gte", "lte", "eq"}:
+            operator = "gte"
+        try:
+            days = int(rule.get("days") or 0)
+        except (TypeError, ValueError):
+            days = 0
+        try:
+            fixed_value = float(rule.get("fixed") or 0)
+        except (TypeError, ValueError):
+            fixed_value = 0
+        normalized[metric] = {
+            "enabled": bool(rule.get("enabled")),
+            "operator": operator,
+            "days": max(0, min(days, 250)),
+            "fixed": fixed_value if fixed_value > 0 else 0,
+        }
+    return normalized
+
+
+def compare_stock_strategy_value(current_value, reference_value, operator):
+    current_number = stock_number(current_value)
+    reference_number = stock_number(reference_value)
+    if current_number is None or reference_number is None:
+        return False
+    if operator == "lte":
+        return current_number <= reference_number
+    if operator == "eq":
+        tolerance = max(1e-9, abs(reference_number) * 1e-9)
+        return abs(current_number - reference_number) <= tolerance
+    return current_number >= reference_number
+
+
+def read_stock_strategy_history():
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        records = connection.execute(
+            """
+            SELECT trade_date, symbol, data_json
+            FROM stock_daily_snapshots
+            ORDER BY trade_date DESC, captured_at DESC
+            """
+        ).fetchall()
+
+    history = {}
+    for record in records:
+        try:
+            data = json.loads(record["data_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        data["trade_date"] = record["trade_date"]
+        history.setdefault(normalize_symbol(record["symbol"]), []).append(data)
+    return history
+
+
+def evaluate_stock_strategy(rows, history, rules):
+    normalized_rules = normalize_stock_strategy_rules(rules)
+    active_metrics = [
+        metric
+        for metric, rule in normalized_rules.items()
+        if rule["enabled"]
+    ]
+    results = []
+    partial_history_count = 0
+    missing_history_count = 0
+    excluded_zero_or_missing_count = 0
+    history_coverage = {
+        metric: {
+            "requested_days": rule["days"],
+            "minimum_days_used": None,
+            "maximum_days_used": None,
+            "partial_symbol_count": 0,
+        }
+        for metric, rule in normalized_rules.items()
+        if rule["enabled"] and rule["days"] > 0
+    }
+
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("symbol"):
+            continue
+        symbol_history = history.get(normalize_symbol(row["symbol"]), [])
+        current_market_date = str(row.get("market_date") or "")
+        result = {
+            "symbol": row.get("symbol"),
+            "company": row.get("company"),
+            "industry": row.get("industry"),
+            "market_value": row.get("market_value"),
+        }
+        passed = True
+        row_has_partial_history = False
+        row_has_missing_history = False
+        row_has_zero_or_missing_value = False
+
+        for metric in STOCK_STRATEGY_METRICS:
+            rule = normalized_rules[metric]
+            current_value = stock_number(row.get(metric))
+            result[metric] = current_value
+            result[f"{metric}_average"] = None
+            result[f"{metric}_history_count"] = 0
+            if not rule["enabled"]:
+                continue
+            if current_value is None or current_value <= 0:
+                passed = False
+                row_has_zero_or_missing_value = True
+                continue
+
+            if metric != "trade_value" and rule["fixed"] > 0:
+                if not compare_stock_strategy_value(
+                    current_value,
+                    rule["fixed"],
+                    rule["operator"],
+                ):
+                    passed = False
+
+            if rule["days"] > 0:
+                historical_values = []
+                for snapshot in symbol_history:
+                    if (
+                        current_market_date
+                        and snapshot.get("trade_date") == current_market_date
+                    ):
+                        continue
+                    value = stock_number(snapshot.get(metric))
+                    if value is None or value <= 0:
+                        continue
+                    historical_values.append(value)
+                    if len(historical_values) >= rule["days"]:
+                        break
+
+                result[f"{metric}_history_count"] = len(historical_values)
+                if not historical_values:
+                    passed = False
+                    row_has_missing_history = True
+                else:
+                    average = sum(historical_values) / len(historical_values)
+                    result[f"{metric}_average"] = average
+                    coverage = history_coverage[metric]
+                    used_days = len(historical_values)
+                    coverage["minimum_days_used"] = (
+                        used_days
+                        if coverage["minimum_days_used"] is None
+                        else min(coverage["minimum_days_used"], used_days)
+                    )
+                    coverage["maximum_days_used"] = (
+                        used_days
+                        if coverage["maximum_days_used"] is None
+                        else max(coverage["maximum_days_used"], used_days)
+                    )
+                    if used_days < rule["days"]:
+                        row_has_partial_history = True
+                        coverage["partial_symbol_count"] += 1
+                    if not compare_stock_strategy_value(
+                        current_value,
+                        average,
+                        rule["operator"],
+                    ):
+                        passed = False
+
+        if row_has_partial_history:
+            partial_history_count += 1
+        if row_has_missing_history:
+            missing_history_count += 1
+        if row_has_zero_or_missing_value:
+            excluded_zero_or_missing_count += 1
+        if passed:
+            results.append(result)
+
+    return {
+        "count": len(results),
+        "evaluated_count": len(rows),
+        "active_filter_count": len(active_metrics),
+        "partial_history_count": partial_history_count,
+        "missing_history_count": missing_history_count,
+        "insufficient_history_count": missing_history_count,
+        "excluded_zero_or_missing_count": excluded_zero_or_missing_count,
+        "history_coverage": history_coverage,
+        "rules": normalized_rules,
+        "stocks": results,
+    }
+
+
+def get_stock_strategy(payload):
+    rows, metadata = read_stock_database()
+    result = evaluate_stock_strategy(
+        rows,
+        read_stock_strategy_history(),
+        payload,
+    )
+    result["source_updated_at"] = metadata.get("last_successful_update")
+    return result
 
 
 def watch_market_number(value):
@@ -1392,6 +1781,114 @@ def calculate_stock_change_percent(price, yesterday_price):
     return round(((price_value - yesterday_value) / yesterday_value) * 100, 2)
 
 
+def apply_stock_floating_share_override(row):
+    """Apply the configured manual free-float percentage to a stock row."""
+    if not isinstance(row, dict):
+        return row
+    symbol = str(row.get("symbol") or "").strip()
+    override = STOCK_FLOATING_SHARE_OVERRIDES.get(symbol)
+    if override is not None:
+        row["floating_share_percent"] = override
+    return row
+
+
+def calculate_stock_indicators(row):
+    """Calculate turnover, real-money flow, per-capita values, and buy power."""
+    trade_value = stock_number(row.get("trade_value"))
+    trade_volume = stock_number(row.get("trade_volume"))
+    share_count = stock_number(row.get("share_count"))
+    floating_percent = stock_number(row.get("floating_share_percent"))
+    real_buy_volume = stock_number(row.get("real_buy_volume"))
+    legal_buy_volume = stock_number(row.get("legal_buy_volume"))
+    real_sell_volume = stock_number(row.get("real_sell_volume"))
+    legal_sell_volume = stock_number(row.get("legal_sell_volume"))
+    real_buy_count = stock_number(row.get("real_buy_count"))
+    real_sell_count = stock_number(row.get("real_sell_count"))
+
+    trade_to_float_percent = None
+    floating_share_count = (
+        share_count * floating_percent / 100
+        if share_count is not None
+        and share_count > 0
+        and floating_percent is not None
+        and floating_percent > 0
+        else None
+    )
+    if (
+        trade_volume is not None
+        and trade_volume >= 0
+        and floating_share_count
+        and floating_share_count > 0
+    ):
+        trade_to_float_percent = round(
+            trade_volume / floating_share_count * 100,
+            4,
+        )
+
+    def real_side_share(real_volume, legal_volume):
+        if real_volume is None or real_volume < 0:
+            return None
+        side_total = (
+            trade_volume
+            if trade_volume is not None and trade_volume > 0
+            else (
+                real_volume + legal_volume
+                if legal_volume is not None and legal_volume >= 0
+                else None
+            )
+        )
+        if side_total is None or side_total <= 0:
+            return None
+        return real_volume / side_total
+
+    real_buy_share = real_side_share(real_buy_volume, legal_buy_volume)
+    real_sell_share = real_side_share(real_sell_volume, legal_sell_volume)
+    real_buy_value = (
+        trade_value * real_buy_share
+        if trade_value is not None and real_buy_share is not None
+        else None
+    )
+    real_sell_value = (
+        trade_value * real_sell_share
+        if trade_value is not None and real_sell_share is not None
+        else None
+    )
+    real_money_flow = (
+        int(round(real_buy_value - real_sell_value))
+        if real_buy_value is not None and real_sell_value is not None
+        else None
+    )
+    real_buy_per_capita = (
+        int(round(real_buy_value / real_buy_count))
+        if real_buy_value is not None
+        and real_buy_count is not None
+        and real_buy_count > 0
+        else None
+    )
+    real_sell_per_capita = (
+        int(round(real_sell_value / real_sell_count))
+        if real_sell_value is not None
+        and real_sell_count is not None
+        and real_sell_count > 0
+        else None
+    )
+    real_buy_power = (
+        round(real_buy_per_capita / real_sell_per_capita, 4)
+        if real_buy_per_capita is not None
+        and real_sell_per_capita is not None
+        and real_sell_per_capita > 0
+        else None
+    )
+
+    return {
+        "trade_to_float_percent": trade_to_float_percent,
+        "real_money_flow": real_money_flow,
+        "real_buy_per_capita": real_buy_per_capita,
+        "real_sell_per_capita": real_sell_per_capita,
+        "real_buy_power": real_buy_power,
+    }
+
+
 def fetch_stock_client_type(ins_code):
     data = fetch_tsetmc_json(
         f"https://cdn.tsetmc.com/api/ClientType/GetClientType/{ins_code}/1/0"
@@ -1553,7 +2050,7 @@ def fetch_stock_row(symbol, market_map):
     if units and units > 0 and price and price > 0:
         market_value = int(round(units * price))
 
-    return {
+    row = {
         "symbol": symbol,
         "ins_code": ins_code,
         "market_date": normalize_stock_market_date(info.get("dEven")),
@@ -1578,6 +2075,9 @@ def fetch_stock_row(symbol, market_map):
         "monthly_average_volume": stock_integer(info.get("qTotTran5JAvg")),
         **order_book_totals,
     }
+    apply_stock_floating_share_override(row)
+    row.update(calculate_stock_indicators(row))
+    return row
 
 
 def merge_stock_rows(symbols, fresh_rows, fallback_rows):
@@ -1603,6 +2103,8 @@ def merge_stock_rows(symbols, fresh_rows, fallback_rows):
             if value in (None, ""):
                 value = fallback.get(field)
             row[field] = value if value not in (None, "") else None
+        apply_stock_floating_share_override(row)
+        row.update(calculate_stock_indicators(row))
         merged.append(row)
     return merged
 
@@ -1644,6 +2146,57 @@ def fetch_live_stock_catalog(symbols):
                     errors.append(f"{symbol}: {error}")
 
     return rows, errors
+
+
+def refresh_stock_watchlist():
+    """Refresh watchlist rows while preserving the last usable value per field."""
+    current_rows = read_stock_watchlist()
+    symbols = [row["symbol"] for row in current_rows]
+    if not symbols:
+        return [], []
+
+    fresh_rows, errors = fetch_live_stock_catalog(symbols)
+    merged_rows = merge_stock_rows(symbols, fresh_rows, current_rows)
+    for row in merged_rows:
+        save_stock_watchlist_row(row)
+    return merged_rows, errors
+
+
+def add_stock_watchlist_symbol(symbol):
+    """Resolve a symbol, then store it in the persistent SQLite watchlist."""
+    requested_symbol = normalize_symbol(symbol)
+    if not requested_symbol:
+        raise ValueError("نام نماد را وارد کنید.")
+
+    current_rows = read_stock_watchlist()
+    if any(
+        normalize_symbol(row.get("symbol")) == requested_symbol
+        for row in current_rows
+    ):
+        raise ValueError("این نماد از قبل در دیده‌بان وجود دارد.")
+
+    database_rows, _ = read_stock_database()
+    stored_row = next(
+        (
+            row for row in database_rows
+            if normalize_symbol(row.get("symbol")) == requested_symbol
+        ),
+        None,
+    )
+
+    # Known catalogue symbols can be shown immediately from SQLite. Unknown
+    # symbols are resolved online once, then all later page loads use SQLite.
+    if stored_row and stored_row.get("ins_code"):
+        resolved_row = {**stored_row, "symbol": stored_row["symbol"]}
+    else:
+        try:
+            market_map = fetch_stock_market_map()
+        except requests.RequestException:
+            market_map = {}
+        resolved_row = fetch_stock_row(requested_symbol, market_map)
+
+    resolved_row.update(calculate_stock_indicators(resolved_row))
+    return save_stock_watchlist_row(resolved_row)
 
 
 def refresh_stock_database():
@@ -3460,6 +4013,28 @@ def fetch_market_watch_rows():
     return response.text.strip().split(";")
 
 
+def calculate_option_leverage(base_price, option_last_price):
+    """Return simple option leverage using the underlying's last price."""
+    if (
+        base_price is None
+        or option_last_price is None
+        or option_last_price <= 0
+    ):
+        return None
+    return base_price / option_last_price
+
+
+def calculate_call_option_status(base_price, strike):
+    """Classify a call option as ITM, ATM, or OTM."""
+    if base_price is None or strike is None:
+        return None
+    if base_price > strike:
+        return "ITM"
+    if base_price < strike:
+        return "OTM"
+    return "ATM"
+
+
 def generate_market_expectations(use_saved_trade_value=False):
     """Build non-visual option rows and expiry-level expectation summaries."""
     try:
@@ -3552,6 +4127,8 @@ def generate_market_expectations(use_saved_trade_value=False):
             trade_value = parse_number(fields[10])
 
         trade_value = trade_value if trade_value is not None else 0
+        leverage = calculate_option_leverage(base_price, option_last_price)
+        status = calculate_call_option_status(base_price, strike)
         breakeven_distance = (
             ((strike + option_last_price) / base_price) - 1
         ) * 100
@@ -3577,6 +4154,8 @@ def generate_market_expectations(use_saved_trade_value=False):
             "strike": strike,
             "option_last_price": option_last_price,
             "base_price": base_price,
+            "leverage": leverage,
+            "status": status,
             "breakeven_distance": breakeven_distance,
             "monthly_return": monthly_return,
         })
@@ -3622,6 +4201,11 @@ def generate_market_expectations(use_saved_trade_value=False):
             )
             item["breakeven_distance"] = round(
                 item["breakeven_distance"], 2
+            )
+            item["leverage"] = (
+                round(item["leverage"], 2)
+                if item["leverage"] is not None
+                else None
             )
             item["monthly_return"] = (
                 round(item["monthly_return"], 2)
@@ -3776,6 +4360,115 @@ def get_stock_history():
         )
 
 
+@app.route("/stock-watchlist", methods=["GET", "POST"])
+def stock_watchlist_collection():
+    try:
+        warning = None
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+            added_row = add_stock_watchlist_symbol(body.get("symbol"))
+            rows = read_stock_watchlist()
+            status = 201
+        else:
+            force_refresh = request.args.get(
+                "refresh", default="0", type=str
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if force_refresh:
+                rows, errors = refresh_stock_watchlist()
+                if errors:
+                    warning = (
+                        f"اطلاعات {len(errors)} نماد از آخرین داده ذخیره‌شده حفظ شد."
+                    )
+            else:
+                rows = read_stock_watchlist()
+            added_row = None
+            status = 200
+
+        payload = {
+            "count": len(rows),
+            "stocks": rows,
+            "updated_at": datetime.now(IRAN_TIMEZONE).isoformat(),
+        }
+        if added_row is not None:
+            payload["added"] = added_row
+        if warning:
+            payload["warning"] = warning
+
+        return Response(
+            json.dumps(payload, ensure_ascii=False),
+            status=status,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except ValueError as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=400,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except (requests.RequestException, OSError, RuntimeError, TypeError) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=502,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
+@app.route("/stock-watchlist/<path:symbol>", methods=["DELETE"])
+def stock_watchlist_item(symbol):
+    try:
+        if not delete_stock_watchlist_symbol(symbol):
+            return Response(
+                json.dumps(
+                    {"error": "نماد موردنظر در دیده‌بان پیدا نشد."},
+                    ensure_ascii=False,
+                ),
+                status=404,
+                content_type="application/json; charset=utf-8",
+                headers={"Cache-Control": "no-store"},
+            )
+
+        rows = read_stock_watchlist()
+        return Response(
+            json.dumps(
+                {"count": len(rows), "stocks": rows},
+                ensure_ascii=False,
+            ),
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except (OSError, RuntimeError) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=500,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
+@app.route("/stock-strategy", methods=["POST"])
+def stock_strategy_filter():
+    try:
+        payload = request.get_json(silent=True) or {}
+        return Response(
+            json.dumps(
+                get_stock_strategy(payload.get("rules") or {}),
+                ensure_ascii=False,
+            ),
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=500,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
 @app.route("/watch-market")
 def get_watch_market_charts():
     force_refresh = request.args.get(
@@ -3795,7 +4488,15 @@ def get_watch_market_charts():
 
 @app.route("/")
 def index():
-    return render_template("indextest.html")
+    return Response(
+        render_template("indextest.html"),
+        content_type="text/html; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.route("/data")
