@@ -10,8 +10,8 @@
     >
     <title>دیدبان بازار سهام</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='strategy-v5') }}">
-    <link rel="icon" href="{{ url_for('static', filename='logo.png') }}" type="image/png">
+    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='history-charts-v6') }}">
+    <link rel="icon" href="{{ url_for('static', filename='logo.png', v='market-logo-v1') }}" type="image/png">
 </head>
 <body class="dashboard-shell">
     <div class="ambient-grid" aria-hidden="true"></div>
@@ -19,7 +19,7 @@
     <header class="app-header">
         <a class="app-brand" href="/" aria-label="دیدبان بازار سهام، صفحه اصلی">
             <span class="app-brand-mark" aria-hidden="true">
-                <img src="{{ url_for('static', filename='logo.png') }}" alt="">
+                <img src="{{ url_for('static', filename='logo.png', v='market-logo-v1') }}" alt="">
             </span>
             <span class="app-brand-copy">
                 <strong>دیدبان بازار سهام</strong>
@@ -85,6 +85,8 @@
                 class="hero-image-layer is-visible"
                 src="{{ url_for('static', filename='Stocks.png') }}"
                 data-stocks-src="{{ url_for('static', filename='Stocks.png') }}"
+                data-watchlist-src="{{ url_for('static', filename='Watchlist.png') }}"
+                data-strategy-src="{{ url_for('static', filename='Strategy.png') }}"
                 data-options-src="{{ url_for('static', filename='Options.png') }}"
                 data-markets-src="{{ url_for('static', filename='watch.png') }}"
                 alt="تصویر تحلیلی بازار سهام"
@@ -121,7 +123,7 @@
                         <span class="expectations-toggle-track" aria-hidden="true">
                             <span class="expectations-toggle-thumb"></span>
                         </span>
-                        <span>استفاده از ارزش معاملات ذخیره‌شده دیروز</span>
+                        <span>ارزش معاملات ذخیره‌شده</span>
                     </label>
 
                     <div class="expectations-days-filter">
@@ -176,6 +178,9 @@
                     <div class="expectations-header-actions">
                         <button id="nearest-expiry-summary" class="button-secondary" type="button" disabled>
                             خلاصه نزدیک‌ترین سررسیدها
+                        </button>
+                        <button id="show-option-burning" class="button-secondary" type="button" disabled>
+                            سوختن اختیار
                         </button>
                         <button id="refresh-expectations" class="button-primary" type="button">
                             <span class="button-icon refresh-icon" aria-hidden="true">
@@ -312,7 +317,23 @@
                         <span id="stocks-count" aria-live="polite">در حال بارگذاری...</span>
                     </div>
                     <div class="stocks-toolbar-actions">
-                        <span id="stocks-sync-status" class="stocks-sync-status" aria-live="polite"></span>
+                        <span id="stocks-sync-status" class="stocks-sync-status stock-saved-date" aria-live="polite"></span>
+                        <label class="stock-industry-toggle stock-saved-data-toggle" for="stock-use-saved-data">
+                            <input id="stock-use-saved-data" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <span>آخرین دیتای ذخیره‌شده</span>
+                        </label>
+                        <button id="open-all-stock-notes" class="button-secondary stock-notes-overview-button" type="button">
+                            <span class="button-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" focusable="false">
+                                    <path d="M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"></path>
+                                    <path d="M8 9h8M8 13h8M8 17h5"></path>
+                                </svg>
+                            </span>
+                            <span>همه یادداشت‌ها</span>
+                        </button>
                         <button id="stock-refresh-button" class="button-primary stock-refresh-button" type="button">
                             <span class="button-icon refresh-icon" aria-hidden="true">
                                 <svg viewBox="0 0 24 24" focusable="false">
@@ -435,7 +456,14 @@
                         <span id="watchlist-count" aria-live="polite">در حال بارگذاری...</span>
                     </div>
                     <div class="stocks-toolbar-actions">
-                        <span id="watchlist-status" class="stocks-sync-status" aria-live="polite"></span>
+                        <span id="watchlist-status" class="stocks-sync-status stock-saved-date" aria-live="polite"></span>
+                        <label class="stock-industry-toggle stock-saved-data-toggle" for="watchlist-use-saved-data">
+                            <input id="watchlist-use-saved-data" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <span>آخرین دیتای ذخیره‌شده</span>
+                        </label>
                         <button id="watchlist-refresh-button" class="button-primary stock-refresh-button" type="button">
                             <span class="button-icon refresh-icon" aria-hidden="true">
                                 <svg viewBox="0 0 24 24" focusable="false">
@@ -475,9 +503,19 @@
                         <h2 id="strategy-title">استراتژی</h2>
                         <p>نماد باید تمام شرط‌های فعال را هم‌زمان داشته باشد.</p>
                     </div>
-                    <button id="strategy-run-button" class="button-primary" type="button">
-                        اجرای فیلتر
-                    </button>
+                    <div class="strategy-toolbar-actions">
+                        <span id="strategy-source-date" class="stocks-sync-status stock-saved-date" aria-live="polite"></span>
+                        <label class="stock-industry-toggle stock-saved-data-toggle" for="strategy-use-saved-data">
+                            <input id="strategy-use-saved-data" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <span>آخرین دیتای ذخیره‌شده</span>
+                        </label>
+                        <button id="strategy-run-button" class="button-primary" type="button">
+                            اجرای فیلتر
+                        </button>
+                    </div>
                 </div>
 
                 <div class="strategy-rules" aria-label="شرط‌های استراتژی">
@@ -554,6 +592,46 @@
                             <input id="strategy-real-buy-power-days" type="number" min="0" max="250" step="1" value="0" inputmode="numeric">
                         </label>
                     </article>
+
+                    <article class="strategy-rule" data-strategy-rule="real_money_flow">
+                        <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-real-money-flow-enabled">
+                            <input id="strategy-real-money-flow-enabled" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <strong>ورود پول حقیقی</strong>
+                        </label>
+                        <label class="strategy-field">
+                            <span>حداقل روزهای مثبت پیاپی</span>
+                            <input id="strategy-real-money-flow-consecutive-days" type="number" min="0" max="250" step="1" value="0" inputmode="numeric">
+                        </label>
+                        <label class="strategy-field">
+                            <span>بزرگ‌تر از میانگین چندروزه</span>
+                            <input id="strategy-real-money-flow-days" type="number" min="0" max="250" step="1" value="0" inputmode="numeric">
+                        </label>
+                    </article>
+
+                    <article class="strategy-rule" data-strategy-rule="money_flow_quality">
+                        <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-money-flow-quality-enabled">
+                            <input id="strategy-money-flow-quality-enabled" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <strong>کیفیت ورود پول</strong>
+                        </label>
+                        <label class="strategy-field">
+                            <span>نوع مقایسه</span>
+                            <select id="strategy-money-flow-quality-operator">
+                                <option value="gte">بزرگ‌تر یا مساوی</option>
+                                <option value="lte">کوچک‌تر یا مساوی</option>
+                                <option value="eq">مساوی</option>
+                            </select>
+                        </label>
+                        <label class="strategy-field">
+                            <span>درصد کیفیت ورود پول</span>
+                            <input id="strategy-money-flow-quality-fixed" type="number" step="0.01" value="0" inputmode="decimal">
+                        </label>
+                    </article>
                 </div>
 
                 <div class="strategy-results-toolbar">
@@ -619,6 +697,84 @@
             </section>
         </div>
     </main>
+
+    <div id="stock-notes-modal" class="expectations-modal" hidden>
+        <div class="expectations-modal-backdrop" data-close-stock-notes-modal></div>
+        <section
+            class="expectations-modal-card stock-notes-modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="stock-notes-modal-title"
+        >
+            <header>
+                <h3 id="stock-notes-modal-title">یادداشت‌های نماد</h3>
+                <button
+                    type="button"
+                    class="expectations-modal-close"
+                    data-close-stock-notes-modal
+                    aria-label="بستن"
+                >×</button>
+            </header>
+
+            <form id="stock-note-form" class="stock-note-form" autocomplete="off">
+                <input id="stock-note-editing-id" type="hidden">
+                <label class="stock-note-text-field" for="stock-note-text">
+                    <span>متن یادداشت</span>
+                    <textarea
+                        id="stock-note-text"
+                        maxlength="4000"
+                        rows="4"
+                        placeholder="یادداشت خود را بنویسید..."
+                        required
+                    ></textarea>
+                </label>
+                <label class="stock-note-importance-field" for="stock-note-importance">
+                    <span>درجه اهمیت</span>
+                    <select id="stock-note-importance" required>
+                        <option value="1">۱</option>
+                        <option value="2">۲</option>
+                        <option value="3" selected>۳</option>
+                        <option value="4">۴</option>
+                        <option value="5">۵</option>
+                    </select>
+                </label>
+                <div class="stock-note-form-actions">
+                    <button id="stock-note-submit" class="button-primary" type="submit">
+                        افزودن یادداشت
+                    </button>
+                    <button id="stock-note-cancel-edit" class="button-secondary" type="button" hidden>
+                        انصراف از ویرایش
+                    </button>
+                </div>
+            </form>
+
+            <div id="stock-notes-status" class="stock-notes-status" aria-live="polite"></div>
+            <div id="stock-notes-list" class="stock-notes-list"></div>
+        </section>
+    </div>
+
+    <div id="history-chart-modal" class="expectations-modal" hidden>
+        <div class="expectations-modal-backdrop" data-close-history-chart-modal></div>
+        <section
+            class="expectations-modal-card history-chart-modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="history-chart-modal-title"
+        >
+            <header>
+                <h3 id="history-chart-modal-title">نمودار تاریخچه</h3>
+                <button
+                    type="button"
+                    class="expectations-modal-close"
+                    data-close-history-chart-modal
+                    aria-label="بستن"
+                >×</button>
+            </header>
+            <div id="history-chart-meta" class="history-chart-meta"></div>
+            <div id="history-chart-state" class="history-chart-state" aria-live="polite"></div>
+            <div id="history-chart-canvas" class="history-chart-canvas" hidden></div>
+        </section>
+    </div>
 
     <div id="expiring-options-modal" class="expectations-modal" hidden>
         <div class="expectations-modal-backdrop" data-close-expiring-options-modal></div>
@@ -729,6 +885,41 @@
         </section>
     </div>
 
+    <div id="option-burning-modal" class="expectations-modal" hidden>
+        <div class="expectations-modal-backdrop" data-close-option-burning-modal></div>
+        <section
+            class="expectations-modal-card option-burning-modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="option-burning-modal-title"
+        >
+            <header>
+                <h3 id="option-burning-modal-title">سوختن اختیار — ۲۰ رتبه برتر</h3>
+                <button
+                    type="button"
+                    class="expectations-modal-close"
+                    data-close-option-burning-modal
+                    aria-label="بستن"
+                >×</button>
+            </header>
+            <div class="expectations-detail-table-wrap">
+                <table class="expectations-table expectations-summary-table option-burning-table">
+                    <thead>
+                        <tr>
+                            <th data-sort-type="text" tabindex="0">نماد <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">روز تا سررسید <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">درصد <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">قیمت آخرین معامله <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">قیمت اولین سرخط خرید <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="text" tabindex="0">وضعیت <span class="expectations-sort-indicator">↕</span></th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
     <div id="expectations-modal" class="expectations-modal" hidden>
         <div class="expectations-modal-backdrop" data-close-expectations-modal></div>
         <section
@@ -756,6 +947,6 @@
         </section>
     </div>
 
-    <script src="{{ url_for('static', filename='scripttest.js', v='strategy-v5') }}"></script>
+    <script src="{{ url_for('static', filename='scripttest.js', v='history-charts-v5') }}"></script>
 </body>
 </html>

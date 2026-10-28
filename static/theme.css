@@ -9,7 +9,6 @@
     font-weight: 100 900;
     font-display: swap;
 }
-
 .dashboard-shell,
 .dashboard-shell * {
     font-family: "Vazirmatn", "IRANSans", Tahoma, sans-serif;
@@ -93,16 +92,7 @@
 }
 
 .dashboard-shell .app-brand-mark img {
-    filter:
-        brightness(0)
-        saturate(100%)
-        invert(73%)
-        sepia(80%)
-        saturate(1814%)
-        hue-rotate(152deg)
-        brightness(103%)
-        contrast(103%)
-        drop-shadow(0 0 5px rgba(27, 215, 255, 0.28));
+    filter: drop-shadow(0 0 5px rgba(27, 215, 255, 0.28));
 }
 
 .dashboard-shell .app-brand-copy strong {
@@ -318,7 +308,7 @@
         minmax(200px, 1.1fr)
         minmax(235px, auto)
         minmax(190px, auto)
-        minmax(245px, auto);
+        minmax(360px, auto);
     align-items: center;
     gap: 10px;
     min-height: 82px;
@@ -618,11 +608,11 @@
 .dashboard-shell .expectations-header-actions {
     position: static;
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     align-items: center;
     gap: 8px;
     width: 100%;
-    height: 52px;
+    min-height: 52px;
     margin: 0;
 }
 
@@ -859,6 +849,14 @@
 
 .dashboard-shell .expectations-modal-card > header {
     border-bottom-color: rgba(22, 155, 222, 0.24);
+}
+
+.dashboard-shell .option-burning-modal-card {
+    width: min(940px, 96vw);
+}
+
+.dashboard-shell .option-burning-modal-card .expectations-detail-table-wrap {
+    margin-top: 18px;
 }
 
 .dashboard-shell .stocks-panel {
@@ -1131,10 +1129,12 @@
 
 .dashboard-shell .stocks-toolbar-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: flex-start;
     gap: 12px;
     min-width: 0;
+    direction: rtl;
 }
 
 .dashboard-shell .stocks-sync-status {
@@ -1148,6 +1148,15 @@
 
 .dashboard-shell .stocks-sync-status.is-error {
     color: #ff918a;
+}
+
+.dashboard-shell .stock-saved-date {
+    min-width: 74px;
+    justify-content: center;
+    color: #7fe9ff;
+    direction: ltr;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
 }
 
 .dashboard-shell .stocks-sync-status.is-refreshing::before {
@@ -1253,6 +1262,38 @@
 
 .dashboard-shell .stock-usd-toggle {
     margin-right: 0;
+}
+
+.dashboard-shell .stock-saved-data-toggle {
+    margin: 0;
+}
+
+.dashboard-shell .stock-saved-data-toggle:has(input:checked) {
+    color: #dffbff;
+    border-color: rgba(45, 224, 255, 0.58);
+    background: rgba(4, 91, 122, 0.42);
+}
+
+.dashboard-shell .stock-notes-overview-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 38px;
+    margin: 0;
+    padding: 7px 12px;
+    border-radius: 11px;
+    white-space: nowrap;
+}
+
+.dashboard-shell .stock-notes-overview-button svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
 }
 
 .dashboard-shell .stock-market-filter {
@@ -1748,6 +1789,19 @@
     transform: translateY(-1px);
 }
 
+.dashboard-shell .stock-note-button {
+    padding: 0;
+    border-color: rgba(255, 198, 82, 0.38);
+    color: #ffd16c;
+    background: rgba(216, 153, 40, 0.09);
+}
+
+.dashboard-shell .stock-note-button:hover {
+    color: #fff3cf;
+    border-color: rgba(255, 205, 100, 0.76);
+    background: rgba(216, 153, 40, 0.2);
+}
+
 .dashboard-shell .stocks-watchlist-add-button {
     display: inline-flex;
     flex: 0 0 25px;
@@ -1922,6 +1976,20 @@
     color: #819cab;
 }
 
+.dashboard-shell .stocks-table td[data-column="price_power"].is-positive {
+    color: var(--positive);
+    font-weight: 760;
+}
+
+.dashboard-shell .stocks-table td[data-column="price_power"].is-negative {
+    color: var(--negative);
+    font-weight: 760;
+}
+
+.dashboard-shell .stocks-table td[data-column="price_power"].is-neutral {
+    color: #819cab;
+}
+
 .dashboard-shell .stocks-price-stack {
     display: inline-flex;
     flex-direction: column;
@@ -2043,6 +2111,212 @@
 
 .dashboard-shell .strategy-toolbar button {
     min-width: 120px;
+}
+
+.dashboard-shell .strategy-toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    direction: rtl;
+}
+
+.dashboard-shell .stock-notes-modal-card {
+    width: min(900px, 96vw);
+    overflow: hidden;
+}
+
+.dashboard-shell .stock-note-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 120px auto;
+    align-items: end;
+    gap: 12px;
+    margin-top: 16px;
+    padding: 14px;
+    border: 1px solid rgba(35, 179, 231, 0.28);
+    border-radius: 14px;
+    background: rgba(0, 20, 38, 0.58);
+}
+
+.dashboard-shell .stock-note-form[hidden] {
+    display: none;
+}
+
+.dashboard-shell .stock-note-text-field,
+.dashboard-shell .stock-note-importance-field {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    color: #8eafc1;
+    font-size: 10px;
+}
+
+.dashboard-shell .stock-note-form textarea,
+.dashboard-shell .stock-note-form select {
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    border: 1px solid rgba(44, 177, 226, 0.38);
+    border-radius: 10px;
+    outline: 0;
+    color: #e6f7ff;
+    background: rgba(0, 13, 27, 0.78);
+    font: inherit;
+}
+
+.dashboard-shell .stock-note-form textarea {
+    min-height: 82px;
+    padding: 10px 11px;
+    resize: vertical;
+    line-height: 1.8;
+}
+
+.dashboard-shell .stock-note-form select {
+    height: 38px;
+    padding: 0 10px;
+}
+
+.dashboard-shell .stock-note-form textarea:focus,
+.dashboard-shell .stock-note-form select:focus {
+    border-color: rgba(67, 220, 255, 0.78);
+    box-shadow: 0 0 0 3px rgba(42, 201, 244, 0.1);
+}
+
+.dashboard-shell .stock-note-form-actions {
+    display: grid;
+    gap: 7px;
+}
+
+.dashboard-shell .stock-note-form-actions button {
+    min-width: 128px;
+    min-height: 38px;
+    margin: 0;
+    white-space: nowrap;
+}
+
+.dashboard-shell .stock-notes-status {
+    min-height: 24px;
+    padding: 8px 2px 0;
+    color: #7fa2b7;
+    font-size: 10px;
+}
+
+.dashboard-shell .stock-notes-status.is-error {
+    color: #ff918a;
+}
+
+.dashboard-shell .stock-notes-list {
+    display: grid;
+    gap: 12px;
+    max-height: min(58vh, 620px);
+    overflow: auto;
+    padding: 4px 2px 2px;
+}
+
+.dashboard-shell .stock-notes-empty {
+    padding: 42px 16px;
+    border: 1px dashed rgba(59, 175, 220, 0.28);
+    border-radius: 14px;
+    color: #789caf;
+    text-align: center;
+}
+
+.dashboard-shell .stock-note-symbol-group {
+    display: grid;
+    gap: 8px;
+}
+
+.dashboard-shell .stock-note-symbol-heading {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin: 2px 2px 0;
+    color: #e7f8ff;
+    font-size: 14px;
+}
+
+.dashboard-shell .stock-note-symbol-heading small {
+    color: #6f9bae;
+    font-size: 9px;
+}
+
+.dashboard-shell .stock-note-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    padding: 13px 14px;
+    border: 1px solid rgba(32, 163, 216, 0.28);
+    border-inline-start: 3px solid var(--note-priority-color, #58d9f5);
+    border-radius: 13px;
+    background: linear-gradient(135deg, rgba(2, 34, 59, 0.85), rgba(0, 18, 35, 0.78));
+}
+
+.dashboard-shell .stock-note-card[data-importance="1"] { --note-priority-color: #6f9caf; }
+.dashboard-shell .stock-note-card[data-importance="2"] { --note-priority-color: #43cfe5; }
+.dashboard-shell .stock-note-card[data-importance="3"] { --note-priority-color: #55dfa2; }
+.dashboard-shell .stock-note-card[data-importance="4"] { --note-priority-color: #ffc85e; }
+.dashboard-shell .stock-note-card[data-importance="5"] { --note-priority-color: #ff746d; }
+
+.dashboard-shell .stock-note-content {
+    min-width: 0;
+}
+
+.dashboard-shell .stock-note-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.dashboard-shell .stock-note-importance {
+    display: inline-flex;
+    align-items: center;
+    min-height: 23px;
+    padding: 2px 8px;
+    border: 1px solid color-mix(in srgb, var(--note-priority-color) 55%, transparent);
+    border-radius: 999px;
+    color: var(--note-priority-color);
+    background: color-mix(in srgb, var(--note-priority-color) 10%, transparent);
+    font-size: 9px;
+    font-weight: 760;
+}
+
+.dashboard-shell .stock-note-date {
+    color: #668da2;
+    font-size: 9px;
+    direction: rtl;
+}
+
+.dashboard-shell .stock-note-text {
+    margin: 0;
+    color: #d8ebf4;
+    font-size: 12px;
+    line-height: 1.9;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.dashboard-shell .stock-note-actions {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.dashboard-shell .stock-note-actions button {
+    min-width: 58px;
+    min-height: 31px;
+    margin: 0;
+    padding: 5px 9px;
+    border-radius: 9px;
+    font-size: 9px;
+}
+
+.dashboard-shell .stock-note-delete {
+    border-color: rgba(255, 111, 103, 0.38);
+    color: #ff918a;
+    background: rgba(203, 62, 54, 0.1);
 }
 
 .dashboard-shell .strategy-rules {
@@ -2180,9 +2454,9 @@
 
 .dashboard-shell .strategy-table th[data-stock-column="symbol"],
 .dashboard-shell .strategy-table td[data-column="symbol"] {
-    width: 150px;
-    min-width: 150px;
-    max-width: 150px;
+    width: 190px;
+    min-width: 190px;
+    max-width: 190px;
 }
 
 .dashboard-shell .strategy-table th {
@@ -2364,6 +2638,33 @@
         width: 100%;
     }
 
+    .dashboard-shell .strategy-toolbar-actions {
+        align-items: stretch;
+        flex-direction: column;
+        width: 100%;
+    }
+
+    .dashboard-shell .stock-note-form {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-shell .stock-note-form-actions {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .dashboard-shell .stock-note-form-actions button {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .dashboard-shell .stock-note-card {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-shell .stock-note-actions {
+        justify-content: flex-end;
+    }
+
     .dashboard-shell .strategy-rule {
         grid-template-columns: 1fr;
     }
@@ -2393,6 +2694,10 @@
     }
 
     .dashboard-shell .stock-refresh-button {
+        width: 100%;
+    }
+
+    .dashboard-shell .stock-notes-overview-button {
         width: 100%;
     }
 
@@ -2595,10 +2900,18 @@
     font-size: 10px;
 }
 
-.dashboard-shell .watch-market-metric-grid {
+.dashboard-shell .watch-market-metric-grid,
+.dashboard-shell .watch-market-flow-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 10px;
+}
+
+.dashboard-shell .watch-market-metric-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dashboard-shell .watch-market-flow-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .dashboard-shell .watch-market-metric-card,
@@ -2637,6 +2950,18 @@
 
 .dashboard-shell .watch-market-metric-card[data-tone="copper"] {
     --metric-accent: #f08c54;
+}
+
+.dashboard-shell .watch-market-metric-card[data-tone="steel"] {
+    --metric-accent: #86d7e7;
+}
+
+.dashboard-shell .watch-market-metric-card[data-tone="zinc"] {
+    --metric-accent: #b7afff;
+}
+
+.dashboard-shell .watch-market-metric-card[data-tone="iron"] {
+    --metric-accent: #ff9d67;
 }
 
 .dashboard-shell .watch-market-metric-card header,
@@ -2721,12 +3046,6 @@
     color: #b7c7d3;
 }
 
-.dashboard-shell .watch-market-flow-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
-}
-
 .dashboard-shell .watch-market-flow-card.positive {
     --metric-accent: #4cf19a;
 }
@@ -2748,6 +3067,69 @@
     font-size: 8.5px;
     font-style: normal;
     font-weight: 740;
+}
+
+.dashboard-shell .watch-market-industry-group {
+    padding-bottom: 12px;
+}
+
+.dashboard-shell .watch-market-industry-flow-list {
+    display: grid;
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid rgba(61, 154, 198, 0.26);
+    border-radius: 12px;
+    background: rgba(1, 18, 34, 0.52);
+    scrollbar-color: rgba(50, 217, 255, 0.48) rgba(1, 18, 34, 0.4);
+    scrollbar-width: thin;
+}
+
+.dashboard-shell .watch-market-industry-flow-row {
+    display: grid;
+    grid-template-columns: minmax(170px, 1fr) minmax(80px, auto) 82px;
+    align-items: center;
+    gap: 12px;
+    min-height: 43px;
+    padding: 8px 13px;
+    border-bottom: 1px solid rgba(61, 135, 171, 0.18);
+}
+
+.dashboard-shell .watch-market-industry-flow-row:last-child {
+    border-bottom: 0;
+}
+
+.dashboard-shell .watch-market-industry-flow-row:hover {
+    background: rgba(23, 166, 228, 0.065);
+}
+
+.dashboard-shell .watch-market-industry-flow-row > span {
+    overflow: hidden;
+    color: #c9dbe5;
+    font-size: 10.5px;
+    font-weight: 680;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dashboard-shell .watch-market-industry-flow-row > strong {
+    color: #b9cad5;
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+    direction: ltr;
+    text-align: left;
+}
+
+.dashboard-shell .watch-market-industry-flow-row.positive > strong {
+    color: #4cf19a;
+}
+
+.dashboard-shell .watch-market-industry-flow-row.negative > strong {
+    color: #ff827a;
+}
+
+.dashboard-shell .watch-market-industry-flow-row > small {
+    color: var(--copy-muted);
+    font-size: 8.5px;
 }
 
 .dashboard-shell .watch-market-charts {
@@ -2798,6 +3180,25 @@
     font-size: 14px;
     font-variant-numeric: tabular-nums;
     direction: ltr;
+}
+
+.dashboard-shell .watch-market-chart-summary {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 10px;
+    direction: rtl;
+    font-size: 10.5px;
+    font-weight: 760;
+    white-space: nowrap;
+}
+
+.dashboard-shell .watch-market-chart-summary .positive {
+    color: #4cf19a;
+}
+
+.dashboard-shell .watch-market-chart-summary .negative {
+    color: #ff827a;
 }
 
 .dashboard-shell .watch-market-legend {
@@ -2878,6 +3279,10 @@
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
+    .dashboard-shell .watch-market-flow-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .dashboard-shell .watch-market-charts {
         grid-template-columns: 1fr;
     }
@@ -2919,7 +3324,256 @@
         flex-direction: column;
     }
 
+    .dashboard-shell .watch-market-chart-summary {
+        align-self: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .dashboard-shell .watch-market-industry-flow-row {
+        grid-template-columns: minmax(120px, 1fr) auto;
+    }
+
+    .dashboard-shell .watch-market-industry-flow-row > small {
+        display: none;
+    }
+
     .dashboard-shell .watch-market-chart-canvas {
         height: 235px;
+    }
+}
+
+/* =========================================================
+   DAILY HISTORY CHARTS
+   ========================================================= */
+
+.dashboard-shell .stock-metric-cell-content {
+    position: relative;
+    display: inline-flex;
+    width: 100%;
+    min-width: 0;
+    align-items: center;
+    justify-content: center;
+    padding-inline: 30px;
+}
+
+.dashboard-shell .stock-metric-cell-value {
+    min-width: 0;
+    overflow: hidden;
+    color: inherit;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dashboard-shell .stock-metric-cell-content > .stock-history-chart-button {
+    position: absolute;
+    left: 0;
+}
+
+.dashboard-shell .stocks-table td[data-column="price_power"].is-queue,
+.dashboard-shell .stocks-table td[data-column="price_power"].is-queue .stock-metric-cell-value {
+    line-height: 1.15;
+    white-space: pre-line;
+}
+
+.dashboard-shell .stocks-table td[data-column="price_power"] {
+    text-align: right;
+}
+
+.dashboard-shell .stocks-table td[data-column="price_power"] .stock-metric-cell-content {
+    justify-content: flex-start;
+    padding-right: 0;
+    padding-left: 30px;
+}
+
+.dashboard-shell .stocks-table td[data-column="price_power"] .stock-metric-cell-value {
+    display: inline-grid;
+    width: auto;
+    min-width: 52px;
+    min-height: 31px;
+    padding: 4px 8px;
+    place-items: center;
+    color: inherit;
+    background: transparent;
+    font-size: 10px;
+    font-weight: 760;
+    line-height: 1.15;
+    text-align: center;
+}
+
+.dashboard-shell .history-chart-button {
+    display: inline-grid;
+    flex: 0 0 24px;
+    width: 24px;
+    min-width: 24px;
+    max-width: 24px;
+    height: 24px;
+    min-height: 24px;
+    max-height: 24px;
+    margin: 0;
+    padding: 0;
+    place-items: center;
+    border: 1px solid rgba(50, 217, 255, 0.38);
+    border-radius: 7px;
+    color: #45ddff;
+    background: rgba(24, 174, 219, 0.09);
+    cursor: pointer;
+    transition: color 150ms ease, border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.dashboard-shell .history-chart-button:hover {
+    border-color: rgba(74, 226, 255, 0.82);
+    color: #e5fbff;
+    background: rgba(28, 192, 236, 0.2);
+    transform: translateY(-1px);
+}
+
+.dashboard-shell .history-chart-button:focus-visible {
+    outline: 2px solid rgba(74, 226, 255, 0.58);
+    outline-offset: 2px;
+}
+
+.dashboard-shell .history-chart-button svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.dashboard-shell .watch-market-card-actions {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+    overflow: visible !important;
+    white-space: normal !important;
+}
+
+.dashboard-shell .watch-market-card-actions em {
+    white-space: nowrap;
+}
+
+.dashboard-shell .watch-market-industry-flow-row {
+    grid-template-columns: minmax(170px, 1fr) minmax(80px, auto) 82px 28px;
+}
+
+.dashboard-shell .watch-market-industry-flow-row .history-chart-button {
+    justify-self: end;
+}
+
+.dashboard-shell .history-chart-modal-card {
+    width: min(1060px, 96vw);
+    overflow: hidden;
+}
+
+.dashboard-shell .history-chart-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px 22px;
+    min-height: 46px;
+    align-items: center;
+    margin-top: 14px;
+    padding: 10px 13px;
+    border: 1px solid rgba(40, 174, 226, 0.22);
+    border-radius: 11px;
+    color: #7fa4b8;
+    background: rgba(0, 17, 33, 0.48);
+    font-size: 10px;
+}
+
+.dashboard-shell .history-chart-meta:empty {
+    display: none;
+}
+
+.dashboard-shell .history-chart-meta strong {
+    margin-inline-start: 4px;
+    color: #dff8ff;
+    font-weight: 740;
+}
+
+.dashboard-shell .history-chart-state {
+    display: grid;
+    min-height: 300px;
+    place-items: center;
+    color: #86a8ba;
+    font-size: 11px;
+    text-align: center;
+}
+
+.dashboard-shell .history-chart-state[hidden],
+.dashboard-shell .history-chart-canvas[hidden] {
+    display: none;
+}
+
+.dashboard-shell .history-chart-canvas {
+    margin-top: 14px;
+    overflow-x: auto;
+    border: 1px solid rgba(38, 169, 220, 0.24);
+    border-radius: 13px;
+    background:
+        radial-gradient(circle at 50% 0, rgba(50, 217, 255, 0.08), transparent 46%),
+        rgba(0, 13, 27, 0.62);
+}
+
+.dashboard-shell .history-chart-svg {
+    display: block;
+    width: 100%;
+    min-width: 720px;
+    height: auto;
+}
+
+.dashboard-shell .history-chart-grid-line {
+    stroke: rgba(92, 150, 180, 0.16);
+    stroke-width: 1;
+}
+
+.dashboard-shell .history-chart-zero-line {
+    stroke: rgba(255, 198, 82, 0.48);
+    stroke-width: 1.2;
+    stroke-dasharray: 5 5;
+}
+
+.dashboard-shell .history-chart-area {
+    fill: url(#history-chart-area-gradient);
+}
+
+.dashboard-shell .history-chart-line {
+    fill: none;
+    stroke: #32d9ff;
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    filter: drop-shadow(0 0 5px rgba(50, 217, 255, 0.38));
+}
+
+.dashboard-shell .history-chart-point {
+    fill: #00192d;
+    stroke: #67e7ff;
+    stroke-width: 2;
+}
+
+.dashboard-shell .history-chart-axis-label,
+.dashboard-shell .history-chart-date-label {
+    fill: #7799ad;
+    font-family: inherit;
+    font-size: 10px;
+}
+
+@media (max-width: 620px) {
+    .dashboard-shell .watch-market-industry-flow-row {
+        grid-template-columns: minmax(120px, 1fr) auto 28px;
+    }
+
+    .dashboard-shell .history-chart-modal-card {
+        width: 100%;
+        padding: 13px;
+    }
+
+    .dashboard-shell .history-chart-meta {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 6px;
     }
 }

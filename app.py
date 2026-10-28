@@ -5,10 +5,12 @@ import threading
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
+from functools import lru_cache
 from flask import Flask, jsonify, request
 import requests
 import re
 import jdatetime
+import holidays
 import time
 from flask import Response
 import json
@@ -177,6 +179,35 @@ WATCH_MARKET_ASSETS = (
     },
 )
 
+WATCH_IME_COMMODITIES = (
+    {
+        "key": "steel_rebar",
+        "tag_id": 1511,
+        "code": "SteelRebar",
+        "name": "میلگرد",
+        "tone": "steel",
+        "source_url": "https://bourseeye.com/commodities/1511/میلگرد",
+    },
+    {
+        "key": "zinc_ingot",
+        "tag_id": 1512,
+        "code": "ZincIngot",
+        "name": "شمش روی",
+        "tone": "zinc",
+        "source_url": "https://bourseeye.com/commodities/1512/شمش-روی",
+    },
+    {
+        "key": "iron_ore_pellet",
+        "tag_id": 1510,
+        "code": "IronOrePlt",
+        "name": "گندله سنگ آهن",
+        "tone": "iron",
+        "source_url": "https://bourseeye.com/commodities/1510/گندله-سنگ-آهن",
+    },
+)
+
+POUNDS_PER_METRIC_TON = 2204.6226218488
+
 WATCH_MARKET_OVERVIEW_TTL_SECONDS = 110
 RAHAVARD_LIVE_QUOTE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
@@ -219,15 +250,15 @@ STOCK_FLOATING_SHARE_OVERRIDES = {
     "فغدیر": 6,
     "شگویا": 23,
     "شاوان": 28,
-    "اهرم": 63,
-    "توان": 40.6,
-    "موج": 74,
-    "جوانه کوچک": 31.5,
+    "اهرم": None,
+    "توان": None,
+    "موج": None,
+    "جوانه کوچک": None,
     "دزاگرس": 32,
-    "دارا یکم": 72,
-    "پالایش": 45,
-    "شتاب": 34.7,
-    "جهش": 50,
+    "دارا یکم": None,
+    "پالایش": None,
+    "شتاب": None,
+    "جهش": None,
     "فنقره": 25,
     "قچار": 35,
     "زاگرس": 10,
@@ -252,9 +283,11 @@ STOCK_DETAIL_FIELDS = (
     "last_price_change_percent",
     "closing_price",
     "closing_price_change_percent",
+    "price_power",
     "trade_value",
     "trade_to_float_percent",
     "real_money_flow",
+    "money_flow_quality",
     "real_buy_per_capita",
     "real_sell_per_capita",
     "real_buy_power",
@@ -281,6 +314,17 @@ STOCK_DETAIL_FIELDS = (
     "order_book_sell_count",
 )
 
+STOCK_HISTORY_METRICS = {
+    "price_power": "قدرت قیمت",
+    "trade_value": "ارزش معاملات",
+    "trade_to_float_percent": "نسبت معامله به شناوری",
+    "real_money_flow": "ورود پول حقیقی",
+    "money_flow_quality": "کیفیت ورود پول",
+    "real_buy_per_capita": "سرانه خرید حقیقی",
+    "real_sell_per_capita": "سرانه فروش حقیقی",
+    "real_buy_power": "قدرت خرید حقیقی",
+}
+
 STOCK_DATABASE_EXTRA_COLUMNS = {
     "ins_code": "TEXT",
     "market_date": "TEXT",
@@ -288,9 +332,11 @@ STOCK_DATABASE_EXTRA_COLUMNS = {
     "last_price_change_percent": "REAL",
     "closing_price": "INTEGER",
     "closing_price_change_percent": "REAL",
+    "price_power": "INTEGER",
     "trade_value": "INTEGER",
     "trade_to_float_percent": "REAL",
     "real_money_flow": "INTEGER",
+    "money_flow_quality": "REAL",
     "real_buy_per_capita": "INTEGER",
     "real_sell_per_capita": "INTEGER",
     "real_buy_power": "REAL",
@@ -417,9 +463,11 @@ def initialize_stock_database():
                     last_price_change_percent REAL,
                     closing_price INTEGER,
                     closing_price_change_percent REAL,
+                    price_power INTEGER,
                     trade_value INTEGER,
                     trade_to_float_percent REAL,
                     real_money_flow INTEGER,
+                    money_flow_quality REAL,
                     real_buy_per_capita INTEGER,
                     real_sell_per_capita INTEGER,
                     real_buy_power REAL,
@@ -493,6 +541,49 @@ def initialize_stock_database():
                 """
                 CREATE INDEX IF NOT EXISTS idx_stock_daily_snapshots_symbol_date
                 ON stock_daily_snapshots (symbol, trade_date DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS market_daily_snapshots (
+                    trade_date TEXT PRIMARY KEY,
+                    trade_date_jalali TEXT,
+                    source_market_date TEXT,
+                    captured_at TEXT NOT NULL,
+                    free_dollar_price REAL,
+                    total_market_trade_value REAL,
+                    money_flows_json TEXT NOT NULL,
+                    industry_flows_json TEXT NOT NULL
+                )
+                """
+            )
+            market_snapshot_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(market_daily_snapshots)"
+                )
+            }
+            if "source_market_date" not in market_snapshot_columns:
+                connection.execute(
+                    "ALTER TABLE market_daily_snapshots "
+                    "ADD COLUMN source_market_date TEXT"
+                )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    note_text TEXT NOT NULL,
+                    importance INTEGER NOT NULL CHECK (importance BETWEEN 1 AND 5),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_stock_notes_symbol_updated
+                ON stock_notes (symbol, updated_at DESC)
                 """
             )
 
@@ -596,6 +687,149 @@ def read_stock_watchlist():
         rows.append(row)
 
     return rows
+
+
+def normalize_stock_note_input(symbol, note_text, importance):
+    normalized_symbol = normalize_symbol(symbol)
+    if not normalized_symbol:
+        raise ValueError("نام نماد الزامی است.")
+
+    normalized_text = str(note_text or "").strip()
+    if not normalized_text:
+        raise ValueError("متن یادداشت را وارد کنید.")
+    if len(normalized_text) > 4000:
+        raise ValueError("متن یادداشت نباید بیشتر از ۴۰۰۰ نویسه باشد.")
+
+    if isinstance(importance, bool):
+        raise ValueError("درجه اهمیت باید عددی بین ۱ تا ۵ باشد.")
+    try:
+        normalized_importance = int(importance)
+    except (TypeError, ValueError):
+        raise ValueError("درجه اهمیت باید عددی بین ۱ تا ۵ باشد.") from None
+    if normalized_importance not in range(1, 6):
+        raise ValueError("درجه اهمیت باید عددی بین ۱ تا ۵ باشد.")
+
+    return normalized_symbol, normalized_text, normalized_importance
+
+
+def serialize_stock_note(database_row):
+    return {
+        "id": database_row["id"],
+        "symbol": database_row["symbol"],
+        "text": database_row["note_text"],
+        "importance": database_row["importance"],
+        "created_at": database_row["created_at"],
+        "updated_at": database_row["updated_at"],
+    }
+
+
+def read_stock_notes(symbol=None):
+    initialize_stock_database()
+    normalized_symbol = normalize_symbol(symbol) if symbol else None
+    with stock_database_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, symbol, note_text, importance, created_at, updated_at
+            FROM stock_notes
+            ORDER BY symbol COLLATE NOCASE, importance DESC, updated_at DESC, id DESC
+            """
+        ).fetchall()
+
+    if normalized_symbol:
+        rows = [
+            row
+            for row in rows
+            if normalize_symbol(row["symbol"]) == normalized_symbol
+        ]
+    return [serialize_stock_note(row) for row in rows]
+
+
+def create_stock_note(symbol, note_text, importance):
+    symbol, note_text, importance = normalize_stock_note_input(
+        symbol,
+        note_text,
+        importance,
+    )
+    now = datetime.now(IRAN_TIMEZONE).isoformat()
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO stock_notes (
+                symbol, note_text, importance, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (symbol, note_text, importance, now, now),
+        )
+        row = connection.execute(
+            """
+            SELECT id, symbol, note_text, importance, created_at, updated_at
+            FROM stock_notes
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+    return serialize_stock_note(row)
+
+
+def update_stock_note(note_id, note_text, importance):
+    try:
+        normalized_note_id = int(note_id)
+    except (TypeError, ValueError):
+        raise ValueError("شناسه یادداشت نامعتبر است.") from None
+
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        existing = connection.execute(
+            "SELECT symbol FROM stock_notes WHERE id = ?",
+            (normalized_note_id,),
+        ).fetchone()
+        if existing is None:
+            return None
+
+        _, note_text, importance = normalize_stock_note_input(
+            existing["symbol"],
+            note_text,
+            importance,
+        )
+        connection.execute(
+            """
+            UPDATE stock_notes
+            SET note_text = ?, importance = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                note_text,
+                importance,
+                datetime.now(IRAN_TIMEZONE).isoformat(),
+                normalized_note_id,
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT id, symbol, note_text, importance, created_at, updated_at
+            FROM stock_notes
+            WHERE id = ?
+            """,
+            (normalized_note_id,),
+        ).fetchone()
+    return serialize_stock_note(row)
+
+
+def delete_stock_note(note_id):
+    try:
+        normalized_note_id = int(note_id)
+    except (TypeError, ValueError):
+        return False
+
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        cursor = connection.execute(
+            "DELETE FROM stock_notes WHERE id = ?",
+            (normalized_note_id,),
+        )
+    return cursor.rowcount > 0
 
 
 def save_stock_watchlist_row(row):
@@ -872,10 +1106,340 @@ def read_daily_stock_snapshots(trade_date=None, symbol=None):
     return snapshots, selected_date
 
 
+def read_latest_daily_stock_snapshots(symbols=None):
+    """Return the newest archived row available for each requested symbol."""
+    initialize_stock_database()
+    requested_symbols = (
+        {
+            normalize_symbol(symbol)
+            for symbol in symbols
+            if normalize_symbol(symbol)
+        }
+        if symbols is not None
+        else None
+    )
+
+    with stock_database_connection() as connection:
+        database_rows = connection.execute(
+            """
+            SELECT
+                trade_date,
+                trade_date_jalali,
+                symbol,
+                session_type,
+                captured_at,
+                data_json
+            FROM stock_daily_snapshots
+            ORDER BY trade_date DESC, captured_at DESC
+            """
+        ).fetchall()
+
+    snapshots = []
+    seen_symbols = set()
+    for database_row in database_rows:
+        normalized_symbol = normalize_symbol(database_row["symbol"])
+        if requested_symbols is not None and normalized_symbol not in requested_symbols:
+            continue
+        if normalized_symbol in seen_symbols:
+            continue
+
+        try:
+            data = json.loads(database_row["data_json"])
+        except (TypeError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+
+        snapshots.append(
+            {
+                "trade_date": database_row["trade_date"],
+                "trade_date_jalali": database_row["trade_date_jalali"],
+                "symbol": database_row["symbol"],
+                "session_type": database_row["session_type"],
+                "captured_at": database_row["captured_at"],
+                "data": data,
+            }
+        )
+        seen_symbols.add(normalized_symbol)
+        if requested_symbols is not None and seen_symbols >= requested_symbols:
+            break
+
+    return snapshots
+
+
+def read_stock_metric_history(symbol, metric, limit=365):
+    """Read one saved daily metric for a stock in chronological order."""
+    if metric not in STOCK_HISTORY_METRICS:
+        raise ValueError("شاخص انتخاب‌شده برای نمودار معتبر نیست.")
+
+    requested_symbol = clean_stock_text(symbol)
+    if not requested_symbol:
+        raise ValueError("نماد برای نمایش نمودار مشخص نشده است.")
+
+    safe_limit = max(1, min(int(limit or 365), 3650))
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        database_rows = connection.execute(
+            """
+            SELECT
+                trade_date,
+                trade_date_jalali,
+                symbol,
+                captured_at,
+                data_json
+            FROM stock_daily_snapshots
+            WHERE symbol = ?
+            ORDER BY trade_date DESC, captured_at DESC
+            LIMIT ?
+            """,
+            (requested_symbol, safe_limit),
+        ).fetchall()
+
+    points = []
+    for database_row in reversed(database_rows):
+        try:
+            data = json.loads(database_row["data_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+
+        value = stock_number(data.get(metric))
+        if value is None:
+            continue
+        points.append({
+            "date": database_row["trade_date"],
+            "date_jalali": database_row["trade_date_jalali"],
+            "value": value,
+        })
+
+    return points
+
+
+def apply_latest_stock_snapshots(current_rows):
+    """Replace current rows with each symbol's latest daily snapshot when present."""
+    source_rows = [
+        dict(row)
+        for row in current_rows
+        if isinstance(row, dict) and row.get("symbol")
+    ]
+    snapshots = read_latest_daily_stock_snapshots(
+        [row["symbol"] for row in source_rows]
+    )
+    snapshots_by_symbol = {
+        normalize_symbol(snapshot["symbol"]): snapshot
+        for snapshot in snapshots
+    }
+    rows = []
+    used_snapshots = []
+
+    for current_row in source_rows:
+        snapshot = snapshots_by_symbol.get(
+            normalize_symbol(current_row["symbol"])
+        )
+        if snapshot is None:
+            rows.append(current_row)
+            continue
+
+        row = dict(snapshot["data"])
+        row["symbol"] = current_row["symbol"]
+        if not row.get("market_date"):
+            row["market_date"] = snapshot["trade_date"]
+        for identity_field in ("company", "industry", "ins_code"):
+            if not row.get(identity_field) and current_row.get(identity_field):
+                row[identity_field] = current_row[identity_field]
+        apply_stock_floating_share_override(row)
+        row.update(calculate_stock_indicators(row))
+        rows.append(row)
+        used_snapshots.append(snapshot)
+
+    dates = sorted(
+        {snapshot["trade_date"] for snapshot in used_snapshots}
+    )
+    jalali_by_date = {
+        snapshot["trade_date"]: snapshot["trade_date_jalali"]
+        for snapshot in used_snapshots
+    }
+    latest_date = dates[-1] if dates else None
+    return rows, {
+        "data_source": "daily_snapshot",
+        "saved_count": len(used_snapshots),
+        "missing_snapshot_count": len(source_rows) - len(used_snapshots),
+        "snapshot_date": latest_date,
+        "snapshot_date_jalali": (
+            jalali_by_date.get(latest_date) if latest_date else None
+        ),
+        "snapshot_dates": dates,
+        "snapshot_dates_jalali": [jalali_by_date[date] for date in dates],
+        "mixed_snapshot_dates": len(dates) > 1,
+    }
+
+
+def save_market_daily_snapshot(payload, captured_at=None):
+    """Upsert the latest cross-market metrics for each Tehran calendar day."""
+    if not isinstance(payload, dict):
+        return None
+
+    current_time = captured_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+
+    overview = payload.get("overview")
+    if not isinstance(overview, dict):
+        overview = {}
+    prices = [
+        item for item in overview.get("prices", [])
+        if isinstance(item, dict)
+    ]
+    money_flows = [
+        item for item in overview.get("flows", [])
+        if isinstance(item, dict)
+    ]
+    industry_flows = [
+        item for item in overview.get("industry_flows", [])
+        if isinstance(item, dict)
+    ]
+    free_dollar = next(
+        (
+            watch_market_number(item.get("price"))
+            for item in prices
+            if item.get("key") == "dollar"
+        ),
+        None,
+    )
+    total_market_trade_value = watch_market_number(
+        payload.get("total_market_trade_value")
+    )
+    trade_date = current_time.date().isoformat()
+    trade_date_jalali = jdatetime.date.fromgregorian(
+        date=current_time.date()
+    ).strftime("%Y-%m-%d")
+    source_market_date = str(payload.get("market_date") or "").strip() or None
+    flows_json = json.dumps(
+        money_flows,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    industry_flows_json = json.dumps(
+        industry_flows,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO market_daily_snapshots (
+                trade_date,
+                trade_date_jalali,
+                source_market_date,
+                captured_at,
+                free_dollar_price,
+                total_market_trade_value,
+                money_flows_json,
+                industry_flows_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(trade_date) DO UPDATE SET
+                trade_date_jalali = excluded.trade_date_jalali,
+                source_market_date = COALESCE(
+                    excluded.source_market_date,
+                    market_daily_snapshots.source_market_date
+                ),
+                captured_at = excluded.captured_at,
+                free_dollar_price = COALESCE(
+                    excluded.free_dollar_price,
+                    market_daily_snapshots.free_dollar_price
+                ),
+                total_market_trade_value = COALESCE(
+                    excluded.total_market_trade_value,
+                    market_daily_snapshots.total_market_trade_value
+                ),
+                money_flows_json = CASE
+                    WHEN excluded.money_flows_json <> '[]'
+                    THEN excluded.money_flows_json
+                    ELSE market_daily_snapshots.money_flows_json
+                END,
+                industry_flows_json = CASE
+                    WHEN excluded.industry_flows_json <> '[]'
+                    THEN excluded.industry_flows_json
+                    ELSE market_daily_snapshots.industry_flows_json
+                END
+            """,
+            (
+                trade_date,
+                trade_date_jalali,
+                source_market_date,
+                current_time.isoformat(),
+                free_dollar,
+                total_market_trade_value,
+                flows_json,
+                industry_flows_json,
+            ),
+        )
+
+    return {
+        "trade_date": trade_date,
+        "trade_date_jalali": trade_date_jalali,
+        "source_market_date": source_market_date,
+    }
+
+
+def read_market_daily_snapshots(limit=30):
+    """Read the newest saved cross-market daily snapshots."""
+    initialize_stock_database()
+    safe_limit = max(1, min(int(limit or 30), 3650))
+    with stock_database_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                trade_date,
+                trade_date_jalali,
+                source_market_date,
+                captured_at,
+                free_dollar_price,
+                total_market_trade_value,
+                money_flows_json,
+                industry_flows_json
+            FROM market_daily_snapshots
+            ORDER BY trade_date DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+
+    snapshots = []
+    for row in rows:
+        try:
+            flows = json.loads(row["money_flows_json"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            flows = []
+        try:
+            industry_flows = json.loads(row["industry_flows_json"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            industry_flows = []
+        snapshots.append({
+            "trade_date": row["trade_date"],
+            "trade_date_jalali": row["trade_date_jalali"],
+            "source_market_date": row["source_market_date"],
+            "captured_at": row["captured_at"],
+            "free_dollar_price": row["free_dollar_price"],
+            "total_market_trade_value": row["total_market_trade_value"],
+            "money_flows": flows,
+            "industry_flows": industry_flows,
+        })
+    return snapshots
+
+
 STOCK_STRATEGY_METRICS = (
     "trade_value",
     "trade_to_float_percent",
     "real_buy_power",
+    "real_money_flow",
+    "money_flow_quality",
 )
 
 
@@ -892,6 +1456,10 @@ def normalize_stock_strategy_rules(payload):
         except (TypeError, ValueError):
             days = 0
         try:
+            consecutive_days = int(rule.get("consecutive_days") or 0)
+        except (TypeError, ValueError):
+            consecutive_days = 0
+        try:
             fixed_value = float(rule.get("fixed") or 0)
         except (TypeError, ValueError):
             fixed_value = 0
@@ -899,9 +1467,26 @@ def normalize_stock_strategy_rules(payload):
             "enabled": bool(rule.get("enabled")),
             "operator": operator,
             "days": max(0, min(days, 250)),
-            "fixed": fixed_value if fixed_value > 0 else 0,
+            "fixed": (
+                fixed_value
+                if metric == "money_flow_quality"
+                else (fixed_value if fixed_value > 0 else 0)
+            ),
+            "consecutive_days": (
+                max(0, min(consecutive_days, 250))
+                if metric == "real_money_flow"
+                else 0
+            ),
         }
     return normalized
+
+
+def stock_strategy_rule_is_active(metric, rule):
+    if not rule.get("enabled"):
+        return False
+    if metric == "real_money_flow":
+        return rule.get("consecutive_days", 0) > 0 or rule.get("days", 0) > 0
+    return True
 
 
 def compare_stock_strategy_value(current_value, reference_value, operator):
@@ -946,7 +1531,7 @@ def evaluate_stock_strategy(rows, history, rules):
     active_metrics = [
         metric
         for metric, rule in normalized_rules.items()
-        if rule["enabled"]
+        if stock_strategy_rule_is_active(metric, rule)
     ]
     results = []
     partial_history_count = 0
@@ -960,7 +1545,7 @@ def evaluate_stock_strategy(rows, history, rules):
             "partial_symbol_count": 0,
         }
         for metric, rule in normalized_rules.items()
-        if rule["enabled"] and rule["days"] > 0
+        if stock_strategy_rule_is_active(metric, rule) and rule["days"] > 0
     }
 
     for row in rows:
@@ -973,6 +1558,14 @@ def evaluate_stock_strategy(rows, history, rules):
             "company": row.get("company"),
             "industry": row.get("industry"),
             "market_value": row.get("market_value"),
+            "ins_code": row.get("ins_code"),
+            "price_power": row.get("price_power"),
+            "order_book_buy_value": row.get("order_book_buy_value"),
+            "order_book_buy_volume": row.get("order_book_buy_volume"),
+            "order_book_buy_count": row.get("order_book_buy_count"),
+            "order_book_sell_value": row.get("order_book_sell_value"),
+            "order_book_sell_volume": row.get("order_book_sell_volume"),
+            "order_book_sell_count": row.get("order_book_sell_count"),
         }
         passed = True
         row_has_partial_history = False
@@ -985,14 +1578,54 @@ def evaluate_stock_strategy(rows, history, rules):
             result[metric] = current_value
             result[f"{metric}_average"] = None
             result[f"{metric}_history_count"] = 0
-            if not rule["enabled"]:
+            if metric == "real_money_flow":
+                result["real_money_flow_positive_streak"] = 0
+            if not stock_strategy_rule_is_active(metric, rule):
                 continue
-            if current_value is None or current_value <= 0:
+
+            accepts_negative = metric == "money_flow_quality"
+            if (
+                current_value is None
+                or current_value == 0
+                or (not accepts_negative and current_value < 0)
+            ):
                 passed = False
                 row_has_zero_or_missing_value = True
                 continue
 
-            if metric != "trade_value" and rule["fixed"] > 0:
+            if metric == "real_money_flow":
+                requested_streak = rule["consecutive_days"]
+                if requested_streak > 0:
+                    positive_streak = 1 if current_value > 0 else 0
+                    available_days = 1
+                    if positive_streak:
+                        for snapshot in symbol_history:
+                            if (
+                                current_market_date
+                                and snapshot.get("trade_date") == current_market_date
+                            ):
+                                continue
+                            available_days += 1
+                            value = stock_number(snapshot.get(metric))
+                            if value is None or value <= 0:
+                                break
+                            positive_streak += 1
+                            if positive_streak >= requested_streak:
+                                break
+                    result["real_money_flow_positive_streak"] = positive_streak
+                    if positive_streak < requested_streak:
+                        passed = False
+                        if available_days < requested_streak:
+                            row_has_missing_history = True
+
+            should_compare_fixed = (
+                metric == "money_flow_quality"
+                or (
+                    metric not in {"trade_value", "real_money_flow"}
+                    and rule["fixed"] > 0
+                )
+            )
+            if should_compare_fixed:
                 if not compare_stock_strategy_value(
                     current_value,
                     rule["fixed"],
@@ -1009,7 +1642,9 @@ def evaluate_stock_strategy(rows, history, rules):
                     ):
                         continue
                     value = stock_number(snapshot.get(metric))
-                    if value is None or value <= 0:
+                    if value is None or value == 0:
+                        continue
+                    if metric != "real_money_flow" and value < 0:
                         continue
                     historical_values.append(value)
                     if len(historical_values) >= rule["days"]:
@@ -1037,11 +1672,16 @@ def evaluate_stock_strategy(rows, history, rules):
                     if used_days < rule["days"]:
                         row_has_partial_history = True
                         coverage["partial_symbol_count"] += 1
-                    if not compare_stock_strategy_value(
-                        current_value,
-                        average,
-                        rule["operator"],
-                    ):
+                    average_passed = (
+                        current_value > average
+                        if metric == "real_money_flow"
+                        else compare_stock_strategy_value(
+                            current_value,
+                            average,
+                            rule["operator"],
+                        )
+                    )
+                    if not average_passed:
                         passed = False
 
         if row_has_partial_history:
@@ -1067,14 +1707,18 @@ def evaluate_stock_strategy(rows, history, rules):
     }
 
 
-def get_stock_strategy(payload):
+def get_stock_strategy(payload, use_saved_data=False):
     rows, metadata = read_stock_database()
+    snapshot_metadata = {}
+    if use_saved_data:
+        rows, snapshot_metadata = apply_latest_stock_snapshots(rows)
     result = evaluate_stock_strategy(
         rows,
         read_stock_strategy_history(),
         payload,
     )
     result["source_updated_at"] = metadata.get("last_successful_update")
+    result.update(snapshot_metadata)
     return result
 
 
@@ -1280,18 +1924,109 @@ def fetch_global_copper_quote():
     ):
         change_percent = (price / previous_close - 1) * 100
 
+    price_per_metric_ton = price * POUNDS_PER_METRIC_TON
+    change_per_metric_ton = (
+        change * POUNDS_PER_METRIC_TON
+        if change is not None
+        else None
+    )
+
     return {
         "key": "global_copper",
         "name": "مس جهانی",
-        "price": price,
-        "unit": "دلار/پوند",
-        "change": change,
+        "price": round(price_per_metric_ton, 2),
+        "unit": "دلار/تن",
+        "change": (
+            round(change_per_metric_ton, 2)
+            if change_per_metric_ton is not None
+            else None
+        ),
         "change_percent": change_percent,
         "market_time": meta.get("regularMarketTime"),
         "tone": "copper",
         "source": "yahoo-finance",
         "source_url": "https://finance.yahoo.com/quote/HG=F/",
     }
+
+
+def parse_bourseeye_commodity_quote(page_html, config):
+    """Parse one public IME certificate quote embedded in BourseEye HTML."""
+    if not isinstance(page_html, str) or not page_html:
+        raise ValueError("صفحه قیمت‌های بورس کالا معتبر نیست.")
+
+    code = str(config.get("code") or "").strip()
+    patterns = (
+        (rf'\\"code\\"\s*:\s*\\"{re.escape(code)}\\"', True),
+        (rf'"code"\s*:\s*"{re.escape(code)}"', False),
+    )
+    marker_index = -1
+    escaped = False
+    for pattern, is_escaped in patterns:
+        match = re.search(pattern, page_html)
+        if match:
+            marker_index = match.start()
+            escaped = is_escaped
+            break
+    if marker_index < 0:
+        raise ValueError(f"قیمت {config.get('name') or code} پیدا نشد.")
+
+    object_start = page_html.rfind("{", 0, marker_index)
+    object_end = page_html.find("}", marker_index)
+    if object_start < 0 or object_end < 0:
+        raise ValueError("ساختار داده بورس کالا معتبر نیست.")
+
+    serialized = page_html[object_start:object_end + 1]
+    if escaped:
+        serialized = serialized.replace(r'\"', '"')
+    try:
+        row = json.loads(serialized)
+    except json.JSONDecodeError as error:
+        raise ValueError("داده قیمت بورس کالا قابل خواندن نیست.") from error
+
+    unit_price_rials = watch_market_number(
+        row.get("unit_price_rials") or row.get("price_rials")
+    )
+    if unit_price_rials is None or unit_price_rials <= 0:
+        raise ValueError("آخرین قیمت معتبر بورس کالا دریافت نشد.")
+
+    return {
+        "key": config["key"],
+        "name": config["name"],
+        "price": unit_price_rials / 10,
+        "unit": "تومان/کیلوگرم",
+        "change": None,
+        "change_percent": watch_market_number(
+            row.get("price_change_percent")
+        ),
+        "market_time": row.get("price_date"),
+        "tone": config.get("tone", "market"),
+        "source": "bourseeye-ime",
+        "source_url": config["source_url"],
+    }
+
+
+def fetch_bourseeye_commodity_quotes():
+    """Fetch the selected IME certificate prices with one public request."""
+    response = requests.get(
+        "https://bourseeye.com/commodities",
+        headers={
+            "Accept": "text/html,application/xhtml+xml",
+            "Cache-Control": "no-cache",
+            "User-Agent": TSETMC_HEADERS["User-Agent"],
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    quotes = {}
+    for config in WATCH_IME_COMMODITIES:
+        try:
+            quote = parse_bourseeye_commodity_quote(response.text, config)
+        except (KeyError, TypeError, ValueError):
+            continue
+        quotes[quote["key"]] = quote
+    if not quotes:
+        raise ValueError("هیچ قیمت معتبری از بورس کالا دریافت نشد.")
+    return quotes
 
 
 def fetch_rahavard_fund_ids(kind):
@@ -1426,7 +2161,7 @@ def get_watch_market_overview(force=False):
     except Exception:
         live_quotes = {}
 
-    with ThreadPoolExecutor(max_workers=9) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         asset_futures = {
             executor.submit(
                 fetch_rahavard_watch_asset,
@@ -1436,6 +2171,9 @@ def get_watch_market_overview(force=False):
             for config in WATCH_MARKET_ASSETS
         }
         copper_future = executor.submit(fetch_global_copper_quote)
+        ime_commodities_future = executor.submit(
+            fetch_bourseeye_commodity_quotes
+        )
         fund_money_future = executor.submit(fetch_commodity_fund_money_totals)
 
         for future in as_completed(asset_futures):
@@ -1450,6 +2188,17 @@ def get_watch_market_overview(force=False):
             prices[copper["key"]] = copper
         except (requests.RequestException, ValueError, TypeError, KeyError):
             errors.append("global_copper")
+
+        try:
+            ime_quotes = ime_commodities_future.result()
+            prices.update(ime_quotes)
+            errors.extend(
+                config["key"]
+                for config in WATCH_IME_COMMODITIES
+                if config["key"] not in ime_quotes
+            )
+        except (requests.RequestException, ValueError, TypeError, KeyError):
+            errors.append("ime-commodities")
 
         try:
             fund_totals, fund_errors = fund_money_future.result()
@@ -1471,6 +2220,7 @@ def get_watch_market_overview(force=False):
 
     price_order = [config["key"] for config in WATCH_MARKET_ASSETS]
     price_order.insert(5, "global_copper")
+    price_order.extend(config["key"] for config in WATCH_IME_COMMODITIES)
     flow_order = ("gold_funds", "silver_funds")
     result = {
         "prices": [prices[key] for key in price_order if key in prices],
@@ -1512,6 +2262,82 @@ def fetch_tradersarena_json(path):
     return payload
 
 
+def fetch_tradersarena_industry_money_flows():
+    """Return current real-money flow for all public industry rows."""
+    response = requests.get(
+        "https://tradersarena.ir/data/industries-csv",
+        headers={
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Cache-Control": "no-cache",
+            "Referer": "https://tradersarena.ir/",
+            "User-Agent": TSETMC_HEADERS["User-Agent"],
+            "X-Requested-With": "XMLHttpRequest",
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    try:
+        rows = json.loads(response.content.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("پاسخ جریان پول صنایع معتبر نیست.") from error
+    if not isinstance(rows, list):
+        raise ValueError("فهرست جریان پول صنایع معتبر نیست.")
+
+    money_scale = 10_000_000_000
+    excluded_industry_keys = {"gold-funds", "silver-funds"}
+    industry_flows = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) <= 15:
+            continue
+        key = str(row[0] or "").strip()
+        if key in excluded_industry_keys:
+            continue
+        name = str(row[1] or "").strip()
+        value = watch_market_number(row[15])
+        if not name or value is None:
+            continue
+        industry_flows.append({
+            "key": key,
+            "name": name,
+            "value": value / money_scale,
+            "unit": "میلیارد تومان",
+        })
+
+    return sorted(
+        industry_flows,
+        key=lambda item: item["value"],
+        reverse=True,
+    )
+
+
+def split_dedicated_industry_money_flows(industry_flows):
+    """Move groups with dedicated cards out of the industry panel."""
+    dedicated_keys = {
+        "fixed-income-funds": "fixed_income",
+    }
+    visible_rows = []
+    dedicated_rows = {}
+    for item in industry_flows or []:
+        if not isinstance(item, dict):
+            continue
+        dedicated_key = dedicated_keys.get(item.get("key"))
+        if dedicated_key:
+            dedicated_rows[dedicated_key] = item
+        else:
+            visible_rows.append(item)
+    return visible_rows, dedicated_rows
+
+
+def extract_tradersarena_stock_trade_value(summary):
+    """Return share and rights trading value, excluding every fund category."""
+    money_scale = 10_000_000_000
+    stock_row = summary.get("st", []) if isinstance(summary, dict) else []
+    if not isinstance(stock_row, list) or len(stock_row) <= 1:
+        return None
+    value = watch_market_number(stock_row[1])
+    return value / money_scale if value is not None else None
+
+
 def get_watch_market(force=False):
     """Return the Markets-tab overview and six live Tehran-market charts."""
     now = int(time.time())
@@ -1522,7 +2348,7 @@ def get_watch_market(force=False):
             return dict(cached_data)
 
     try:
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             summary_future = executor.submit(
                 fetch_tradersarena_json,
                 "/data/market0",
@@ -1535,9 +2361,43 @@ def get_watch_market(force=False):
                 get_watch_market_overview,
                 force,
             )
+            industry_flows_future = executor.submit(
+                fetch_tradersarena_industry_money_flows
+            )
             overview = overview_future.result()
             summary = summary_future.result()
             totals = totals_future.result()
+            try:
+                industry_flows = industry_flows_future.result()
+            except (requests.RequestException, ValueError, TypeError):
+                industry_flows = list(
+                    ((cached_data or {}).get("overview") or {}).get(
+                        "industry_flows",
+                        [],
+                    )
+                )
+                overview.setdefault("errors", []).append("industry-money-flow")
+
+        industry_flows, dedicated_industry_flows = (
+            split_dedicated_industry_money_flows(industry_flows)
+        )
+        fixed_income_flow = watch_market_number(
+            dedicated_industry_flows.get("fixed_income", {}).get("value")
+        )
+        if fixed_income_flow is None:
+            fixed_income_flow = next(
+                (
+                    watch_market_number(item.get("value"))
+                    for item in (
+                        ((cached_data or {}).get("overview") or {}).get(
+                            "flows",
+                            [],
+                        )
+                    )
+                    if item.get("key") == "fixed_income"
+                ),
+                None,
+            )
 
         timestamps = [int(value) for value in totals.get("time", [])]
 
@@ -1566,6 +2426,9 @@ def get_watch_market(force=False):
         # TradersArena monetary values are in rials. 10^10 rials equals
         # one billion tomans, which is the unit shown in the charts.
         money_scale = 10_000_000_000
+        total_market_trade_value = extract_tradersarena_stock_trade_value(
+            summary
+        )
         price_range = [
             float(value)
             for value in summary.get("s", [])
@@ -1611,6 +2474,13 @@ def get_watch_market(force=False):
                     "values": numeric_series("stockTransfer", money_scale),
                     "unit": "میلیارد تومان",
                 },
+                "fixed_income_money_flow": {
+                    "values": numeric_series(
+                        "fixedIncomesTransfer",
+                        money_scale,
+                    ),
+                    "unit": "میلیارد تومان",
+                },
                 "breadth": {
                     "positive": positive_values,
                     "negative": negative_values,
@@ -1638,10 +2508,28 @@ def get_watch_market(force=False):
             "errors": [],
         }
         overview = dict(overview)
+        overview_prices = [
+            item
+            for item in overview.get("prices", [])
+            if item.get("key") != "market_trade_value"
+        ]
+        if total_market_trade_value is not None:
+            overview_prices.append({
+                "key": "market_trade_value",
+                "name": "ارزش معاملات کل روز بورس",
+                "price": total_market_trade_value,
+                "unit": "میلیارد تومان",
+                "change": None,
+                "change_percent": None,
+                "tone": "market",
+                "source": "tradersarena.ir",
+                "source_url": "https://tradersarena.ir/",
+            })
+        overview["prices"] = overview_prices
         overview_flows = [
             item
             for item in overview.get("flows", [])
-            if item.get("key") != "stock_market"
+            if item.get("key") not in {"stock_market", "fixed_income"}
         ]
         overview_flows.append(
             watch_market_flow_item(
@@ -1653,8 +2541,22 @@ def get_watch_market(force=False):
                 market_date=result.get("market_date"),
             )
         )
+        overview_flows.append(
+            watch_market_flow_item(
+                "fixed_income",
+                "خالص پول صندوق‌های درآمد ثابت",
+                fixed_income_flow,
+                market_date=result.get("market_date"),
+            )
+        )
         overview["flows"] = overview_flows
+        overview["industry_flows"] = industry_flows
         result["overview"] = overview
+        result["total_market_trade_value"] = total_market_trade_value
+        try:
+            save_market_daily_snapshot(result)
+        except Exception as error:
+            print("Market daily snapshot save error:", error)
         with watch_market_cache_lock:
             watch_market_cache.update(data=result, fetched_at=now)
         return result
@@ -1786,14 +2688,15 @@ def apply_stock_floating_share_override(row):
     if not isinstance(row, dict):
         return row
     symbol = str(row.get("symbol") or "").strip()
-    override = STOCK_FLOATING_SHARE_OVERRIDES.get(symbol)
-    if override is not None:
-        row["floating_share_percent"] = override
+    if symbol in STOCK_FLOATING_SHARE_OVERRIDES:
+        row["floating_share_percent"] = STOCK_FLOATING_SHARE_OVERRIDES[symbol]
     return row
 
 
 def calculate_stock_indicators(row):
     """Calculate turnover, real-money flow, per-capita values, and buy power."""
+    last_price = stock_number(row.get("last_price"))
+    closing_price = stock_number(row.get("closing_price"))
     trade_value = stock_number(row.get("trade_value"))
     trade_volume = stock_number(row.get("trade_volume"))
     share_count = stock_number(row.get("share_count"))
@@ -1804,6 +2707,18 @@ def calculate_stock_indicators(row):
     legal_sell_volume = stock_number(row.get("legal_sell_volume"))
     real_buy_count = stock_number(row.get("real_buy_count"))
     real_sell_count = stock_number(row.get("real_sell_count"))
+
+    price_power = None
+    if (
+        last_price is not None
+        and last_price > 0
+        and closing_price is not None
+        and closing_price > 0
+    ):
+        price_power = (
+            1 if last_price > closing_price
+            else (-1 if last_price < closing_price else 0)
+        )
 
     trade_to_float_percent = None
     floating_share_count = (
@@ -1858,6 +2773,13 @@ def calculate_stock_indicators(row):
         if real_buy_value is not None and real_sell_value is not None
         else None
     )
+    money_flow_quality = (
+        round(real_money_flow / trade_value * 100, 4)
+        if real_money_flow is not None
+        and trade_value is not None
+        and trade_value > 0
+        else None
+    )
     real_buy_per_capita = (
         int(round(real_buy_value / real_buy_count))
         if real_buy_value is not None
@@ -1881,8 +2803,10 @@ def calculate_stock_indicators(row):
     )
 
     return {
+        "price_power": price_power,
         "trade_to_float_percent": trade_to_float_percent,
         "real_money_flow": real_money_flow,
+        "money_flow_quality": money_flow_quality,
         "real_buy_per_capita": real_buy_per_capita,
         "real_sell_per_capita": real_sell_per_capita,
         "real_buy_power": real_buy_power,
@@ -2159,6 +3083,7 @@ def refresh_stock_watchlist():
     merged_rows = merge_stock_rows(symbols, fresh_rows, current_rows)
     for row in merged_rows:
         save_stock_watchlist_row(row)
+    save_daily_stock_snapshots(merged_rows, datetime.now(IRAN_TIMEZONE))
     return merged_rows, errors
 
 
@@ -2254,9 +3179,37 @@ def start_stock_database_refresh(force=False):
     return True
 
 
-def get_stock_catalog(force_refresh=False):
+def get_stock_catalog(force_refresh=False, use_saved_data=False):
     """Return SQLite rows immediately and refresh stale online data in background."""
     rows, metadata = read_stock_database()
+    if use_saved_data:
+        rows, snapshot_metadata = apply_latest_stock_snapshots(rows)
+        complete_count = sum(
+            1
+            for row in rows
+            if row.get("company")
+            and row.get("industry")
+            and stock_number(row.get("market_value")) not in (None, 0)
+        )
+        payload = {
+            "count": len(rows),
+            "resolved_count": int(
+                metadata.get("resolved_count", complete_count)
+            ),
+            "source_updated_at": metadata.get("last_successful_update"),
+            "stale": False,
+            "refreshing": False,
+            "refresh_started_at": None,
+            "stocks": rows,
+            **snapshot_metadata,
+        }
+        if snapshot_metadata["missing_snapshot_count"]:
+            payload["warning"] = (
+                f"برای {snapshot_metadata['missing_snapshot_count']} نماد "
+                "داده روزانه ذخیره نشده و آخرین مقدار دیتابیس نمایش داده شد."
+            )
+        return payload
+
     try:
         last_update_epoch = float(
             metadata.get("last_successful_update_epoch", "0") or 0
@@ -3258,6 +4211,57 @@ def extract_expiry_data(desc):
 
     return expire_date, days_remaining
 
+
+@lru_cache(maxsize=16)
+def get_iran_official_holiday_dates(start_year, end_year):
+    """Return Iran's official public holidays for the requested Gregorian years."""
+    years = range(int(start_year), int(end_year) + 1)
+    return frozenset(
+        holidays.country_holidays(
+            "IR",
+            years=years,
+            language="fa_IR",
+        ).keys()
+    )
+
+
+def calculate_trading_days_remaining(
+    expiry_date,
+    today=None,
+    official_holidays=None,
+):
+    """Count Iran market days after today through the Jalali expiry date."""
+    try:
+        year, month, day = map(int, str(expiry_date).split("/"))
+        expiry_gregorian = jdatetime.date(year, month, day).togregorian()
+    except (TypeError, ValueError):
+        return None
+
+    today = today or datetime.now(IRAN_TIMEZONE).date()
+    if expiry_gregorian <= today:
+        return 0
+
+    if official_holidays is None:
+        official_holidays = get_iran_official_holiday_dates(
+            today.year,
+            expiry_gregorian.year,
+        )
+    else:
+        official_holidays = set(official_holidays)
+
+    trading_days = 0
+    current_date = today + timedelta(days=1)
+    while current_date <= expiry_gregorian:
+        # datetime.weekday(): Monday=0, Thursday=3, Friday=4.
+        if (
+            current_date.weekday() not in {3, 4}
+            and current_date not in official_holidays
+        ):
+            trading_days += 1
+        current_date += timedelta(days=1)
+
+    return trading_days
+
 def generate_spread_data(
     base_symbol="",
     min_trade_value=None,
@@ -4035,6 +5039,118 @@ def calculate_call_option_status(base_price, strike):
     return "ATM"
 
 
+def fetch_option_best_buy_price(ins_code):
+    """Return the first (best) buy-order price for an option contract."""
+    response = requests.get(
+        f"https://cdn.tsetmc.com/api/BestLimits/{ins_code}",
+        headers=TSETMC_HEADERS,
+        timeout=5,
+    )
+    response.raise_for_status()
+    data = response.json()
+    best_limits = data.get("bestLimits") or []
+    if not isinstance(best_limits, list) or not best_limits:
+        return None
+
+    first_row = min(
+        (row for row in best_limits if isinstance(row, dict)),
+        key=lambda row: stock_integer(row.get("number") or row.get("row")) or 1,
+        default=None,
+    )
+    if first_row is None:
+        return None
+
+    return stock_number(
+        first_row.get("pMeDem")
+        if first_row.get("pMeDem") is not None
+        else first_row.get("buyPrice")
+    )
+
+
+def build_option_burning_summary(
+    bases,
+    limit=20,
+    best_buy_fetcher=fetch_option_best_buy_price,
+):
+    """Build ranked option-burning rows and attach each contract's best bid."""
+    rows = []
+    special_ranges = {
+        normalize_symbol("اهرم"): 4,
+        normalize_symbol("موج"): 4,
+        normalize_symbol("توان"): 4,
+    }
+
+    for base in bases:
+        base_symbol = normalize_symbol(base.get("base_symbol"))
+        allowed_range = special_ranges.get(base_symbol, 3)
+
+        for group in base.get("groups") or []:
+            trading_days = parse_number(group.get("trading_days_remaining"))
+            if trading_days is None:
+                trading_days = parse_number(group.get("days_remaining"))
+            if trading_days is None or trading_days <= 0:
+                continue
+
+            eligible_options = [
+                option
+                for option in group.get("options") or []
+                if (
+                    (parse_number(option.get("option_last_price")) or 0) >= 10
+                    and parse_number(option.get("breakeven_distance")) is not None
+                )
+            ]
+            if not eligible_options:
+                continue
+
+            maximum_option = max(
+                eligible_options,
+                key=lambda option: parse_number(
+                    option.get("breakeven_distance")
+                ),
+            )
+            percentage = (
+                parse_number(maximum_option.get("breakeven_distance"))
+                / (trading_days * allowed_range)
+                * 100
+            )
+            rows.append({
+                "symbol": maximum_option.get("symbol"),
+                "days_remaining": int(trading_days),
+                "option_burning_percentage": round(percentage, 2),
+                "option_last_price": parse_number(
+                    maximum_option.get("option_last_price")
+                ),
+                "status": maximum_option.get("status"),
+                "_ins_code": maximum_option.get("ins_code"),
+                "best_buy_price": None,
+            })
+
+    rows.sort(
+        key=lambda row: row["option_burning_percentage"],
+        reverse=True,
+    )
+    rows = rows[:max(0, int(limit))]
+
+    fetchable_rows = [row for row in rows if row.get("_ins_code")]
+    if fetchable_rows:
+        with ThreadPoolExecutor(max_workers=min(8, len(fetchable_rows))) as executor:
+            futures = {
+                executor.submit(best_buy_fetcher, row["_ins_code"]): row
+                for row in fetchable_rows
+            }
+            for future in as_completed(futures):
+                row = futures[future]
+                try:
+                    row["best_buy_price"] = parse_number(future.result())
+                except Exception:
+                    row["best_buy_price"] = None
+
+    for row in rows:
+        row.pop("_ins_code", None)
+
+    return rows
+
+
 def generate_market_expectations(use_saved_trade_value=False):
     """Build non-visual option rows and expiry-level expectation summaries."""
     try:
@@ -4145,6 +5261,7 @@ def generate_market_expectations(use_saved_trade_value=False):
 
         group_key = (base_symbol, expiry_date, days_remaining)
         grouped.setdefault(group_key, []).append({
+            "ins_code": ins_code,
             "symbol": symbol,
             "days_remaining": days_remaining,
             "open_interest": open_interest,
@@ -4163,6 +5280,7 @@ def generate_market_expectations(use_saved_trade_value=False):
     bases = {}
 
     for (base_symbol, expiry_date, days_remaining), option_rows in grouped.items():
+        trading_days_remaining = calculate_trading_days_remaining(expiry_date)
         total_trade_value = sum(item["trade_value"] for item in option_rows)
 
         for item in option_rows:
@@ -4216,6 +5334,7 @@ def generate_market_expectations(use_saved_trade_value=False):
         bases.setdefault(base_symbol, []).append({
             "group_id": f"{base_symbol}-{expiry_date}",
             "days_remaining": days_remaining,
+            "trading_days_remaining": trading_days_remaining,
             "expiry_date": expiry_date,
             "total_trade_value": round(total_trade_value, 2),
             "weighted_average": (
@@ -4235,6 +5354,8 @@ def generate_market_expectations(use_saved_trade_value=False):
         )
         output.append({"base_symbol": base_symbol, "groups": groups})
 
+    option_burning = build_option_burning_summary(output, limit=20)
+
     return {
         "generated_at": now.isoformat(),
         "trade_value_source": "snapshot" if use_snapshot else "live",
@@ -4244,6 +5365,7 @@ def generate_market_expectations(use_saved_trade_value=False):
         ),
         "discovered_option_roots": sorted(discovered_roots),
         "bases": output,
+        "option_burning": option_burning,
     }
 
 
@@ -4304,7 +5426,13 @@ def get_stocks():
         force_refresh = request.args.get(
             "refresh", default="0", type=str
         ).strip().lower() in {"1", "true", "yes", "on"}
-        payload = get_stock_catalog(force_refresh=force_refresh)
+        use_saved_data = request.args.get(
+            "use_saved_data", default="0", type=str
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        payload = get_stock_catalog(
+            force_refresh=force_refresh and not use_saved_data,
+            use_saved_data=use_saved_data,
+        )
 
         return Response(
             json.dumps(payload, ensure_ascii=False),
@@ -4360,10 +5488,41 @@ def get_stock_history():
         )
 
 
+@app.route("/stocks/metric-history")
+def get_stock_metric_history():
+    try:
+        symbol = request.args.get("symbol", default="", type=str).strip()
+        metric = request.args.get("metric", default="", type=str).strip()
+        limit = request.args.get("limit", default=365, type=int)
+        points = read_stock_metric_history(symbol, metric, limit)
+        return Response(
+            json.dumps(
+                {
+                    "symbol": symbol,
+                    "metric": metric,
+                    "label": STOCK_HISTORY_METRICS[metric],
+                    "count": len(points),
+                    "points": points,
+                },
+                ensure_ascii=False,
+            ),
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except (TypeError, ValueError) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=400,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
 @app.route("/stock-watchlist", methods=["GET", "POST"])
 def stock_watchlist_collection():
     try:
         warning = None
+        snapshot_metadata = {}
         if request.method == "POST":
             body = request.get_json(silent=True) or {}
             added_row = add_stock_watchlist_symbol(body.get("symbol"))
@@ -4373,7 +5532,22 @@ def stock_watchlist_collection():
             force_refresh = request.args.get(
                 "refresh", default="0", type=str
             ).strip().lower() in {"1", "true", "yes", "on"}
-            if force_refresh:
+            use_saved_data = request.args.get(
+                "use_saved_data", default="0", type=str
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if use_saved_data:
+                rows, snapshot_metadata = apply_latest_stock_snapshots(
+                    read_stock_watchlist()
+                )
+                missing_snapshot_count = snapshot_metadata[
+                    "missing_snapshot_count"
+                ]
+                if missing_snapshot_count:
+                    warning = (
+                        f"برای {missing_snapshot_count} نماد داده روزانه ذخیره "
+                        "نشده و آخرین مقدار دیده‌بان نمایش داده شد."
+                    )
+            elif force_refresh:
                 rows, errors = refresh_stock_watchlist()
                 if errors:
                     warning = (
@@ -4381,6 +5555,7 @@ def stock_watchlist_collection():
                     )
             else:
                 rows = read_stock_watchlist()
+                snapshot_metadata = {}
             added_row = None
             status = 200
 
@@ -4393,6 +5568,8 @@ def stock_watchlist_collection():
             payload["added"] = added_row
         if warning:
             payload["warning"] = warning
+        if request.method == "GET" and snapshot_metadata:
+            payload.update(snapshot_metadata)
 
         return Response(
             json.dumps(payload, ensure_ascii=False),
@@ -4448,13 +5625,122 @@ def stock_watchlist_item(symbol):
         )
 
 
+@app.route("/stock-notes", methods=["GET", "POST"])
+def stock_notes_collection():
+    try:
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+            note = create_stock_note(
+                body.get("symbol"),
+                body.get("text"),
+                body.get("importance"),
+            )
+            return Response(
+                json.dumps({"note": note}, ensure_ascii=False),
+                status=201,
+                content_type="application/json; charset=utf-8",
+                headers={"Cache-Control": "no-store"},
+            )
+
+        symbol = request.args.get("symbol", default="", type=str).strip()
+        notes = read_stock_notes(symbol=symbol or None)
+        symbol_count = len({normalize_symbol(note["symbol"]) for note in notes})
+        return Response(
+            json.dumps(
+                {
+                    "count": len(notes),
+                    "symbol_count": symbol_count,
+                    "symbol": normalize_symbol(symbol) if symbol else None,
+                    "notes": notes,
+                },
+                ensure_ascii=False,
+            ),
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except ValueError as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=400,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except (OSError, RuntimeError, sqlite3.Error) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=500,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
+@app.route("/stock-notes/<int:note_id>", methods=["PUT", "DELETE"])
+def stock_note_item(note_id):
+    try:
+        if request.method == "DELETE":
+            if not delete_stock_note(note_id):
+                return Response(
+                    json.dumps(
+                        {"error": "یادداشت موردنظر پیدا نشد."},
+                        ensure_ascii=False,
+                    ),
+                    status=404,
+                    content_type="application/json; charset=utf-8",
+                    headers={"Cache-Control": "no-store"},
+                )
+            return Response(
+                json.dumps({"deleted": True, "id": note_id}),
+                content_type="application/json; charset=utf-8",
+                headers={"Cache-Control": "no-store"},
+            )
+
+        body = request.get_json(silent=True) or {}
+        note = update_stock_note(
+            note_id,
+            body.get("text"),
+            body.get("importance"),
+        )
+        if note is None:
+            return Response(
+                json.dumps(
+                    {"error": "یادداشت موردنظر پیدا نشد."},
+                    ensure_ascii=False,
+                ),
+                status=404,
+                content_type="application/json; charset=utf-8",
+                headers={"Cache-Control": "no-store"},
+            )
+        return Response(
+            json.dumps({"note": note}, ensure_ascii=False),
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except ValueError as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=400,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except (OSError, RuntimeError, sqlite3.Error) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=500,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
 @app.route("/stock-strategy", methods=["POST"])
 def stock_strategy_filter():
     try:
         payload = request.get_json(silent=True) or {}
         return Response(
             json.dumps(
-                get_stock_strategy(payload.get("rules") or {}),
+                get_stock_strategy(
+                    payload.get("rules") or {},
+                    use_saved_data=bool(payload.get("use_saved_data")),
+                ),
                 ensure_ascii=False,
             ),
             content_type="application/json; charset=utf-8",
@@ -4467,6 +5753,20 @@ def stock_strategy_filter():
             content_type="application/json; charset=utf-8",
             headers={"Cache-Control": "no-store"},
         )
+
+
+@app.route("/watch-market/history")
+def get_watch_market_history():
+    limit = request.args.get("limit", default=30, type=int)
+    snapshots = read_market_daily_snapshots(limit=limit)
+    return Response(
+        json.dumps(
+            {"count": len(snapshots), "snapshots": snapshots},
+            ensure_ascii=False,
+        ),
+        content_type="application/json; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.route("/watch-market")

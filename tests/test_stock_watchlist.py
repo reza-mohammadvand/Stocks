@@ -2,6 +2,7 @@ import gc
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 import app as stock_app
@@ -99,6 +100,39 @@ class StockWatchlistTests(unittest.TestCase):
         self.assertEqual(rows[0]["closing_price"], 20)
         self.assertEqual(rows[0]["company"], "فولاد مبارکه")
         self.assertEqual(rows[0]["market_value"], 100)
+
+    def test_watchlist_api_can_show_latest_daily_snapshot(self):
+        stock_app.save_stock_watchlist_row({
+            "symbol": "فولاد",
+            "company": "فولاد مبارکه",
+            "closing_price": 999,
+            "market_date": "2026-10-19",
+        })
+        stock_app.save_daily_stock_snapshots(
+            [{
+                "symbol": "فولاد",
+                "company": "فولاد مبارکه",
+                "closing_price": 123,
+                "market_date": "2026-10-19",
+            }],
+            datetime(
+                2026,
+                10,
+                19,
+                12,
+                30,
+                tzinfo=stock_app.IRAN_TIMEZONE,
+            ),
+        )
+
+        with stock_app.app.test_client() as client:
+            response = client.get("/stock-watchlist?use_saved_data=1")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["data_source"], "daily_snapshot")
+        self.assertEqual(payload["stocks"][0]["closing_price"], 123)
+        self.assertEqual(payload["missing_snapshot_count"], 0)
 
 
 if __name__ == "__main__":

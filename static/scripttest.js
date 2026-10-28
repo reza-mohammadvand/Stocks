@@ -48,9 +48,11 @@ const stockTableColumns = [
     { key: "market_value", label: "ارزش بازار", unit: "همت", type: "number", format: "marketValue", width: 120 },
     { key: "last_price", label: "آخرین قیمت", unit: "ریال", type: "number", format: "price", percentKey: "last_price_change_percent", width: 125 },
     { key: "closing_price", label: "قیمت پایانی", unit: "ریال", type: "number", format: "price", percentKey: "closing_price_change_percent", width: 125 },
+    { key: "price_power", label: "قدرت قیمت", type: "number", format: "pricePower", width: 115 },
     { key: "trade_value", label: "ارزش معاملات", unit: "میلیارد تومان", type: "number", format: "tradeValue", width: 145 },
     { key: "trade_to_float_percent", label: "نسبت معامله به شناوری", unit: "درصد", type: "number", format: "precisePercent", width: 160 },
     { key: "real_money_flow", label: "ورود پول حقیقی", unit: "میلیارد تومان", type: "number", format: "tradeValue", width: 145 },
+    { key: "money_flow_quality", label: "کیفیت ورود پول", unit: "درصد", type: "number", format: "precisePercent", width: 145 },
     { key: "real_buy_per_capita", label: "سرانه خرید حقیقی", unit: "میلیون تومان", type: "number", format: "perCapita", width: 145 },
     { key: "real_sell_per_capita", label: "سرانه فروش حقیقی", unit: "میلیون تومان", type: "number", format: "perCapita", width: 145 },
     { key: "real_buy_power", label: "قدرت خرید حقیقی", unit: "برابر", type: "number", format: "ratio", width: 140 },
@@ -79,9 +81,63 @@ const dollarConvertibleStockColumns = new Set([
     "real_money_flow"
 ]);
 
+const stockHistoryMetricConfigs = {
+    price_power: {
+        label: "قدرت قیمت",
+        unit: "وضعیت",
+        scale: 1,
+        digits: 0
+    },
+    trade_value: {
+        label: "ارزش معاملات",
+        unit: "میلیارد تومان",
+        scale: 10_000_000_000,
+        digits: 2
+    },
+    trade_to_float_percent: {
+        label: "نسبت معامله به شناوری",
+        unit: "درصد",
+        scale: 1,
+        digits: 3
+    },
+    real_money_flow: {
+        label: "ورود پول حقیقی",
+        unit: "میلیارد تومان",
+        scale: 10_000_000_000,
+        digits: 2
+    },
+    money_flow_quality: {
+        label: "کیفیت ورود پول",
+        unit: "درصد",
+        scale: 1,
+        digits: 2
+    },
+    real_buy_per_capita: {
+        label: "سرانه خرید حقیقی",
+        unit: "میلیون تومان",
+        scale: 10_000_000,
+        digits: 2
+    },
+    real_sell_per_capita: {
+        label: "سرانه فروش حقیقی",
+        unit: "میلیون تومان",
+        scale: 10_000_000,
+        digits: 2
+    },
+    real_buy_power: {
+        label: "قدرت خرید حقیقی",
+        unit: "برابر",
+        scale: 1,
+        digits: 3
+    }
+};
+const stockHistoryMetrics = new Set(Object.keys(stockHistoryMetricConfigs));
+let historyChartRequestToken = 0;
+
 let stockCatalogRows = [];
 let stockCatalogLoaded = false;
 let stockCatalogLoading = false;
+let stockCatalogReloadPending = false;
 const defaultStockTableSort = { key: "market_value", direction: "desc" };
 let stockTableSort = { ...defaultStockTableSort };
 let stockSortInteractionStarted = false;
@@ -90,6 +146,7 @@ let stockMarketFilter = { min: null, max: null };
 let stockSearchQuery = "";
 let stockIndustryQuery = "";
 let stockTradeValueInUsd = false;
+let stockUseSavedData = false;
 let stockRefreshPollTimer = null;
 let stockAutoRefreshTimer = null;
 const hiddenStockColumns = new Set();
@@ -97,9 +154,11 @@ const hiddenStockColumns = new Set();
 let stockWatchlistRows = [];
 let stockWatchlistLoaded = false;
 let stockWatchlistLoading = false;
+let stockWatchlistReloadPending = false;
 let stockWatchlistSearchQuery = "";
 let stockWatchlistGroupByIndustry = false;
 let stockWatchlistTradeValueInUsd = false;
+let stockWatchlistUseSavedData = false;
 let stockWatchlistSort = { key: null, direction: null };
 let stockWatchlistSortInteractionStarted = false;
 let stockWatchlistAutoRefreshTimer = null;
@@ -107,7 +166,14 @@ const hiddenStockWatchlistColumns = new Set();
 
 let stockStrategyLoaded = false;
 let stockStrategyLoading = false;
+let stockStrategyReloadPending = false;
+let stockStrategyUseSavedData = false;
 let stockStrategyAutoRefreshTimer = null;
+
+let stockNotesActiveSymbol = "";
+let stockNotesEditingId = null;
+let stockNotesCurrentItems = [];
+let stockNotesLoading = false;
 
 const DASHBOARD_AUTO_REFRESH_INTERVAL = 2 * 60_000;
 const STOCK_REFRESH_POLL_INTERVAL = 1_500;
@@ -191,6 +257,11 @@ let marketExpectationsLoading = false;
 let marketExpectationsRefreshTimer = null;
 let expectationDetailRows = [];
 let expectationDetailSort = { key: null, direction: "asc" };
+const OPTION_BURNING_ALLOWED_RANGES = new Map([
+    [normalizeSymbol("اهرم"), 4],
+    [normalizeSymbol("موج"), 4],
+    [normalizeSymbol("توان"), 4]
+]);
 
 async function loadData() {
 
@@ -4594,6 +4665,8 @@ function renderMarketExpectations(payload) {
     if (expiringButton) expiringButton.disabled = bases.length === 0;
     const marketShareButton = document.getElementById("show-market-share-options");
     if (marketShareButton) marketShareButton.disabled = bases.length === 0;
+    const optionBurningButton = document.getElementById("show-option-burning");
+    if (optionBurningButton) optionBurningButton.disabled = bases.length === 0;
     const generatedTime = formatExpectationTimestamp(payload?.generated_at);
     const sourceLabel = payload?.trade_value_source === "snapshot"
         ? "ذخیره روز قبل"
@@ -4782,6 +4855,10 @@ async function loadMarketExpectations(force = false) {
     const marketShareButton = document.getElementById("show-market-share-options");
     if (marketShareButton && !hasRenderedData) {
         marketShareButton.disabled = true;
+    }
+    const optionBurningButton = document.getElementById("show-option-burning");
+    if (optionBurningButton && !hasRenderedData) {
+        optionBurningButton.disabled = true;
     }
     if (loading) {
         loading.hidden = hasRenderedData;
@@ -5061,6 +5138,97 @@ function closeMarketShareOptionsSummary() {
     syncExpectationModalBodyState();
 }
 
+function buildOptionBurningRows() {
+    const serverRows = marketExpectationsData?.option_burning;
+    if (Array.isArray(serverRows)) {
+        return serverRows.slice(0, 20);
+    }
+
+    const bases = marketExpectationsData?.bases;
+    if (!Array.isArray(bases)) return [];
+
+    const rows = [];
+    bases.forEach(base => {
+        const normalizedBase = normalizeSymbol(base.base_symbol);
+        const allowedRange = OPTION_BURNING_ALLOWED_RANGES.get(normalizedBase) || 3;
+
+        (base.groups || []).forEach(group => {
+            const calendarDaysRemaining = Number(group.days_remaining);
+            const tradingDaysRemaining = Number(group.trading_days_remaining);
+            const effectiveDaysRemaining = Number.isFinite(tradingDaysRemaining)
+                ? tradingDaysRemaining
+                : calendarDaysRemaining;
+            const x = effectiveDaysRemaining * allowedRange;
+            if (
+                !Number.isFinite(effectiveDaysRemaining)
+                || effectiveDaysRemaining <= 0
+                || x <= 0
+            ) {
+                return;
+            }
+
+            const eligibleOptions = (group.options || []).filter(option => {
+                const premium = Number(option.option_last_price);
+                const breakeven = Number(option.breakeven_distance);
+                return Number.isFinite(premium)
+                    && premium >= 10
+                    && Number.isFinite(breakeven);
+            });
+            if (!eligibleOptions.length) return;
+
+            const maximumOption = eligibleOptions.reduce((maximum, option) =>
+                Number(option.breakeven_distance) > Number(maximum.breakeven_distance)
+                    ? option
+                    : maximum
+            );
+            const percentage = Number(maximumOption.breakeven_distance) / x * 100;
+            if (!Number.isFinite(percentage)) return;
+
+            rows.push({
+                ...maximumOption,
+                days_remaining: effectiveDaysRemaining,
+                option_burning_percentage: percentage
+            });
+        });
+    });
+
+    return rows
+        .sort((first, second) =>
+            second.option_burning_percentage - first.option_burning_percentage
+        )
+        .slice(0, 20);
+}
+
+function openOptionBurningSummary() {
+    const modal = document.getElementById("option-burning-modal");
+    const table = modal?.querySelector(".option-burning-table");
+    const tbody = table?.querySelector("tbody");
+    if (!modal || !table || !tbody) return;
+
+    const rows = buildOptionBurningRows();
+    tbody.innerHTML = rows.length
+        ? rows.map(option => `
+            <tr>
+                <td data-sort-value="${option.symbol || ""}">${option.symbol || "—"}</td>
+                <td data-sort-value="${option.days_remaining}">${formatExpectationNumber(option.days_remaining)}</td>
+                <td class="expectation-percent" data-sort-value="${option.option_burning_percentage}">${formatExpectationPercent(option.option_burning_percentage)}</td>
+                <td data-sort-value="${option.option_last_price ?? ""}">${formatExpectationNumber(option.option_last_price)}</td>
+                <td data-sort-value="${option.best_buy_price ?? ""}">${formatExpectationNumber(option.best_buy_price)}</td>
+                <td data-sort-value="${option.status || ""}"><span class="expectation-option-status is-${String(option.status || "").toLowerCase()}">${option.status || "—"}</span></td>
+            </tr>`).join("")
+        : `<tr><td colspan="6" class="expectations-no-result">اختیاری مطابق شرایط محاسبه پیدا نشد.</td></tr>`;
+
+    resetExpectationSummarySort(table);
+    modal.hidden = false;
+    document.body.classList.add("expectations-modal-open");
+}
+
+function closeOptionBurningSummary() {
+    const modal = document.getElementById("option-burning-modal");
+    if (modal) modal.hidden = true;
+    syncExpectationModalBodyState();
+}
+
 function resetExpectationSummarySort(table) {
     if (!table) return;
     table.dataset.sortColumn = "";
@@ -5149,7 +5317,7 @@ function openExpectationDetails(baseIndex, groupId) {
     expectationDetailRows = Array.isArray(group.options)
         ? [...group.options]
         : [];
-    expectationDetailSort = { key: null, direction: "asc" };
+    expectationDetailSort = { key: "weight", direction: "desc" };
     renderExpectationDetailRows();
 
     modal.hidden = false;
@@ -5390,12 +5558,19 @@ function renderWatchMarketSeries(series, timestamps, unit) {
     `;
 }
 
-function renderWatchMarketBars(labels, values, unit, colors) {
+function renderWatchMarketBars(
+    labels,
+    values,
+    unit,
+    colors,
+    showPercentages = false
+) {
     if (!Array.isArray(values) || !values.length) {
         return '<div class="watch-market-chart-empty">داده‌ای برای نمایش دریافت نشد.</div>';
     }
 
     const numericValues = values.map(value => Number(value) || 0);
+    const total = numericValues.reduce((sum, value) => sum + value, 0);
     const maximum = Math.max(...numericValues, 1);
     const width = 720;
     const height = 225;
@@ -5407,12 +5582,16 @@ function renderWatchMarketBars(labels, values, unit, colors) {
         const x = padding.left + slot * index + (slot - barWidth) / 2;
         const y = height - padding.bottom - barHeight;
         const color = colors[index % colors.length];
+        const percentage = total > 0 ? value / total * 100 : 0;
+        const valueLabel = showPercentages
+            ? `${formatWatchMarketCompact(value)} (${watchMarketNumberFormatter.format(percentage)}٪)`
+            : formatWatchMarketCompact(value);
         return `
             <rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="5" fill="${color}">
                 <title>${labels[index] || ""}: ${formatWatchMarketCompact(value, unit)}</title>
             </rect>
             <text x="${x + barWidth / 2}" y="${height - 25}" text-anchor="middle">${labels[index] || ""}</text>
-            <text class="watch-market-bar-value" x="${x + barWidth / 2}" y="${Math.max(12, y - 6)}" text-anchor="middle">${formatWatchMarketCompact(value)}</text>
+            <text class="watch-market-bar-value" x="${x + barWidth / 2}" y="${Math.max(12, y - 6)}" text-anchor="middle">${valueLabel}</text>
         `;
     }).join("");
 
@@ -5433,9 +5612,11 @@ function createWatchMarketChartCard(title, subtitle, legend, body, latest) {
             </div>
         `
         : "";
-    const latestMarkup = latest !== null && latest !== undefined
-        ? `<strong>${latest}</strong>`
-        : "";
+    const latestMarkup = latest?.html
+        ? `<div class="watch-market-chart-summary">${latest.html}</div>`
+        : latest !== null && latest !== undefined
+            ? `<strong>${latest}</strong>`
+            : "";
     return `
         <article class="watch-market-chart-card">
             <div class="watch-market-chart-head">
@@ -5477,7 +5658,10 @@ function renderWatchMarketOverview() {
     const overview = watchMarketData?.overview || {};
     const prices = Array.isArray(overview.prices) ? overview.prices : [];
     const flows = Array.isArray(overview.flows) ? overview.flows : [];
-    if (!prices.length && !flows.length) {
+    const industryFlows = Array.isArray(overview.industry_flows)
+        ? overview.industry_flows
+        : [];
+    if (!prices.length && !flows.length && !industryFlows.length) {
         container.hidden = true;
         container.replaceChildren();
         return;
@@ -5486,7 +5670,9 @@ function renderWatchMarketOverview() {
     const priceCards = prices.map(item => {
         const percent = Number(item.change_percent);
         const direction = getWatchMarketDirection(percent);
-        const percentMarkup = Number.isFinite(percent)
+        const percentMarkup = item.key === "market_trade_value"
+            ? '<span class="watch-market-metric-change neutral">تجمعی امروز</span>'
+            : Number.isFinite(percent)
             ? `<span class="watch-market-metric-change ${direction}">${watchMarketSignedFormatter.format(percent)}٪</span>`
             : '<span class="watch-market-metric-change neutral">بدون تغییر ثبت‌شده</span>';
         const sourceLink = item.source_url
@@ -5501,11 +5687,23 @@ function renderWatchMarketOverview() {
                 >↗</a>
             `
             : "";
+        const historyButton = item.key === "market_trade_value"
+            ? historyChartButtonMarkup({
+                kind: "total-market",
+                key: item.key,
+                name: item.name,
+                label: item.name,
+                unit: item.unit || "میلیارد تومان"
+            })
+            : "";
         return `
             <article class="watch-market-metric-card" data-tone="${escapeHtml(item.tone || "currency")}">
                 <header>
                     <span>${escapeHtml(item.name || "")}</span>
-                    ${sourceLink}
+                    <span class="watch-market-card-actions">
+                        ${historyButton}
+                        ${sourceLink}
+                    </span>
                 </header>
                 <strong>${formatWatchMarketPrice(item.price)}</strong>
                 <footer>
@@ -5529,17 +5727,47 @@ function renderWatchMarketOverview() {
         const detail = Number.isFinite(count) && count > 0
             ? `${watchMarketNumberFormatter.format(count)} صندوق`
             : escapeHtml(item.market_date || "آخرین داده بازار");
+        const historyButton = historyChartButtonMarkup({
+            kind: "flow",
+            key: item.key,
+            name: item.name,
+            label: item.name,
+            unit: "میلیارد تومان"
+        });
         return `
             <article class="watch-market-flow-card ${direction}">
                 <header>
                     <span>${escapeHtml(item.name || "")}</span>
-                    <em>${flowLabel}</em>
+                    <span class="watch-market-card-actions">
+                        ${historyButton}
+                        <em>${flowLabel}</em>
+                    </span>
                 </header>
                 <strong>${hasValue ? watchMarketSignedFormatter.format(value) : "—"}</strong>
                 <footer>
                     <small>میلیارد تومان</small>
                     <span>${detail}</span>
                 </footer>
+            </article>
+        `;
+    }).join("");
+
+    const industryFlowRows = industryFlows.map(item => {
+        const value = Number(item.value);
+        const hasValue = Number.isFinite(value);
+        const direction = getWatchMarketDirection(value);
+        return `
+            <article class="watch-market-industry-flow-row ${direction}">
+                <span>${escapeHtml(item.name || "")}</span>
+                <strong>${hasValue ? watchMarketSignedFormatter.format(value) : "—"}</strong>
+                <small>میلیارد تومان</small>
+                ${historyChartButtonMarkup({
+                    kind: "industry",
+                    key: item.key,
+                    name: item.name,
+                    label: `ورود پول صنعت ${item.name || ""}`,
+                    unit: "میلیارد تومان"
+                })}
             </article>
         `;
     }).join("");
@@ -5558,9 +5786,19 @@ function renderWatchMarketOverview() {
             <section class="watch-market-overview-group" aria-labelledby="watch-market-flows-title">
                 <div class="watch-market-overview-title">
                     <h3 id="watch-market-flows-title">جریان پول</h3>
-                    <span>عدد مثبت ورود و عدد منفی خروج پول است</span>
                 </div>
                 <div class="watch-market-flow-grid">${flowCards}</div>
+            </section>
+        ` : ""}
+        ${industryFlows.length ? `
+            <section class="watch-market-overview-group watch-market-industry-group" aria-labelledby="watch-market-industries-title">
+                <div class="watch-market-overview-title">
+                    <h3 id="watch-market-industries-title">ورود و خروج پول صنایع</h3>
+                    <span>مرتب‌شده بر اساس بیشترین جریان پول</span>
+                </div>
+                <div class="watch-market-industry-flow-list" tabindex="0" role="region" aria-label="جریان پول صنایع">
+                    ${industryFlowRows}
+                </div>
             </section>
         ` : ""}
     `;
@@ -5643,6 +5881,33 @@ function renderWatchMarketCharts() {
     );
     const latestMoneyFlow = lastValue(moneyFlow.values);
     const latestExcitement = lastValue(excitement.values);
+    const latestOrderBuy = Number(lastValue(orderFlow.buy));
+    const latestOrderSell = Number(lastValue(orderFlow.sell));
+    const orderBuyToSellPercent = (
+        Number.isFinite(latestOrderBuy)
+        && Number.isFinite(latestOrderSell)
+        && latestOrderSell > 0
+    )
+        ? latestOrderBuy / latestOrderSell * 100
+        : null;
+    const priceRangeValues = Array.isArray(priceRange.values)
+        ? priceRange.values.map(value => Number(value) || 0)
+        : [];
+    const priceRangeTotal = priceRangeValues.reduce(
+        (sum, value) => sum + value,
+        0
+    );
+    const negativeRangeTotal = priceRangeValues.slice(0, 6).reduce(
+        (sum, value) => sum + value,
+        0
+    );
+    const positiveRangeTotal = priceRangeValues.slice(6).reduce(
+        (sum, value) => sum + value,
+        0
+    );
+    const rangeShare = value => priceRangeTotal > 0
+        ? value / priceRangeTotal * 100
+        : 0;
 
     container.innerHTML = [
         createWatchMarketChartCard(
@@ -5660,7 +5925,11 @@ function renderWatchMarketCharts() {
                 timestamps,
                 orderFlow.unit
             ),
-            null
+            {
+                html: `
+                    <span class="positive">نسبت خرید به فروش ${orderBuyToSellPercent === null ? "—" : `${watchMarketNumberFormatter.format(orderBuyToSellPercent)}٪`}</span>
+                `
+            }
         ),
         createWatchMarketChartCard(
             "محدوده قیمتی آخرین معاملات",
@@ -5683,14 +5952,15 @@ function renderWatchMarketCharts() {
                     green,
                     green,
                     cyan
-                ]
+                ],
+                true
             ),
-            `${formatWatchMarketCompact(
-                (priceRange.values || []).reduce(
-                    (sum, value) => sum + Number(value || 0),
-                    0
-                )
-            )} نماد`
+            {
+                html: `
+                    <span class="positive">مثبت ${watchMarketNumberFormatter.format(rangeShare(positiveRangeTotal))}٪</span>
+                    <span class="negative">منفی ${watchMarketNumberFormatter.format(rangeShare(negativeRangeTotal))}٪</span>
+                `
+            }
         ),
         createWatchMarketChartCard(
             "ورود پول به سهام",
@@ -5830,7 +6100,13 @@ function startWatchMarketAutoRefresh() {
     }, DASHBOARD_AUTO_REFRESH_INTERVAL);
 }
 
-const APP_TAB_ORDER = ["stocks-tab", "options-tab", "watch-tab"];
+const APP_TAB_ORDER = [
+    "stocks-tab",
+    "watchlist-tab",
+    "strategy-tab",
+    "options-tab",
+    "watch-tab"
+];
 let activeAppTabId = null;
 let heroImageTransitionToken = 0;
 let heroImageCleanupTimer = null;
@@ -5948,16 +6224,24 @@ function setActiveAppTab(tabId) {
     }
 
     if (heroImage) {
-        const nextHeroSource = isStocksTab || isStockWatchlistTab || isStrategyTab
+        const nextHeroSource = isStocksTab
             ? heroImage.dataset.stocksSrc
-            : isOptionsTab
-                ? heroImage.dataset.optionsSrc
-                : heroImage.dataset.marketsSrc;
-        const nextHeroAlt = isStocksTab || isStockWatchlistTab || isStrategyTab
+            : isStockWatchlistTab
+                ? heroImage.dataset.watchlistSrc
+                : isStrategyTab
+                    ? heroImage.dataset.strategySrc
+                    : isOptionsTab
+                        ? heroImage.dataset.optionsSrc
+                        : heroImage.dataset.marketsSrc;
+        const nextHeroAlt = isStocksTab
             ? "تصویر تحلیلی بازار سهام"
-            : isOptionsTab
-                ? "تصویر تحلیلی بازار آپشن"
-                : "تصویر تحلیلی بازارهای مالی";
+            : isStockWatchlistTab
+                ? "تصویر تحلیلی دیده‌بان نمادها"
+                : isStrategyTab
+                    ? "تصویر تحلیلی استراتژی‌های بازار"
+                    : isOptionsTab
+                        ? "تصویر تحلیلی بازار آپشن"
+                        : "تصویر تحلیلی بازارهای مالی";
 
         transitionHeroImage({
             source: nextHeroSource,
@@ -6291,6 +6575,325 @@ function updateStockWatchlistAddButtons() {
     });
 }
 
+function createStockNotesButton(symbol) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "stocks-symbol-link stock-note-button";
+    button.title = `یادداشت‌های ${symbol}`;
+    button.setAttribute("aria-label", `مشاهده و ثبت یادداشت برای نماد ${symbol}`);
+    button.addEventListener("pointerdown", event => event.stopPropagation());
+    button.addEventListener("click", event => {
+        event.stopPropagation();
+        openStockNotesModal(symbol);
+    });
+    button.innerHTML = `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M5 4h14v11l-5 5H5z"></path>
+            <path d="M14 20v-5h5M8 9h8M8 12h5"></path>
+        </svg>
+    `;
+    return button;
+}
+
+function setStockNotesStatus(message = "", isError = false) {
+    const status = document.getElementById("stock-notes-status");
+    if (!status) return;
+    status.textContent = message;
+    status.classList.toggle("is-error", Boolean(message && isError));
+}
+
+function resetStockNoteForm() {
+    stockNotesEditingId = null;
+    const form = document.getElementById("stock-note-form");
+    const editingId = document.getElementById("stock-note-editing-id");
+    const text = document.getElementById("stock-note-text");
+    const importance = document.getElementById("stock-note-importance");
+    const submit = document.getElementById("stock-note-submit");
+    const cancel = document.getElementById("stock-note-cancel-edit");
+    form?.reset();
+    if (editingId) editingId.value = "";
+    if (text) text.setCustomValidity("");
+    if (importance) importance.value = "3";
+    if (submit) submit.textContent = "افزودن یادداشت";
+    if (cancel) cancel.hidden = true;
+}
+
+function formatStockNoteTimestamp(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleString("fa-IR", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+    });
+}
+
+function createStockNoteCard(note) {
+    const card = document.createElement("article");
+    card.className = "stock-note-card";
+    card.dataset.importance = String(note.importance || 1);
+
+    const content = document.createElement("div");
+    content.className = "stock-note-content";
+
+    const meta = document.createElement("div");
+    meta.className = "stock-note-meta";
+
+    const importance = document.createElement("span");
+    importance.className = "stock-note-importance";
+    importance.textContent = `اهمیت ${new Intl.NumberFormat("fa-IR").format(note.importance)}`;
+
+    const date = document.createElement("span");
+    date.className = "stock-note-date";
+    date.textContent = formatStockNoteTimestamp(note.updated_at);
+    meta.append(importance, date);
+
+    const text = document.createElement("p");
+    text.className = "stock-note-text";
+    text.textContent = note.text || "";
+    content.append(meta, text);
+
+    const actions = document.createElement("div");
+    actions.className = "stock-note-actions";
+
+    const editButton = document.createElement("button");
+    editButton.type = "button";
+    editButton.className = "button-secondary stock-note-edit";
+    editButton.textContent = "ویرایش";
+    editButton.addEventListener("click", () => beginStockNoteEdit(note));
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "stock-note-delete";
+    deleteButton.textContent = "حذف";
+    deleteButton.addEventListener("click", () => deleteStockNote(note));
+
+    actions.append(editButton, deleteButton);
+    card.append(content, actions);
+    return card;
+}
+
+function renderStockNotes(notes) {
+    const list = document.getElementById("stock-notes-list");
+    if (!list) return;
+    list.replaceChildren();
+
+    if (!notes.length) {
+        const empty = document.createElement("div");
+        empty.className = "stock-notes-empty";
+        empty.textContent = stockNotesActiveSymbol
+            ? "هنوز یادداشتی برای این نماد ثبت نشده است."
+            : "هنوز یادداشتی برای هیچ نمادی ثبت نشده است.";
+        list.appendChild(empty);
+        return;
+    }
+
+    const groups = new Map();
+    notes.forEach(note => {
+        const symbol = note.symbol || "بدون نماد";
+        if (!groups.has(symbol)) groups.set(symbol, []);
+        groups.get(symbol).push(note);
+    });
+
+    groups.forEach((symbolNotes, symbol) => {
+        const group = document.createElement("section");
+        group.className = "stock-note-symbol-group";
+        if (!stockNotesActiveSymbol) {
+            const heading = document.createElement("div");
+            heading.className = "stock-note-symbol-heading";
+            const name = document.createElement("strong");
+            name.textContent = symbol;
+            const count = document.createElement("small");
+            count.textContent = `${new Intl.NumberFormat("fa-IR").format(symbolNotes.length)} یادداشت`;
+            heading.append(name, count);
+            group.appendChild(heading);
+        }
+        symbolNotes.forEach(note => group.appendChild(createStockNoteCard(note)));
+        list.appendChild(group);
+    });
+}
+
+async function loadStockNotes() {
+    if (stockNotesLoading) return;
+    stockNotesLoading = true;
+    setStockNotesStatus("در حال دریافت یادداشت‌ها...");
+
+    try {
+        const parameters = new URLSearchParams({ _ts: Date.now().toString() });
+        if (stockNotesActiveSymbol) {
+            parameters.set("symbol", stockNotesActiveSymbol);
+        }
+        const response = await fetch(`/stock-notes?${parameters.toString()}`, {
+            cache: "no-store"
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.error || "دریافت یادداشت‌ها ناموفق بود.");
+        }
+        stockNotesCurrentItems = Array.isArray(payload.notes) ? payload.notes : [];
+        renderStockNotes(stockNotesCurrentItems);
+        setStockNotesStatus(
+            `${new Intl.NumberFormat("fa-IR").format(stockNotesCurrentItems.length)} یادداشت`
+        );
+    } catch (error) {
+        console.error("Stock notes error:", error);
+        setStockNotesStatus(error.message || "دریافت یادداشت‌ها ناموفق بود.", true);
+    } finally {
+        stockNotesLoading = false;
+    }
+}
+
+function closeStockNotesModal() {
+    const modal = document.getElementById("stock-notes-modal");
+    if (modal) modal.hidden = true;
+    document.body.classList.remove("expectations-modal-open");
+    stockNotesActiveSymbol = "";
+    stockNotesCurrentItems = [];
+    resetStockNoteForm();
+}
+
+async function openStockNotesModal(symbol = "") {
+    stockNotesActiveSymbol = normalizeSymbol(symbol);
+    const modal = document.getElementById("stock-notes-modal");
+    const title = document.getElementById("stock-notes-modal-title");
+    const form = document.getElementById("stock-note-form");
+    if (!modal || !title || !form) return;
+
+    resetStockNoteForm();
+    title.textContent = stockNotesActiveSymbol
+        ? `یادداشت‌های ${stockNotesActiveSymbol}`
+        : "همه یادداشت‌های نمادها";
+    form.hidden = !stockNotesActiveSymbol;
+    modal.hidden = false;
+    document.body.classList.add("expectations-modal-open");
+    await loadStockNotes();
+}
+
+async function beginStockNoteEdit(note) {
+    if (!note?.id) return;
+    if (normalizeSymbol(note.symbol) !== stockNotesActiveSymbol) {
+        await openStockNotesModal(note.symbol);
+    }
+
+    stockNotesEditingId = Number(note.id);
+    const form = document.getElementById("stock-note-form");
+    const editingId = document.getElementById("stock-note-editing-id");
+    const text = document.getElementById("stock-note-text");
+    const importance = document.getElementById("stock-note-importance");
+    const submit = document.getElementById("stock-note-submit");
+    const cancel = document.getElementById("stock-note-cancel-edit");
+    if (form) form.hidden = false;
+    if (editingId) editingId.value = String(note.id);
+    if (text) text.value = note.text || "";
+    if (importance) importance.value = String(note.importance || 1);
+    if (submit) submit.textContent = "ذخیره تغییرات";
+    if (cancel) cancel.hidden = false;
+    text?.focus();
+}
+
+async function deleteStockNote(note) {
+    if (!note?.id) return;
+    if (!window.confirm("این یادداشت حذف شود؟")) return;
+
+    setStockNotesStatus("در حال حذف یادداشت...");
+    try {
+        const response = await fetch(`/stock-notes/${note.id}`, {
+            method: "DELETE",
+            cache: "no-store"
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.error || "حذف یادداشت ناموفق بود.");
+        }
+        if (stockNotesEditingId === Number(note.id)) resetStockNoteForm();
+        await loadStockNotes();
+    } catch (error) {
+        console.error("Delete stock note error:", error);
+        setStockNotesStatus(error.message || "حذف یادداشت ناموفق بود.", true);
+    }
+}
+
+async function submitStockNoteForm(event) {
+    event.preventDefault();
+    if (!stockNotesActiveSymbol) return;
+
+    const textInput = document.getElementById("stock-note-text");
+    const importanceInput = document.getElementById("stock-note-importance");
+    const submitButton = document.getElementById("stock-note-submit");
+    const text = textInput?.value.trim() || "";
+    const importance = Number(importanceInput?.value);
+    if (!text) {
+        textInput?.setCustomValidity("متن یادداشت را وارد کنید.");
+        textInput?.reportValidity();
+        return;
+    }
+    textInput?.setCustomValidity("");
+
+    const editing = Number.isInteger(stockNotesEditingId);
+    const endpoint = editing
+        ? `/stock-notes/${stockNotesEditingId}`
+        : "/stock-notes";
+    const method = editing ? "PUT" : "POST";
+    if (submitButton) {
+        submitButton.disabled = true;
+        submitButton.setAttribute("aria-busy", "true");
+    }
+    setStockNotesStatus(editing ? "در حال ذخیره تغییرات..." : "در حال افزودن یادداشت...");
+
+    try {
+        const response = await fetch(endpoint, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                symbol: stockNotesActiveSymbol,
+                text,
+                importance
+            }),
+            cache: "no-store"
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.error || "ذخیره یادداشت ناموفق بود.");
+        }
+        resetStockNoteForm();
+        await loadStockNotes();
+    } catch (error) {
+        console.error("Save stock note error:", error);
+        setStockNotesStatus(error.message || "ذخیره یادداشت ناموفق بود.", true);
+    } finally {
+        if (submitButton) {
+            submitButton.disabled = false;
+            submitButton.removeAttribute("aria-busy");
+        }
+    }
+}
+
+function initializeStockNotes() {
+    document.getElementById("open-all-stock-notes")?.addEventListener(
+        "click",
+        () => openStockNotesModal()
+    );
+    document.getElementById("stock-note-form")?.addEventListener(
+        "submit",
+        submitStockNoteForm
+    );
+    document.getElementById("stock-note-cancel-edit")?.addEventListener(
+        "click",
+        resetStockNoteForm
+    );
+    document.querySelectorAll("[data-close-stock-notes-modal]").forEach(
+        element => element.addEventListener("click", closeStockNotesModal)
+    );
+    document.addEventListener("keydown", event => {
+        if (event.key !== "Escape") return;
+        const modal = document.getElementById("stock-notes-modal");
+        if (modal && !modal.hidden) closeStockNotesModal();
+    });
+}
+
 function createStockWatchlistAddButton(symbol) {
     const button = document.createElement("button");
     button.type = "button";
@@ -6310,6 +6913,15 @@ function initializeStockViewControls() {
     document.getElementById("stock-refresh-button")?.addEventListener(
         "click",
         () => requestStockCatalog({ forceRefresh: true })
+    );
+
+    document.getElementById("stock-use-saved-data")?.addEventListener(
+        "change",
+        event => {
+            stockUseSavedData = event.target.checked;
+            window.clearTimeout(stockRefreshPollTimer);
+            requestStockCatalog();
+        }
     );
 
     document.getElementById("stock-search")?.addEventListener(
@@ -6464,6 +7076,14 @@ function initializeStockWatchlistControls() {
     document.getElementById("watchlist-refresh-button")?.addEventListener(
         "click",
         () => requestStockWatchlist({ forceRefresh: true })
+    );
+
+    document.getElementById("watchlist-use-saved-data")?.addEventListener(
+        "change",
+        event => {
+            stockWatchlistUseSavedData = event.target.checked;
+            requestStockWatchlist();
+        }
     );
 
     document.getElementById("watchlist-search")?.addEventListener(
@@ -6728,6 +7348,64 @@ function formatStockChangePercent(value) {
     }).format(numericValue)}٪`;
 }
 
+function getStockPricePowerPresentation(stock) {
+    const pricePower = Number(stock?.price_power);
+    if (!Number.isFinite(pricePower)) {
+        return {
+            label: "—",
+            tone: "neutral",
+            title: "اطلاعات قدرت قیمت در دسترس نیست"
+        };
+    }
+    if (pricePower > 0) {
+        return {
+            label: "صعودی",
+            tone: "positive",
+            title: "آخرین قیمت بالاتر از قیمت پایانی است"
+        };
+    }
+    if (pricePower < 0) {
+        return {
+            label: "نزولی",
+            tone: "negative",
+            title: "آخرین قیمت پایین‌تر از قیمت پایانی است"
+        };
+    }
+
+    const hasBuyOrders = [
+        stock?.order_book_buy_value,
+        stock?.order_book_buy_volume,
+        stock?.order_book_buy_count
+    ].some(value => Number(value) > 0);
+    const hasSellOrders = [
+        stock?.order_book_sell_value,
+        stock?.order_book_sell_volume,
+        stock?.order_book_sell_count
+    ].some(value => Number(value) > 0);
+
+    if (hasBuyOrders && !hasSellOrders) {
+        return {
+            label: "صف\nخرید",
+            tone: "positive",
+            stacked: true,
+            title: "آخرین قیمت با قیمت پایانی برابر است و سمت فروش سفارشی ندارد"
+        };
+    }
+    if (hasSellOrders && !hasBuyOrders) {
+        return {
+            label: "صف\nفروش",
+            tone: "negative",
+            stacked: true,
+            title: "آخرین قیمت با قیمت پایانی برابر است و سمت خرید سفارشی ندارد"
+        };
+    }
+    return {
+        label: "خنثی",
+        tone: "neutral",
+        title: "آخرین قیمت با قیمت پایانی برابر است و هر دو سمت سفارش دارند"
+    };
+}
+
 function formatScaledStockNumber(value, divisor) {
     const numericValue = Number(value);
     if (!Number.isFinite(numericValue)) return "—";
@@ -6778,6 +7456,13 @@ function formatStockCell(column, value, useDollar = stockTradeValueInUsd) {
     }
     if (column.format === "price") {
         return formatStockInteger(value);
+    }
+    if (column.format === "pricePower") {
+        const numericValue = Number(value);
+        if (!Number.isFinite(numericValue)) return "—";
+        if (numericValue > 0) return "صعودی";
+        if (numericValue < 0) return "نزولی";
+        return "خنثی";
     }
     if (column.format === "million") {
         return formatScaledStockNumber(value, 1_000_000);
@@ -6837,6 +7522,330 @@ function updateStockCount(visibleCount) {
     count.textContent = visibleCount === stockCatalogRows.length
         ? `${formatter.format(stockCatalogRows.length)} نماد`
         : `${formatter.format(visibleCount)} از ${formatter.format(stockCatalogRows.length)} نماد`;
+}
+
+function historyChartIconMarkup() {
+    return `
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 19V5"></path>
+            <path d="M4 19h16"></path>
+            <path d="m7 15 4-4 3 2 5-6"></path>
+            <circle cx="7" cy="15" r="1"></circle>
+            <circle cx="11" cy="11" r="1"></circle>
+            <circle cx="14" cy="13" r="1"></circle>
+            <circle cx="19" cy="7" r="1"></circle>
+        </svg>`;
+}
+
+function createStockHistoryChartButton(stock, column) {
+    const config = stockHistoryMetricConfigs[column.key];
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "history-chart-button stock-history-chart-button";
+    button.dataset.historySource = "stock";
+    button.dataset.historySymbol = stock.symbol || "";
+    button.dataset.historyMetric = column.key;
+    button.dataset.historyLabel = config?.label || column.label;
+    button.dataset.historyUnit = config?.unit || "";
+    button.title = `نمودار تاریخچه ${config?.label || column.label} ${stock.symbol || ""}`;
+    button.setAttribute("aria-label", button.title);
+    button.innerHTML = historyChartIconMarkup();
+    button.addEventListener("pointerdown", event => event.stopPropagation());
+    return button;
+}
+
+function attachStockHistoryChartButton(cell, stock, column) {
+    if (!stockHistoryMetrics.has(column.key) || !stock.symbol) return;
+
+    const content = document.createElement("span");
+    content.className = "stock-metric-cell-value";
+    while (cell.firstChild) content.appendChild(cell.firstChild);
+
+    const wrapper = document.createElement("span");
+    wrapper.className = "stock-metric-cell-content";
+    wrapper.append(content, createStockHistoryChartButton(stock, column));
+    cell.replaceChildren(wrapper);
+}
+
+function historyChartButtonMarkup({ kind, key = "", name = "", label, unit = "" }) {
+    const title = `نمودار تاریخچه ${label || name}`;
+    return `
+        <button
+            type="button"
+            class="history-chart-button market-history-chart-button"
+            data-history-source="market"
+            data-history-kind="${escapeHtml(kind)}"
+            data-history-key="${escapeHtml(key)}"
+            data-history-name="${escapeHtml(name)}"
+            data-history-label="${escapeHtml(label || name)}"
+            data-history-unit="${escapeHtml(unit)}"
+            title="${escapeHtml(title)}"
+            aria-label="${escapeHtml(title)}"
+        >${historyChartIconMarkup()}</button>`;
+}
+
+function formatHistoryChartNumber(value, digits = 2) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "—";
+    return new Intl.NumberFormat("fa-IR", {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: digits
+    }).format(number);
+}
+
+function formatHistoryChartDate(point) {
+    return formatStockSnapshotDate(
+        point?.date_jalali || point?.trade_date_jalali || point?.date || ""
+    ).replaceAll("-", "/");
+}
+
+function renderHistoricalMetricChart(points, config) {
+    const canvas = document.getElementById("history-chart-canvas");
+    const state = document.getElementById("history-chart-state");
+    const meta = document.getElementById("history-chart-meta");
+    if (!canvas || !state || !meta) return;
+
+    const scale = Number(config.scale) || 1;
+    const prepared = (Array.isArray(points) ? points : [])
+        .map(point => ({
+            ...point,
+            chartValue: Number(point.value) / scale
+        }))
+        .filter(point => Number.isFinite(point.chartValue));
+
+    if (!prepared.length) {
+        canvas.hidden = true;
+        canvas.replaceChildren();
+        meta.replaceChildren();
+        state.hidden = false;
+        state.textContent = "دادهٔ روزانه‌ای برای این شاخص ذخیره نشده است.";
+        return;
+    }
+
+    const width = 960;
+    const height = 370;
+    const padding = { top: 28, right: 28, bottom: 58, left: 86 };
+    const values = prepared.map(point => point.chartValue);
+    let minimum = Math.min(...values);
+    let maximum = Math.max(...values);
+    if (minimum === maximum) {
+        const paddingValue = Math.max(Math.abs(minimum) * 0.08, 1);
+        minimum -= paddingValue;
+        maximum += paddingValue;
+    } else {
+        const paddingValue = (maximum - minimum) * 0.08;
+        minimum -= paddingValue;
+        maximum += paddingValue;
+    }
+
+    const plotWidth = width - padding.left - padding.right;
+    const plotHeight = height - padding.top - padding.bottom;
+    const xForIndex = index => prepared.length === 1
+        ? padding.left + plotWidth / 2
+        : padding.left + index / (prepared.length - 1) * plotWidth;
+    const yForValue = value => padding.top
+        + (maximum - value) / (maximum - minimum) * plotHeight;
+    const coordinates = prepared.map((point, index) => ({
+        x: xForIndex(index),
+        y: yForValue(point.chartValue),
+        point
+    }));
+    const linePath = coordinates.map((coordinate, index) =>
+        `${index ? "L" : "M"}${coordinate.x.toFixed(2)} ${coordinate.y.toFixed(2)}`
+    ).join(" ");
+    const areaBaseline = minimum <= 0 && maximum >= 0
+        ? yForValue(0)
+        : height - padding.bottom;
+    const areaPath = coordinates.length > 1
+        ? `${linePath} L${coordinates.at(-1).x.toFixed(2)} ${areaBaseline.toFixed(2)} L${coordinates[0].x.toFixed(2)} ${areaBaseline.toFixed(2)} Z`
+        : "";
+
+    const gridLines = Array.from({ length: 5 }, (_, index) => {
+        const ratio = index / 4;
+        const value = maximum - (maximum - minimum) * ratio;
+        const y = padding.top + plotHeight * ratio;
+        return `
+            <line class="history-chart-grid-line" x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}"></line>
+            <text class="history-chart-axis-label" x="${padding.left - 12}" y="${y + 4}" text-anchor="end">${escapeHtml(formatHistoryChartNumber(value, config.digits))}</text>`;
+    }).join("");
+    const zeroLine = minimum < 0 && maximum > 0
+        ? `<line class="history-chart-zero-line" x1="${padding.left}" y1="${yForValue(0)}" x2="${width - padding.right}" y2="${yForValue(0)}"></line>`
+        : "";
+    const labelIndexes = new Set([
+        0,
+        Math.floor((prepared.length - 1) * 0.25),
+        Math.floor((prepared.length - 1) * 0.5),
+        Math.floor((prepared.length - 1) * 0.75),
+        prepared.length - 1
+    ]);
+    const dateLabels = [...labelIndexes].sort((a, b) => a - b).map(index => `
+        <text class="history-chart-date-label" x="${xForIndex(index)}" y="${height - 20}" text-anchor="middle">${escapeHtml(formatHistoryChartDate(prepared[index]))}</text>
+    `).join("");
+    const pointStep = Math.max(1, Math.ceil(coordinates.length / 80));
+    const pointMarkers = coordinates.map((coordinate, index) => {
+        if (index % pointStep !== 0 && index !== coordinates.length - 1) return "";
+        const tooltip = `${formatHistoryChartDate(coordinate.point)}: ${formatHistoryChartNumber(coordinate.point.chartValue, config.digits)} ${config.unit || ""}`;
+        return `
+            <circle class="history-chart-point" cx="${coordinate.x}" cy="${coordinate.y}" r="3.2">
+                <title>${escapeHtml(tooltip)}</title>
+            </circle>`;
+    }).join("");
+
+    canvas.innerHTML = `
+        <svg class="history-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="نمودار ${escapeHtml(config.label)}">
+            <defs>
+                <linearGradient id="history-chart-area-gradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#32d9ff" stop-opacity="0.34"></stop>
+                    <stop offset="100%" stop-color="#32d9ff" stop-opacity="0.015"></stop>
+                </linearGradient>
+            </defs>
+            ${gridLines}
+            ${zeroLine}
+            ${areaPath ? `<path class="history-chart-area" d="${areaPath}"></path>` : ""}
+            ${linePath ? `<path class="history-chart-line" d="${linePath}"></path>` : ""}
+            ${pointMarkers}
+            ${dateLabels}
+        </svg>`;
+    canvas.hidden = false;
+    state.hidden = true;
+    state.textContent = "";
+
+    const firstDate = formatHistoryChartDate(prepared[0]);
+    const lastPoint = prepared.at(-1);
+    const lastDate = formatHistoryChartDate(lastPoint);
+    meta.innerHTML = `
+        <span>بازه: <strong>${escapeHtml(firstDate)} تا ${escapeHtml(lastDate)}</strong></span>
+        <span>تعداد داده: <strong>${formatHistoryChartNumber(prepared.length, 0)} روز</strong></span>
+        <span>آخرین مقدار: <strong>${escapeHtml(formatHistoryChartNumber(lastPoint.chartValue, config.digits))} ${escapeHtml(config.unit || "")}</strong></span>`;
+}
+
+async function fetchStockHistoryPoints(symbol, metric) {
+    const parameters = new URLSearchParams({
+        symbol,
+        metric,
+        limit: "365",
+        _ts: Date.now().toString()
+    });
+    const response = await fetch(`/stocks/metric-history?${parameters}`, {
+        cache: "no-store"
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "دریافت تاریخچه نماد ناموفق بود.");
+    return Array.isArray(payload.points) ? payload.points : [];
+}
+
+async function fetchMarketHistoryPoints(kind, key, name) {
+    const parameters = new URLSearchParams({
+        limit: "365",
+        _ts: Date.now().toString()
+    });
+    const response = await fetch(`/watch-market/history?${parameters}`, {
+        cache: "no-store"
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "دریافت تاریخچه بازار ناموفق بود.");
+
+    const normalizedName = normalizeSymbol(name);
+    return (Array.isArray(payload.snapshots) ? payload.snapshots : [])
+        .map(snapshot => {
+            let value = null;
+            if (kind === "total-market") {
+                value = snapshot.total_market_trade_value;
+            } else {
+                const collection = kind === "industry"
+                    ? snapshot.industry_flows
+                    : snapshot.money_flows;
+                const item = (Array.isArray(collection) ? collection : []).find(candidate =>
+                    String(candidate?.key ?? "") === String(key || "")
+                    || normalizeSymbol(candidate?.name) === normalizedName
+                );
+                value = item?.value;
+            }
+            return {
+                date: snapshot.trade_date,
+                date_jalali: snapshot.trade_date_jalali,
+                value
+            };
+        })
+        .filter(point => point.value !== null
+            && point.value !== undefined
+            && Number.isFinite(Number(point.value)))
+        .reverse();
+}
+
+async function openHistoryChart(button) {
+    const modal = document.getElementById("history-chart-modal");
+    const title = document.getElementById("history-chart-modal-title");
+    const state = document.getElementById("history-chart-state");
+    const canvas = document.getElementById("history-chart-canvas");
+    const meta = document.getElementById("history-chart-meta");
+    if (!modal || !title || !state || !canvas || !meta) return;
+
+    const source = button.dataset.historySource;
+    const label = button.dataset.historyLabel || "شاخص";
+    const symbol = button.dataset.historySymbol || "";
+    const token = ++historyChartRequestToken;
+    title.textContent = source === "stock" ? `${label} — ${symbol}` : label;
+    meta.replaceChildren();
+    canvas.hidden = true;
+    canvas.replaceChildren();
+    state.hidden = false;
+    state.textContent = "در حال خواندن داده‌های روزانه از دیتابیس...";
+    modal.hidden = false;
+    document.body.classList.add("expectations-modal-open");
+
+    try {
+        let points;
+        let config;
+        if (source === "stock") {
+            const metric = button.dataset.historyMetric;
+            config = stockHistoryMetricConfigs[metric];
+            points = await fetchStockHistoryPoints(symbol, metric);
+        } else {
+            config = {
+                label,
+                unit: button.dataset.historyUnit || "میلیارد تومان",
+                scale: 1,
+                digits: 2
+            };
+            points = await fetchMarketHistoryPoints(
+                button.dataset.historyKind,
+                button.dataset.historyKey,
+                button.dataset.historyName
+            );
+        }
+        if (token !== historyChartRequestToken || modal.hidden) return;
+        renderHistoricalMetricChart(points, config || {
+            label,
+            unit: "",
+            scale: 1,
+            digits: 2
+        });
+    } catch (error) {
+        if (token !== historyChartRequestToken || modal.hidden) return;
+        state.hidden = false;
+        state.textContent = error.message || "خواندن تاریخچه ناموفق بود.";
+    }
+}
+
+function closeHistoryChart() {
+    historyChartRequestToken += 1;
+    const modal = document.getElementById("history-chart-modal");
+    if (modal) modal.hidden = true;
+    syncExpectationModalBodyState();
+}
+
+function initializeHistoryChartControls() {
+    document.addEventListener("click", event => {
+        const button = event.target.closest(".history-chart-button");
+        if (!button) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openHistoryChart(button);
+    });
+    document.querySelectorAll("[data-close-history-chart-modal]").forEach(element =>
+        element.addEventListener("click", closeHistoryChart)
+    );
 }
 
 function getSortedStockRows(rows) {
@@ -7074,6 +8083,14 @@ function renderStockTable() {
                 }
             }
 
+            if (column.key === "price_power") {
+                const presentation = getStockPricePowerPresentation(stock);
+                cell.textContent = presentation.label;
+                cell.classList.add(`is-${presentation.tone}`);
+                cell.classList.toggle("is-queue", presentation.stacked === true);
+                cell.title = presentation.title;
+            }
+
             if (column.percentKey) {
                 const priceStack = document.createElement("span");
                 priceStack.className = "stocks-price-stack";
@@ -7144,12 +8161,17 @@ function renderStockTable() {
                 }
 
                 symbolActions.appendChild(
+                    createStockNotesButton(stock.symbol)
+                );
+                symbolActions.appendChild(
                     createStockWatchlistAddButton(stock.symbol)
                 );
                 symbolContent.appendChild(symbolActions);
 
                 cell.replaceChildren(symbolContent);
             }
+
+            attachStockHistoryChartButton(cell, stock, column);
 
             row.appendChild(cell);
         });
@@ -7314,6 +8336,14 @@ function createStockWatchlistCell(stock, column) {
         }
     }
 
+    if (column.key === "price_power") {
+        const presentation = getStockPricePowerPresentation(stock);
+        cell.textContent = presentation.label;
+        cell.classList.add(`is-${presentation.tone}`);
+        cell.classList.toggle("is-queue", presentation.stacked === true);
+        cell.title = presentation.title;
+    }
+
     if (column.percentKey) {
         const priceStack = document.createElement("span");
         priceStack.className = "stocks-price-stack";
@@ -7368,6 +8398,10 @@ function createStockWatchlistCell(stock, column) {
             symbolActions.appendChild(symbolLink);
         }
 
+        symbolActions.appendChild(
+            createStockNotesButton(stock.symbol)
+        );
+
         const deleteButton = document.createElement("button");
         deleteButton.type = "button";
         deleteButton.className = "watchlist-delete-button";
@@ -7390,6 +8424,8 @@ function createStockWatchlistCell(stock, column) {
         symbolContent.appendChild(symbolActions);
         cell.replaceChildren(symbolContent);
     }
+
+    attachStockHistoryChartButton(cell, stock, column);
 
     return cell;
 }
@@ -7622,6 +8658,23 @@ function setStockRefreshButtonState(isRefreshing) {
     button.setAttribute("aria-busy", isRefreshing ? "true" : "false");
 }
 
+function formatStockSnapshotDate(value) {
+    if (!value) return "";
+    const persianDigits = "۰۱۲۳۴۵۶۷۸۹";
+    return String(value).replace(
+        /\d/g,
+        digit => persianDigits[Number(digit)]
+    );
+}
+
+function getStockSavedDataStatus(payload) {
+    if (payload?.data_source !== "daily_snapshot") return "";
+    if (!payload?.saved_count) return "";
+    return formatStockSnapshotDate(
+        payload.snapshot_date_jalali || payload.snapshot_date
+    ).replaceAll("-", "/");
+}
+
 function updateStockSyncStatus(payload) {
     const status = document.getElementById("stocks-sync-status");
     setStockRefreshButtonState(Boolean(payload?.refreshing));
@@ -7633,10 +8686,12 @@ function updateStockSyncStatus(payload) {
         return;
     }
 
-    status.classList.remove("is-refreshing");
-    status.textContent = payload?.warning
-        ? "نمایش آخرین دادهٔ ذخیره‌شده"
-        : "";
+    status.classList.remove("is-refreshing", "is-error");
+    const savedDataStatus = getStockSavedDataStatus(payload);
+    status.textContent = payload?.data_source === "daily_snapshot"
+        ? savedDataStatus
+        : (payload?.warning ? "نمایش آخرین دادهٔ ذخیره‌شده" : "");
+    status.title = payload?.warning || "";
 }
 
 function applyStockCatalogPayload(payload) {
@@ -7663,6 +8718,10 @@ function applyStockCatalogPayload(payload) {
 
 function scheduleStockRefreshPoll(previousUpdatedAt, attempt = 0) {
     window.clearTimeout(stockRefreshPollTimer);
+    if (stockUseSavedData) {
+        setStockRefreshButtonState(false);
+        return;
+    }
     if (attempt >= 80) {
         setStockRefreshButtonState(false);
         return;
@@ -7702,12 +8761,16 @@ function scheduleStockRefreshPoll(previousUpdatedAt, attempt = 0) {
 }
 
 async function requestStockCatalog({ forceRefresh = false, initialLoad = false } = {}) {
-    if (stockCatalogLoading) return;
+    if (stockCatalogLoading) {
+        stockCatalogReloadPending = true;
+        return;
+    }
 
     const loading = document.getElementById("stocks-loading");
     const tableWrap = document.getElementById("stocks-table-wrap");
     const empty = document.getElementById("stocks-empty");
     const count = document.getElementById("stocks-count");
+    const requestedSavedData = stockUseSavedData;
 
     stockCatalogLoading = true;
     if (forceRefresh) {
@@ -7721,7 +8784,12 @@ async function requestStockCatalog({ forceRefresh = false, initialLoad = false }
 
     try {
         const parameters = new URLSearchParams({ _ts: Date.now().toString() });
-        if (forceRefresh) parameters.set("refresh", "1");
+        if (requestedSavedData) {
+            parameters.set("use_saved_data", "1");
+            window.clearTimeout(stockRefreshPollTimer);
+        } else if (forceRefresh) {
+            parameters.set("refresh", "1");
+        }
         const response = await fetch(`/stocks?${parameters.toString()}`, {
             cache: "no-store"
         });
@@ -7730,9 +8798,13 @@ async function requestStockCatalog({ forceRefresh = false, initialLoad = false }
         if (!response.ok) {
             throw new Error(payload.error || "دریافت فهرست سهام ناموفق بود.");
         }
+        if (requestedSavedData !== stockUseSavedData) {
+            stockCatalogReloadPending = true;
+            return;
+        }
 
         applyStockCatalogPayload(payload);
-        if (payload.refreshing) {
+        if (payload.refreshing && !stockUseSavedData) {
             scheduleStockRefreshPoll(payload.source_updated_at);
         }
     } catch (error) {
@@ -7749,6 +8821,10 @@ async function requestStockCatalog({ forceRefresh = false, initialLoad = false }
     } finally {
         stockCatalogLoading = false;
         if (loading) loading.hidden = true;
+        if (stockCatalogReloadPending) {
+            stockCatalogReloadPending = false;
+            window.setTimeout(() => requestStockCatalog(), 0);
+        }
     }
 }
 
@@ -7786,7 +8862,15 @@ function applyStockWatchlistPayload(payload) {
     const empty = document.getElementById("watchlist-empty");
     stockWatchlistRows = rows;
     stockWatchlistLoaded = true;
-    setStockWatchlistStatus(payload?.warning || "", Boolean(payload?.warning));
+    const savedDataStatus = getStockSavedDataStatus(payload);
+    setStockWatchlistStatus(
+        payload?.data_source === "daily_snapshot"
+            ? savedDataStatus
+            : (payload?.warning || ""),
+        Boolean(payload?.warning && payload?.data_source !== "daily_snapshot")
+    );
+    const watchlistStatus = document.getElementById("watchlist-status");
+    if (watchlistStatus) watchlistStatus.title = payload?.warning || "";
     updateStockWatchlistAddButtons();
 
     if (!rows.length) {
@@ -7806,10 +8890,14 @@ function applyStockWatchlistPayload(payload) {
 }
 
 async function requestStockWatchlist({ forceRefresh = false, initialLoad = false } = {}) {
-    if (stockWatchlistLoading) return;
+    if (stockWatchlistLoading) {
+        stockWatchlistReloadPending = true;
+        return;
+    }
     const loading = document.getElementById("watchlist-loading");
     const tableWrap = document.getElementById("watchlist-table-wrap");
     const empty = document.getElementById("watchlist-empty");
+    const requestedSavedData = stockWatchlistUseSavedData;
 
     stockWatchlistLoading = true;
     setStockWatchlistBusy(forceRefresh);
@@ -7821,13 +8909,21 @@ async function requestStockWatchlist({ forceRefresh = false, initialLoad = false
 
     try {
         const parameters = new URLSearchParams({ _ts: Date.now().toString() });
-        if (forceRefresh) parameters.set("refresh", "1");
+        if (requestedSavedData) {
+            parameters.set("use_saved_data", "1");
+        } else if (forceRefresh) {
+            parameters.set("refresh", "1");
+        }
         const response = await fetch(`/stock-watchlist?${parameters.toString()}`, {
             cache: "no-store"
         });
         const payload = await response.json();
         if (!response.ok) {
             throw new Error(payload.error || "دریافت دیده‌بان ناموفق بود.");
+        }
+        if (requestedSavedData !== stockWatchlistUseSavedData) {
+            stockWatchlistReloadPending = true;
+            return;
         }
         applyStockWatchlistPayload(payload);
     } catch (error) {
@@ -7841,6 +8937,10 @@ async function requestStockWatchlist({ forceRefresh = false, initialLoad = false
         stockWatchlistLoading = false;
         setStockWatchlistBusy(false);
         if (loading) loading.hidden = true;
+        if (stockWatchlistReloadPending) {
+            stockWatchlistReloadPending = false;
+            window.setTimeout(() => requestStockWatchlist(), 0);
+        }
     }
 }
 
@@ -7873,7 +8973,11 @@ async function addStockWatchlistSymbol(rawSymbol, triggerButton = null) {
         if (!response.ok) {
             throw new Error(payload.error || "افزودن نماد ناموفق بود.");
         }
-        applyStockWatchlistPayload(payload);
+        if (stockWatchlistUseSavedData) {
+            await requestStockWatchlist();
+        } else {
+            applyStockWatchlistPayload(payload);
+        }
         if (input && !triggerButton) {
             input.value = "";
             input.focus();
@@ -7911,7 +9015,11 @@ async function deleteStockWatchlistSymbol(symbol, button) {
         if (!response.ok) {
             throw new Error(payload.error || "حذف نماد ناموفق بود.");
         }
-        applyStockWatchlistPayload(payload);
+        if (stockWatchlistUseSavedData) {
+            await requestStockWatchlist();
+        } else {
+            applyStockWatchlistPayload(payload);
+        }
     } catch (error) {
         console.error("Delete stock watchlist symbol error:", error);
         setStockWatchlistStatus(error.message || "حذف نماد ناموفق بود.", true);
@@ -7951,24 +9059,54 @@ const stockStrategyControlMap = {
         operator: "strategy-real-buy-power-operator",
         fixed: "strategy-real-buy-power-fixed",
         days: "strategy-real-buy-power-days"
+    },
+    real_money_flow: {
+        enabled: "strategy-real-money-flow-enabled",
+        consecutiveDays: "strategy-real-money-flow-consecutive-days",
+        days: "strategy-real-money-flow-days"
+    },
+    money_flow_quality: {
+        enabled: "strategy-money-flow-quality-enabled",
+        operator: "strategy-money-flow-quality-operator",
+        fixed: "strategy-money-flow-quality-fixed",
+        allowNegativeFixed: true
     }
 };
 
 function readStockStrategyRules() {
     const rules = {};
     Object.entries(stockStrategyControlMap).forEach(([metric, controls]) => {
-        const days = Math.max(
-            0,
-            Math.min(250, Number(document.getElementById(controls.days)?.value) || 0)
-        );
+        const days = controls.days
+            ? Math.max(
+                0,
+                Math.min(250, Number(document.getElementById(controls.days)?.value) || 0)
+            )
+            : 0;
+        const consecutiveDays = controls.consecutiveDays
+            ? Math.max(
+                0,
+                Math.min(
+                    250,
+                    Number(document.getElementById(controls.consecutiveDays)?.value) || 0
+                )
+            )
+            : 0;
+        const rawFixed = controls.fixed
+            ? Number(document.getElementById(controls.fixed)?.value)
+            : 0;
         const fixed = controls.fixed
-            ? Math.max(0, Number(document.getElementById(controls.fixed)?.value) || 0)
+            ? (controls.allowNegativeFixed
+                ? (Number.isFinite(rawFixed) ? rawFixed : 0)
+                : Math.max(0, rawFixed || 0))
             : 0;
         rules[metric] = {
             enabled: Boolean(document.getElementById(controls.enabled)?.checked),
-            operator: document.getElementById(controls.operator)?.value || "gte",
+            operator: controls.operator
+                ? (document.getElementById(controls.operator)?.value || "gte")
+                : "gte",
             days,
-            fixed
+            fixed,
+            consecutive_days: consecutiveDays
         };
     });
     return rules;
@@ -8001,17 +9139,36 @@ function restoreStockStrategyRules() {
             const rule = saved[metric];
             if (!rule || typeof rule !== "object") return;
             const enabled = document.getElementById(controls.enabled);
-            const operator = document.getElementById(controls.operator);
-            const days = document.getElementById(controls.days);
+            const operator = controls.operator
+                ? document.getElementById(controls.operator)
+                : null;
+            const days = controls.days
+                ? document.getElementById(controls.days)
+                : null;
             const fixed = controls.fixed
                 ? document.getElementById(controls.fixed)
+                : null;
+            const consecutiveDays = controls.consecutiveDays
+                ? document.getElementById(controls.consecutiveDays)
                 : null;
             if (enabled) enabled.checked = Boolean(rule.enabled);
             if (operator && ["gte", "lte", "eq"].includes(rule.operator)) {
                 operator.value = rule.operator;
             }
             if (days) days.value = String(Math.max(0, Number(rule.days) || 0));
-            if (fixed) fixed.value = String(Math.max(0, Number(rule.fixed) || 0));
+            if (fixed) {
+                const savedFixed = Number(rule.fixed);
+                fixed.value = String(
+                    controls.allowNegativeFixed
+                        ? (Number.isFinite(savedFixed) ? savedFixed : 0)
+                        : Math.max(0, savedFixed || 0)
+                );
+            }
+            if (consecutiveDays) {
+                consecutiveDays.value = String(
+                    Math.max(0, Number(rule.consecutive_days) || 0)
+                );
+            }
         });
     } catch (error) {
         console.warn("Could not restore stock strategy rules.", error);
@@ -8024,6 +9181,13 @@ function initializeStockStrategyControls() {
     document.getElementById("strategy-run-button")?.addEventListener(
         "click",
         () => requestStockStrategy({ showLoading: true })
+    );
+    document.getElementById("strategy-use-saved-data")?.addEventListener(
+        "change",
+        event => {
+            stockStrategyUseSavedData = event.target.checked;
+            requestStockStrategy({ showLoading: true });
+        }
     );
     document.querySelectorAll(".strategy-rule input, .strategy-rule select")
         .forEach(control => {
@@ -8043,9 +9207,14 @@ function initializeStockStrategyControls() {
 function formatStockStrategyValue(metric, value) {
     if (value === null || value === undefined || value === "") return "—";
     if (metric === "trade_value") return formatTradeValue(value);
+    if (metric === "real_money_flow") return formatTradeValue(value);
     if (metric === "trade_to_float_percent") {
         return formatStockCell({ key: metric, format: "precisePercent" }, value, false);
     }
+    if (metric === "money_flow_quality") {
+        return formatStockCell({ key: metric, format: "precisePercent" }, value, false);
+    }
+    if (metric === "integer") return formatStockInteger(value);
     return formatStockRatio(value);
 }
 
@@ -8059,6 +9228,14 @@ function renderStockStrategyTable(payload) {
 
     const rows = Array.isArray(payload?.stocks) ? payload.stocks : [];
     const formatter = new Intl.NumberFormat("fa-IR");
+    const savedDataStatus = getStockSavedDataStatus(payload);
+    const sourceDate = document.getElementById("strategy-source-date");
+    if (sourceDate) {
+        sourceDate.textContent = savedDataStatus;
+        sourceDate.title = payload?.missing_snapshot_count
+            ? `${formatter.format(payload.missing_snapshot_count)} نماد فاقد آرشیو روزانه است.`
+            : "";
+    }
     if (count) {
         count.textContent = `${formatter.format(rows.length)} از ${formatter.format(payload?.evaluated_count || 0)} نماد`;
     }
@@ -8071,7 +9248,9 @@ function renderStockStrategyTable(payload) {
             const metricNames = {
                 trade_value: "ارزش معاملات",
                 trade_to_float_percent: "معامله به شناوری",
-                real_buy_power: "قدرت خرید حقیقی"
+                real_buy_power: "قدرت خرید حقیقی",
+                real_money_flow: "ورود پول حقیقی",
+                money_flow_quality: "کیفیت ورود پول"
             };
             const warnings = [];
             Object.entries(payload?.history_coverage || {}).forEach(([metric, coverage]) => {
@@ -8092,7 +9271,12 @@ function renderStockStrategyTable(payload) {
             }
             if (payload?.excluded_zero_or_missing_count) {
                 warnings.push(
-                    `${formatter.format(payload.excluded_zero_or_missing_count)} نماد با مقدار صفر یا خالی حذف شد`
+                    `${formatter.format(payload.excluded_zero_or_missing_count)} نماد با مقدار نامعتبر، صفر یا خالی حذف شد`
+                );
+            }
+            if (payload?.missing_snapshot_count) {
+                warnings.push(
+                    `${formatter.format(payload.missing_snapshot_count)} نماد بدون آرشیو روزانه از آخرین دیتای فعلی استفاده کرد`
                 );
             }
 
@@ -8107,15 +9291,20 @@ function renderStockStrategyTable(payload) {
     }
 
     const columns = [
-        { key: "symbol", label: "نماد", width: 150 },
+        { key: "symbol", label: "نماد", width: 190 },
         { key: "company", label: "نام شرکت", width: 210 },
         { key: "industry", label: "صنعت", width: 190 },
-        { key: "trade_value", label: "ارزش معاملات امروز", unit: "میلیارد تومان", metric: "trade_value", width: 150 },
+        { key: "trade_value", label: "ارزش معاملات", unit: "میلیارد تومان", metric: "trade_value", width: 150 },
         { key: "trade_value_average", label: "میانگین ارزش معاملات", unit: "میلیارد تومان", metric: "trade_value", historyKey: "trade_value_history_count", width: 160 },
-        { key: "trade_to_float_percent", label: "معامله به شناوری امروز", unit: "درصد", metric: "trade_to_float_percent", width: 155 },
+        { key: "price_power", label: "قدرت قیمت", metric: "price_power", width: 115 },
+        { key: "trade_to_float_percent", label: "معامله به شناوری", unit: "درصد", metric: "trade_to_float_percent", width: 155 },
         { key: "trade_to_float_percent_average", label: "میانگین معامله به شناوری", unit: "درصد", metric: "trade_to_float_percent", historyKey: "trade_to_float_percent_history_count", width: 175 },
-        { key: "real_buy_power", label: "قدرت خرید حقیقی امروز", unit: "برابر", metric: "real_buy_power", width: 155 },
-        { key: "real_buy_power_average", label: "میانگین قدرت خرید حقیقی", unit: "برابر", metric: "real_buy_power", historyKey: "real_buy_power_history_count", width: 170 }
+        { key: "real_buy_power", label: "قدرت خرید حقیقی", unit: "برابر", metric: "real_buy_power", width: 155 },
+        { key: "real_buy_power_average", label: "میانگین قدرت خرید حقیقی", unit: "برابر", metric: "real_buy_power", historyKey: "real_buy_power_history_count", width: 170 },
+        { key: "real_money_flow", label: "ورود پول حقیقی", unit: "میلیارد تومان", metric: "real_money_flow", width: 155 },
+        { key: "real_money_flow_average", label: "میانگین ورود پول", unit: "میلیارد تومان", metric: "real_money_flow", historyKey: "real_money_flow_history_count", width: 165 },
+        { key: "real_money_flow_positive_streak", label: "ورود پول مثبت پیاپی", unit: "روز", metric: "integer", width: 155 },
+        { key: "money_flow_quality", label: "کیفیت ورود پول", unit: "درصد", metric: "money_flow_quality", width: 150 }
     ];
 
     table.querySelector("colgroup")?.remove();
@@ -8166,7 +9355,46 @@ function renderStockStrategyTable(payload) {
             const cell = document.createElement("td");
             cell.dataset.column = column.key;
             if (column.key === "symbol") cell.classList.add("stocks-pinned-symbol");
-            if (
+            if (column.key === "symbol") {
+                const symbolContent = document.createElement("span");
+                symbolContent.className = "stocks-symbol-content";
+
+                const symbolText = document.createElement("span");
+                symbolText.className = "stocks-symbol-name";
+                symbolText.textContent = stock.symbol || "—";
+
+                const symbolActions = document.createElement("span");
+                symbolActions.className = "stocks-symbol-actions";
+                if (stock.ins_code) {
+                    const symbolLink = document.createElement("a");
+                    symbolLink.className = "stocks-symbol-link";
+                    symbolLink.href = `https://www.tsetmc.com/instInfo/${encodeURIComponent(stock.ins_code)}`;
+                    symbolLink.target = "_blank";
+                    symbolLink.rel = "noopener noreferrer";
+                    symbolLink.title = `نمایش ${stock.symbol} در TSETMC`;
+                    symbolLink.setAttribute(
+                        "aria-label",
+                        `نمایش نماد ${stock.symbol} در TSETMC`
+                    );
+                    symbolLink.innerHTML = `
+                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                            <path d="M14 5h5v5"></path>
+                            <path d="m19 5-8 8"></path>
+                            <path d="M18 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path>
+                        </svg>
+                    `;
+                    symbolActions.appendChild(symbolLink);
+                }
+                symbolActions.appendChild(createStockNotesButton(stock.symbol));
+                symbolContent.append(symbolText, symbolActions);
+                cell.appendChild(symbolContent);
+            } else if (column.key === "price_power") {
+                const presentation = getStockPricePowerPresentation(stock);
+                cell.textContent = presentation.label;
+                cell.classList.add(`is-${presentation.tone}`);
+                cell.classList.toggle("is-queue", presentation.stacked === true);
+                cell.title = presentation.title;
+            } else if (
                 column.historyKey
                 && stock[column.key] !== null
                 && stock[column.key] !== undefined
@@ -8187,6 +9415,7 @@ function renderStockStrategyTable(payload) {
                     ? formatStockStrategyValue(column.metric, stock[column.key])
                     : (stock[column.key] || "—");
             }
+            attachStockHistoryChartButton(cell, stock, column);
             row.appendChild(cell);
         });
         fragment.appendChild(row);
@@ -8199,10 +9428,14 @@ function renderStockStrategyTable(payload) {
 }
 
 async function requestStockStrategy({ showLoading = false } = {}) {
-    if (stockStrategyLoading) return;
+    if (stockStrategyLoading) {
+        stockStrategyReloadPending = true;
+        return;
+    }
     const loading = document.getElementById("strategy-loading");
     const button = document.getElementById("strategy-run-button");
     const status = document.getElementById("strategy-status");
+    const requestedSavedData = stockStrategyUseSavedData;
     stockStrategyLoading = true;
     if (loading) loading.hidden = !(showLoading && !stockStrategyLoaded);
     if (button) {
@@ -8214,12 +9447,19 @@ async function requestStockStrategy({ showLoading = false } = {}) {
         const response = await fetch("/stock-strategy", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rules: readStockStrategyRules() }),
+            body: JSON.stringify({
+                rules: readStockStrategyRules(),
+                use_saved_data: requestedSavedData
+            }),
             cache: "no-store"
         });
         const payload = await response.json();
         if (!response.ok) {
             throw new Error(payload.error || "اجرای استراتژی ناموفق بود.");
+        }
+        if (requestedSavedData !== stockStrategyUseSavedData) {
+            stockStrategyReloadPending = true;
+            return;
         }
         stockStrategyLoaded = true;
         renderStockStrategyTable(payload);
@@ -8235,6 +9475,10 @@ async function requestStockStrategy({ showLoading = false } = {}) {
         if (button) {
             button.disabled = false;
             button.removeAttribute("aria-busy");
+        }
+        if (stockStrategyReloadPending) {
+            stockStrategyReloadPending = false;
+            window.setTimeout(() => requestStockStrategy(), 0);
         }
     }
 }
@@ -8265,6 +9509,8 @@ document.addEventListener(
         initializeStockWatchlistColumnSelector();
         initializeStockViewControls();
         initializeStockWatchlistControls();
+        initializeStockNotes();
+        initializeHistoryChartControls();
         initializeStockTableDragScroll();
         initializeStockTableDragScroll("watchlist-table-wrap");
         loadStockWatchlist();
@@ -8316,6 +9562,10 @@ document.addEventListener(
         document
             .getElementById("show-market-share-options")
             ?.addEventListener("click", openMarketShareOptionsSummary);
+
+        document
+            .getElementById("show-option-burning")
+            ?.addEventListener("click", openOptionBurningSummary);
 
         document
             .getElementById("expectations-market-share-count")
@@ -8386,6 +9636,12 @@ document.addEventListener(
             ));
 
         document
+            .querySelectorAll("[data-close-option-burning-modal]")
+            .forEach(element => element.addEventListener(
+                "click", closeOptionBurningSummary
+            ));
+
+        document
             .querySelector(".nearest-expiry-table tbody")
             ?.addEventListener("click", event => {
                 const button = event.target.closest(".nearest-expiry-detail-link");
@@ -8445,6 +9701,11 @@ document.addEventListener(
 
         document.addEventListener("keydown", event => {
             if (event.key === "Escape") {
+                const historyModal = document.getElementById("history-chart-modal");
+                if (historyModal && !historyModal.hidden) {
+                    closeHistoryChart();
+                    return;
+                }
                 const detailModal = document.getElementById("expectations-modal");
                 if (detailModal && !detailModal.hidden) {
                     closeExpectationDetails();
@@ -8453,6 +9714,7 @@ document.addEventListener(
                 closeNearestExpirySummary();
                 closeExpiringOptionsSummary();
                 closeMarketShareOptionsSummary();
+                closeOptionBurningSummary();
             }
         });
 
