@@ -10,8 +10,8 @@
     >
     <title>دیدبان بازار سهام</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='history-charts-v6') }}">
-    <link rel="icon" href="{{ url_for('static', filename='logo.png', v='market-logo-v1') }}" type="image/png">
+    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='brand-header-v2') }}">
+    <link rel="icon" href="{{ url_for('static', filename='logo.png', v='market-logo-v2') }}" type="image/png">
 </head>
 <body class="dashboard-shell">
     <div class="ambient-grid" aria-hidden="true"></div>
@@ -19,12 +19,13 @@
     <header class="app-header">
         <a class="app-brand" href="/" aria-label="دیدبان بازار سهام، صفحه اصلی">
             <span class="app-brand-mark" aria-hidden="true">
-                <img src="{{ url_for('static', filename='logo.png', v='market-logo-v1') }}" alt="">
+                <img src="{{ url_for('static', filename='logo.png', v='market-logo-v2') }}" alt="">
             </span>
-            <span class="app-brand-copy">
-                <strong>دیدبان بازار سهام</strong>
-                <small>Stock Intelligence</small>
-            </span>
+            <img
+                class="app-brand-image"
+                src="{{ url_for('static', filename='brand.png', v='brand-header-v2') }}"
+                alt="SmartInvestment"
+            >
         </a>
 
         <nav class="app-navigation" aria-label="بخش‌های سامانه">
