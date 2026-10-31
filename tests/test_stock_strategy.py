@@ -351,6 +351,85 @@ class StockStrategyTests(unittest.TestCase):
             },
         )
 
+    def test_rsi_can_filter_between_two_thresholds(self):
+        current_rows = [{
+            "symbol": "نماد۱",
+            "market_date": "2026-10-06",
+            "closing_price": 101,
+        }]
+        history = self.history(*[
+            {"trade_date": f"2026-10-0{index + 1}", "closing_price": price}
+            for index, price in enumerate([100, 101, 102, 101, 102])
+        ])
+        rules = {
+            "rsi": {
+                "enabled": True,
+                "operator": "between",
+                "fixed": 70,
+                "maximum": 50,
+                "period": 5,
+            },
+        }
+
+        result = stock_app.evaluate_stock_strategy(current_rows, history, rules)
+
+        self.assertEqual(result["count"], 1)
+        self.assertAlmostEqual(result["stocks"][0]["rsi"], 60)
+        self.assertEqual(result["rules"]["rsi"]["fixed"], 50)
+        self.assertEqual(result["rules"]["rsi"]["maximum"], 70)
+
+        rules["rsi"].update({"fixed": 40, "maximum": 55})
+        failed = stock_app.evaluate_stock_strategy(current_rows, history, rules)
+        self.assertEqual(failed["count"], 0)
+
+    def test_ema_can_filter_real_upward_and_downward_crossovers(self):
+        self.assertEqual(
+            stock_app.calculate_stock_ema_crossover(
+                [10, 10, 10, 10, 10, 20],
+                2,
+                4,
+            ),
+            1,
+        )
+        self.assertEqual(
+            stock_app.calculate_stock_ema_crossover(
+                [20, 20, 20, 20, 20, 10],
+                2,
+                4,
+            ),
+            -1,
+        )
+
+        history = self.history(*[
+            {"trade_date": f"2026-10-0{day}", "closing_price": 10}
+            for day in range(1, 6)
+        ])
+        rules = {
+            "ema": {
+                "enabled": True,
+                "mode": "crossover",
+                "operator": "gte",
+                "period": 2,
+                "long_period": 4,
+            },
+        }
+        result = stock_app.evaluate_stock_strategy(
+            [{
+                "symbol": "نماد۱",
+                "market_date": "2026-10-06",
+                "closing_price": 20,
+            }],
+            history,
+            rules,
+        )
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["stocks"][0]["ema_cross_direction"], 1)
+        self.assertEqual(
+            result["technical_coverage"]["ema"]["required_points"],
+            5,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

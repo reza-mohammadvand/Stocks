@@ -634,7 +634,7 @@
                         </label>
                     </article>
 
-                    <article class="strategy-rule" data-strategy-rule="rsi">
+                    <article class="strategy-rule strategy-rule-wide" data-strategy-rule="rsi">
                         <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-rsi-enabled">
                             <input id="strategy-rsi-enabled" type="checkbox" role="switch">
                             <span class="stock-toggle-track" aria-hidden="true">
@@ -648,11 +648,16 @@
                                 <option value="gte">بزرگ‌تر یا مساوی</option>
                                 <option value="lte">کوچک‌تر یا مساوی</option>
                                 <option value="eq">مساوی</option>
+                                <option value="between">بین دو مقدار</option>
                             </select>
                         </label>
                         <label class="strategy-field">
-                            <span>آستانه RSI</span>
+                            <span>حد پایین RSI</span>
                             <input id="strategy-rsi-fixed" type="number" min="0" max="100" step="0.1" value="50" inputmode="decimal">
+                        </label>
+                        <label class="strategy-field">
+                            <span>حد بالای RSI (حالت بازه)</span>
+                            <input id="strategy-rsi-maximum" type="number" min="0" max="100" step="0.1" value="70" inputmode="decimal">
                         </label>
                         <label class="strategy-field">
                             <span>دوره RSI</span>
@@ -660,7 +665,7 @@
                         </label>
                     </article>
 
-                    <article class="strategy-rule" data-strategy-rule="ema">
+                    <article class="strategy-rule strategy-rule-wide" data-strategy-rule="ema">
                         <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-ema-enabled">
                             <input id="strategy-ema-enabled" type="checkbox" role="switch">
                             <span class="stock-toggle-track" aria-hidden="true">
@@ -669,16 +674,27 @@
                             <strong>EMA</strong>
                         </label>
                         <label class="strategy-field">
-                            <span>قیمت پایانی نسبت به EMA</span>
-                            <select id="strategy-ema-operator">
-                                <option value="gte">بزرگ‌تر یا مساوی</option>
-                                <option value="lte">کوچک‌تر یا مساوی</option>
-                                <option value="eq">مساوی</option>
+                            <span>حالت بررسی EMA</span>
+                            <select id="strategy-ema-mode">
+                                <option value="price">قیمت پایانی نسبت به EMA</option>
+                                <option value="crossover">تقاطع EMA کوتاه و بلند</option>
                             </select>
                         </label>
                         <label class="strategy-field">
-                            <span>دوره EMA</span>
+                            <span>جهت مقایسه یا تقاطع</span>
+                            <select id="strategy-ema-operator">
+                                <option value="gte">بالاتر / شکست رو به بالا</option>
+                                <option value="lte">پایین‌تر / شکست رو به پایین</option>
+                                <option value="eq">مساوی (فقط حالت قیمت)</option>
+                            </select>
+                        </label>
+                        <label class="strategy-field">
+                            <span>دوره EMA کوتاه</span>
                             <input id="strategy-ema-period" type="number" min="2" max="250" step="1" value="20" inputmode="numeric">
+                        </label>
+                        <label class="strategy-field">
+                            <span>دوره EMA بلند (حالت تقاطع)</span>
+                            <input id="strategy-ema-long-period" type="number" min="3" max="250" step="1" value="50" inputmode="numeric">
                         </label>
                     </article>
 
@@ -1033,6 +1049,6 @@
         </section>
     </div>
 
-    <script src="{{ url_for('static', filename='scripttest.js', v='strategy-settings-v2') }}"></script>
+    <script src="{{ url_for('static', filename='scripttest.js', v='strategy-ranges-crossovers-v3') }}"></script>
 </body>
 </html>

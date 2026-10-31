@@ -9075,13 +9075,17 @@ const stockStrategyControlMap = {
         enabled: "strategy-rsi-enabled",
         operator: "strategy-rsi-operator",
         fixed: "strategy-rsi-fixed",
+        rangeMaximum: "strategy-rsi-maximum",
         period: "strategy-rsi-period",
-        fixedMaximum: 100
+        fixedMaximum: 100,
+        rangeMaximumLimit: 100
     },
     ema: {
         enabled: "strategy-ema-enabled",
         operator: "strategy-ema-operator",
-        period: "strategy-ema-period"
+        mode: "strategy-ema-mode",
+        period: "strategy-ema-period",
+        longPeriod: "strategy-ema-long-period"
     },
     macd: {
         enabled: "strategy-macd-enabled",
@@ -9117,6 +9121,12 @@ function readStockStrategyRules() {
                 Math.min(250, Number(document.getElementById(controls.period)?.value) || 2)
             )
             : 0;
+        const longPeriod = controls.longPeriod
+            ? Math.max(
+                period + 1,
+                Math.min(250, Number(document.getElementById(controls.longPeriod)?.value) || 50)
+            )
+            : 0;
         const fastPeriod = controls.fastPeriod
             ? Math.max(
                 2,
@@ -9138,6 +9148,9 @@ function readStockStrategyRules() {
         const rawFixed = controls.fixed
             ? Number(document.getElementById(controls.fixed)?.value)
             : 0;
+        const rawRangeMaximum = controls.rangeMaximum
+            ? Number(document.getElementById(controls.rangeMaximum)?.value)
+            : 0;
         let fixed = controls.fixed
             ? (controls.allowNegativeFixed
                 ? (Number.isFinite(rawFixed) ? rawFixed : 0)
@@ -9146,6 +9159,12 @@ function readStockStrategyRules() {
         if (Number.isFinite(controls.fixedMaximum)) {
             fixed = Math.min(controls.fixedMaximum, fixed);
         }
+        let rangeMaximum = Number.isFinite(rawRangeMaximum)
+            ? Math.max(0, rawRangeMaximum)
+            : 0;
+        if (Number.isFinite(controls.rangeMaximumLimit)) {
+            rangeMaximum = Math.min(controls.rangeMaximumLimit, rangeMaximum);
+        }
         rules[metric] = {
             enabled: Boolean(document.getElementById(controls.enabled)?.checked),
             operator: controls.operator
@@ -9153,14 +9172,19 @@ function readStockStrategyRules() {
                 : "gte",
             days,
             fixed,
+            maximum: rangeMaximum,
             consecutive_days: consecutiveDays,
             period,
+            long_period: longPeriod,
             fast_period: fastPeriod,
             slow_period: slowPeriod,
             signal_period: signalPeriod,
             compare_to: controls.compareTo
                 ? (document.getElementById(controls.compareTo)?.value || "signal")
-                : "signal"
+                : "signal",
+            mode: controls.mode
+                ? (document.getElementById(controls.mode)?.value || "price")
+                : "price"
         };
     });
     return rules;
@@ -9225,11 +9249,17 @@ function restoreStockStrategyRules() {
             const fixed = controls.fixed
                 ? document.getElementById(controls.fixed)
                 : null;
+            const rangeMaximum = controls.rangeMaximum
+                ? document.getElementById(controls.rangeMaximum)
+                : null;
             const consecutiveDays = controls.consecutiveDays
                 ? document.getElementById(controls.consecutiveDays)
                 : null;
             const period = controls.period
                 ? document.getElementById(controls.period)
+                : null;
+            const longPeriod = controls.longPeriod
+                ? document.getElementById(controls.longPeriod)
                 : null;
             const fastPeriod = controls.fastPeriod
                 ? document.getElementById(controls.fastPeriod)
@@ -9243,8 +9273,11 @@ function restoreStockStrategyRules() {
             const compareTo = controls.compareTo
                 ? document.getElementById(controls.compareTo)
                 : null;
+            const mode = controls.mode
+                ? document.getElementById(controls.mode)
+                : null;
             if (enabled) enabled.checked = Boolean(rule.enabled);
-            if (operator && ["gte", "lte", "eq"].includes(rule.operator)) {
+            if (operator && ["gte", "lte", "eq", "between"].includes(rule.operator)) {
                 operator.value = rule.operator;
             }
             if (days) days.value = String(Math.max(0, Number(rule.days) || 0));
@@ -9261,6 +9294,17 @@ function restoreStockStrategyRules() {
                         : restoredFixed
                 );
             }
+            if (rangeMaximum) {
+                const savedMaximum = Number(rule.maximum);
+                const restoredMaximum = Number.isFinite(savedMaximum)
+                    ? Math.max(0, savedMaximum)
+                    : 70;
+                rangeMaximum.value = String(
+                    Number.isFinite(controls.rangeMaximumLimit)
+                        ? Math.min(controls.rangeMaximumLimit, restoredMaximum)
+                        : restoredMaximum
+                );
+            }
             if (consecutiveDays) {
                 consecutiveDays.value = String(
                     Math.max(0, Number(rule.consecutive_days) || 0)
@@ -9269,6 +9313,18 @@ function restoreStockStrategyRules() {
             if (period) {
                 period.value = String(
                     Math.max(2, Math.min(250, Number(rule.period) || 2))
+                );
+            }
+            if (longPeriod) {
+                const restoredPeriod = Math.max(
+                    2,
+                    Math.min(249, Number(rule.period) || 20)
+                );
+                longPeriod.value = String(
+                    Math.max(
+                        restoredPeriod + 1,
+                        Math.min(250, Number(rule.long_period) || 50)
+                    )
                 );
             }
             if (fastPeriod) {
@@ -9295,6 +9351,9 @@ function restoreStockStrategyRules() {
             }
             if (compareTo && ["signal", "zero"].includes(rule.compare_to)) {
                 compareTo.value = rule.compare_to;
+            }
+            if (mode && ["price", "crossover"].includes(rule.mode)) {
+                mode.value = rule.mode;
             }
         });
     } catch (error) {
@@ -9339,8 +9398,13 @@ function formatStockStrategyValue(metric, value) {
     if (value === null || value === undefined || value === "") return "—";
     if (metric === "trade_value") return formatTradeValue(value);
     if (metric === "real_money_flow") return formatTradeValue(value);
-    if (metric === "closing_price" || metric === "ema") {
+    if (["closing_price", "ema", "ema_slow"].includes(metric)) {
         return formatStockInteger(value);
+    }
+    if (metric === "ema_cross") {
+        if (Number(value) > 0) return "شکست رو به بالا";
+        if (Number(value) < 0) return "شکست رو به پایین";
+        return "بدون تقاطع";
     }
     if (metric === "trade_to_float_percent") {
         return formatStockCell({ key: metric, format: "precisePercent" }, value, false);
@@ -9443,6 +9507,7 @@ function renderStockStrategyTable(payload) {
     const strategyRules = payload?.rules || {};
     const rsiPeriod = Number(strategyRules?.rsi?.period) || 14;
     const emaPeriod = Number(strategyRules?.ema?.period) || 20;
+    const emaLongPeriod = Number(strategyRules?.ema?.long_period) || 50;
     const macdFastPeriod = Number(strategyRules?.macd?.fast_period) || 12;
     const macdSlowPeriod = Number(strategyRules?.macd?.slow_period) || 26;
     const macdSignalPeriod = Number(strategyRules?.macd?.signal_period) || 9;
@@ -9466,6 +9531,8 @@ function renderStockStrategyTable(payload) {
     columns.splice(6, 0,
         { key: "closing_price", label: "قیمت پایانی", unit: "ریال", metric: "closing_price", width: 125 },
         { key: "ema", label: `EMA ${formatter.format(emaPeriod)}`, unit: "ریال", metric: "ema", width: 125 },
+        { key: "ema_slow", label: `EMA ${formatter.format(emaLongPeriod)}`, unit: "ریال", metric: "ema_slow", width: 125 },
+        { key: "ema_cross_direction", label: "تقاطع EMA", metric: "ema_cross", width: 145 },
         { key: "rsi", label: `RSI ${formatter.format(rsiPeriod)}`, metric: "rsi", width: 110 },
         { key: "macd", label: `MACD ${formatter.format(macdFastPeriod)}،${formatter.format(macdSlowPeriod)}`, metric: "macd", width: 135 },
         { key: "macd_signal", label: `Signal ${formatter.format(macdSignalPeriod)}`, metric: "macd", width: 115 },

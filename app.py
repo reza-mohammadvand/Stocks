@@ -1506,8 +1506,30 @@ def normalize_stock_strategy_rules(payload):
         else {}
     )
     rsi_operator = str(rsi_source.get("operator") or "gte").strip().lower()
-    if rsi_operator not in {"gte", "lte", "eq"}:
+    if rsi_operator not in {"gte", "lte", "eq", "between"}:
         rsi_operator = "gte"
+    rsi_fixed = max(
+        0,
+        min(
+            normalize_stock_strategy_number(
+                rsi_source.get("fixed"),
+                50,
+            ),
+            100,
+        ),
+    )
+    rsi_maximum = max(
+        0,
+        min(
+            normalize_stock_strategy_number(
+                rsi_source.get("maximum"),
+                70,
+            ),
+            100,
+        ),
+    )
+    if rsi_operator == "between" and rsi_maximum < rsi_fixed:
+        rsi_fixed, rsi_maximum = rsi_maximum, rsi_fixed
     normalized["rsi"] = {
         "enabled": bool(rsi_source.get("enabled")),
         "operator": rsi_operator,
@@ -1516,16 +1538,8 @@ def normalize_stock_strategy_rules(payload):
             14,
             minimum=2,
         ),
-        "fixed": max(
-            0,
-            min(
-                normalize_stock_strategy_number(
-                    rsi_source.get("fixed"),
-                    50,
-                ),
-                100,
-            ),
-        ),
+        "fixed": rsi_fixed,
+        "maximum": rsi_maximum,
         "days": 0,
         "consecutive_days": 0,
     }
@@ -1538,14 +1552,27 @@ def normalize_stock_strategy_rules(payload):
     ema_operator = str(ema_source.get("operator") or "gte").strip().lower()
     if ema_operator not in {"gte", "lte", "eq"}:
         ema_operator = "gte"
+    ema_mode = str(ema_source.get("mode") or "price").strip().lower()
+    if ema_mode not in {"price", "crossover"}:
+        ema_mode = "price"
+    ema_period = normalize_stock_strategy_integer(
+        ema_source.get("period"),
+        20,
+        minimum=2,
+        maximum=249,
+    )
+    ema_long_period = normalize_stock_strategy_integer(
+        ema_source.get("long_period"),
+        50,
+        minimum=3,
+    )
+    ema_long_period = max(ema_period + 1, ema_long_period)
     normalized["ema"] = {
         "enabled": bool(ema_source.get("enabled")),
         "operator": ema_operator,
-        "period": normalize_stock_strategy_integer(
-            ema_source.get("period"),
-            20,
-            minimum=2,
-        ),
+        "mode": ema_mode,
+        "period": ema_period,
+        "long_period": ema_long_period,
         "days": 0,
         "fixed": 0,
         "consecutive_days": 0,
@@ -1642,6 +1669,29 @@ def calculate_stock_ema_series(values, period):
 def calculate_stock_ema(values, period):
     series = calculate_stock_ema_series(values, period)
     return series[-1] if series else None
+
+
+def calculate_stock_ema_crossover(values, fast_period, slow_period):
+    """Return 1 for an upward cross, -1 for downward, 0 for no cross."""
+    if slow_period <= fast_period:
+        return None
+    fast_series = calculate_stock_ema_series(values, fast_period)
+    slow_series = calculate_stock_ema_series(values, slow_period)
+    comparable = [
+        (fast_value, slow_value)
+        for fast_value, slow_value in zip(fast_series, slow_series)
+        if fast_value is not None and slow_value is not None
+    ]
+    if len(comparable) < 2:
+        return None
+
+    previous_fast, previous_slow = comparable[-2]
+    current_fast, current_slow = comparable[-1]
+    if previous_fast <= previous_slow and current_fast > current_slow:
+        return 1
+    if previous_fast >= previous_slow and current_fast < current_slow:
+        return -1
+    return 0
 
 
 def calculate_stock_rsi(values, period):
@@ -1756,6 +1806,8 @@ def stock_strategy_technical_required_points(metric, rule):
     if metric == "rsi":
         return rule["period"] + 1
     if metric == "ema":
+        if rule.get("mode") == "crossover":
+            return rule["long_period"] + 1
         return rule["period"]
     if metric == "macd":
         if rule.get("compare_to") == "zero":
@@ -1835,6 +1887,15 @@ def evaluate_stock_strategy(rows, history, rules):
             closing_prices,
             ema_rule["period"],
         )
+        ema_slow_value = calculate_stock_ema(
+            closing_prices,
+            ema_rule["long_period"],
+        )
+        ema_cross_direction = calculate_stock_ema_crossover(
+            closing_prices,
+            ema_rule["period"],
+            ema_rule["long_period"],
+        )
         macd_values = calculate_stock_macd(
             closing_prices,
             macd_rule["fast_period"],
@@ -1849,6 +1910,9 @@ def evaluate_stock_strategy(rows, history, rules):
             "rsi_period": rsi_rule["period"],
             "ema": ema_value,
             "ema_period": ema_rule["period"],
+            "ema_slow": ema_slow_value,
+            "ema_long_period": ema_rule["long_period"],
+            "ema_cross_direction": ema_cross_direction,
             "macd": macd_values["macd"],
             "macd_signal": macd_values["signal"],
             "macd_histogram": macd_values["histogram"],
@@ -1991,8 +2055,15 @@ def evaluate_stock_strategy(rows, history, rules):
                 current_value = rsi_value
                 reference_value = rule["fixed"]
             elif metric == "ema":
-                current_value = current_closing_price
-                reference_value = ema_value
+                if rule.get("mode") == "crossover":
+                    current_value = ema_cross_direction
+                    reference_value = (
+                        -1 if rule["operator"] == "lte"
+                        else (0 if rule["operator"] == "eq" else 1)
+                    )
+                else:
+                    current_value = current_closing_price
+                    reference_value = ema_value
             else:
                 current_value = macd_values["macd"]
                 reference_value = (
@@ -2005,6 +2076,14 @@ def evaluate_stock_strategy(rows, history, rules):
                 passed = False
                 row_has_missing_history = True
                 coverage["insufficient_symbol_count"] += 1
+                continue
+            if metric == "rsi" and rule["operator"] == "between":
+                if not rule["fixed"] <= current_value <= rule["maximum"]:
+                    passed = False
+                continue
+            if metric == "ema" and rule.get("mode") == "crossover":
+                if current_value != reference_value:
+                    passed = False
                 continue
             if not compare_stock_strategy_value(
                 current_value,
