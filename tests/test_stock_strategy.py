@@ -257,6 +257,100 @@ class StockStrategyTests(unittest.TestCase):
         self.assertEqual(result["active_filter_count"], 0)
         self.assertEqual(result["count"], 1)
 
+    def test_technical_indicator_calculations(self):
+        values = [100, 101, 102, 103, 104, 105, 106, 107, 108, 110]
+
+        self.assertAlmostEqual(
+            stock_app.calculate_stock_ema([1, 2, 3, 4, 5], 3),
+            4,
+        )
+        self.assertEqual(stock_app.calculate_stock_rsi(values, 5), 100)
+        macd = stock_app.calculate_stock_macd(values, 3, 5, 3)
+        self.assertIsNotNone(macd["macd"])
+        self.assertIsNotNone(macd["signal"])
+        self.assertAlmostEqual(
+            macd["histogram"],
+            macd["macd"] - macd["signal"],
+        )
+
+    def test_rsi_ema_and_macd_filters_are_combined(self):
+        current_rows = [{
+            "symbol": "نماد۱",
+            "market_date": "2026-10-10",
+            "closing_price": 110,
+        }]
+        history = self.history(*[
+            {
+                "trade_date": f"2026-10-{day:02d}",
+                "closing_price": 99 + day,
+            }
+            for day in range(1, 10)
+        ])
+        rules = {
+            "rsi": {
+                "enabled": True,
+                "operator": "gte",
+                "fixed": 50,
+                "period": 5,
+            },
+            "ema": {
+                "enabled": True,
+                "operator": "gte",
+                "period": 5,
+            },
+            "macd": {
+                "enabled": True,
+                "operator": "gte",
+                "compare_to": "signal",
+                "fast_period": 3,
+                "slow_period": 5,
+                "signal_period": 3,
+            },
+        }
+
+        result = stock_app.evaluate_stock_strategy(current_rows, history, rules)
+
+        self.assertEqual(result["active_filter_count"], 3)
+        self.assertEqual(result["count"], 1)
+        stock = result["stocks"][0]
+        self.assertEqual(stock["technical_history_count"], 10)
+        self.assertEqual(stock["rsi"], 100)
+        self.assertLess(stock["ema"], stock["closing_price"])
+        self.assertGreaterEqual(stock["macd"], stock["macd_signal"])
+
+    def test_technical_filter_reports_insufficient_closing_history(self):
+        result = stock_app.evaluate_stock_strategy(
+            [{
+                "symbol": "نماد۱",
+                "market_date": "2026-10-03",
+                "closing_price": 103,
+            }],
+            self.history(
+                {"trade_date": "2026-10-02", "closing_price": 102},
+                {"trade_date": "2026-10-01", "closing_price": 101},
+            ),
+            {
+                "rsi": {
+                    "enabled": True,
+                    "operator": "gte",
+                    "fixed": 50,
+                    "period": 14,
+                },
+            },
+        )
+
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["missing_history_count"], 1)
+        self.assertEqual(
+            result["technical_coverage"]["rsi"],
+            {
+                "required_points": 15,
+                "minimum_points_used": 3,
+                "maximum_points_used": 3,
+                "insufficient_symbol_count": 1,
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

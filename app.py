@@ -1442,6 +1442,27 @@ STOCK_STRATEGY_METRICS = (
     "money_flow_quality",
 )
 
+STOCK_STRATEGY_TECHNICAL_METRICS = (
+    "rsi",
+    "ema",
+    "macd",
+)
+
+
+def normalize_stock_strategy_integer(value, default, minimum=0, maximum=250):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(number, maximum))
+
+
+def normalize_stock_strategy_number(value, default=0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
 
 def normalize_stock_strategy_rules(payload):
     source = payload if isinstance(payload, dict) else {}
@@ -1478,6 +1499,100 @@ def normalize_stock_strategy_rules(payload):
                 else 0
             ),
         }
+
+    rsi_source = (
+        source.get("rsi")
+        if isinstance(source.get("rsi"), dict)
+        else {}
+    )
+    rsi_operator = str(rsi_source.get("operator") or "gte").strip().lower()
+    if rsi_operator not in {"gte", "lte", "eq"}:
+        rsi_operator = "gte"
+    normalized["rsi"] = {
+        "enabled": bool(rsi_source.get("enabled")),
+        "operator": rsi_operator,
+        "period": normalize_stock_strategy_integer(
+            rsi_source.get("period"),
+            14,
+            minimum=2,
+        ),
+        "fixed": max(
+            0,
+            min(
+                normalize_stock_strategy_number(
+                    rsi_source.get("fixed"),
+                    50,
+                ),
+                100,
+            ),
+        ),
+        "days": 0,
+        "consecutive_days": 0,
+    }
+
+    ema_source = (
+        source.get("ema")
+        if isinstance(source.get("ema"), dict)
+        else {}
+    )
+    ema_operator = str(ema_source.get("operator") or "gte").strip().lower()
+    if ema_operator not in {"gte", "lte", "eq"}:
+        ema_operator = "gte"
+    normalized["ema"] = {
+        "enabled": bool(ema_source.get("enabled")),
+        "operator": ema_operator,
+        "period": normalize_stock_strategy_integer(
+            ema_source.get("period"),
+            20,
+            minimum=2,
+        ),
+        "days": 0,
+        "fixed": 0,
+        "consecutive_days": 0,
+    }
+
+    macd_source = (
+        source.get("macd")
+        if isinstance(source.get("macd"), dict)
+        else {}
+    )
+    macd_operator = str(
+        macd_source.get("operator") or "gte"
+    ).strip().lower()
+    if macd_operator not in {"gte", "lte", "eq"}:
+        macd_operator = "gte"
+    fast_period = normalize_stock_strategy_integer(
+        macd_source.get("fast_period"),
+        12,
+        minimum=2,
+        maximum=249,
+    )
+    slow_period = normalize_stock_strategy_integer(
+        macd_source.get("slow_period"),
+        26,
+        minimum=3,
+    )
+    slow_period = max(fast_period + 1, slow_period)
+    compare_to = str(
+        macd_source.get("compare_to") or "signal"
+    ).strip().lower()
+    if compare_to not in {"signal", "zero"}:
+        compare_to = "signal"
+    normalized["macd"] = {
+        "enabled": bool(macd_source.get("enabled")),
+        "operator": macd_operator,
+        "compare_to": compare_to,
+        "fast_period": fast_period,
+        "slow_period": slow_period,
+        "signal_period": normalize_stock_strategy_integer(
+            macd_source.get("signal_period"),
+            9,
+            minimum=2,
+        ),
+        "days": 0,
+        "fixed": 0,
+        "consecutive_days": 0,
+    }
     return normalized
 
 
@@ -1500,6 +1615,117 @@ def compare_stock_strategy_value(current_value, reference_value, operator):
         tolerance = max(1e-9, abs(reference_number) * 1e-9)
         return abs(current_number - reference_number) <= tolerance
     return current_number >= reference_number
+
+
+def calculate_stock_ema_series(values, period):
+    """Return an EMA series seeded with the first full-period SMA."""
+    numeric_values = [stock_number(value) for value in values]
+    if period < 2 or len(numeric_values) < period:
+        return [None] * len(numeric_values)
+    if any(value is None for value in numeric_values):
+        return [None] * len(numeric_values)
+
+    result = [None] * len(numeric_values)
+    seed = sum(numeric_values[:period]) / period
+    result[period - 1] = seed
+    multiplier = 2 / (period + 1)
+    previous = seed
+    for index in range(period, len(numeric_values)):
+        previous = (
+            (numeric_values[index] - previous) * multiplier
+            + previous
+        )
+        result[index] = previous
+    return result
+
+
+def calculate_stock_ema(values, period):
+    series = calculate_stock_ema_series(values, period)
+    return series[-1] if series else None
+
+
+def calculate_stock_rsi(values, period):
+    """Calculate Wilder's RSI from daily closing prices."""
+    numeric_values = [stock_number(value) for value in values]
+    if (
+        period < 2
+        or len(numeric_values) < period + 1
+        or any(value is None for value in numeric_values)
+    ):
+        return None
+
+    changes = [
+        numeric_values[index] - numeric_values[index - 1]
+        for index in range(1, len(numeric_values))
+    ]
+    gains = [max(change, 0) for change in changes]
+    losses = [max(-change, 0) for change in changes]
+    average_gain = sum(gains[:period]) / period
+    average_loss = sum(losses[:period]) / period
+    for index in range(period, len(changes)):
+        average_gain = (
+            average_gain * (period - 1) + gains[index]
+        ) / period
+        average_loss = (
+            average_loss * (period - 1) + losses[index]
+        ) / period
+
+    if average_loss == 0:
+        return 100.0 if average_gain > 0 else 50.0
+    relative_strength = average_gain / average_loss
+    return 100 - (100 / (1 + relative_strength))
+
+
+def calculate_stock_macd(values, fast_period, slow_period, signal_period):
+    """Calculate the current MACD, signal, and histogram values."""
+    if slow_period <= fast_period:
+        return {"macd": None, "signal": None, "histogram": None}
+    fast_series = calculate_stock_ema_series(values, fast_period)
+    slow_series = calculate_stock_ema_series(values, slow_period)
+    macd_values = [
+        fast_value - slow_value
+        for fast_value, slow_value in zip(fast_series, slow_series)
+        if fast_value is not None and slow_value is not None
+    ]
+    if not macd_values:
+        return {"macd": None, "signal": None, "histogram": None}
+
+    current_macd = macd_values[-1]
+    current_signal = calculate_stock_ema(macd_values, signal_period)
+    return {
+        "macd": current_macd,
+        "signal": current_signal,
+        "histogram": (
+            current_macd - current_signal
+            if current_signal is not None
+            else None
+        ),
+    }
+
+
+def stock_strategy_closing_prices(row, symbol_history):
+    """Build an ascending, de-duplicated daily closing-price series."""
+    current_market_date = str(row.get("market_date") or "")
+    prices_by_date = {}
+    undated_prices = []
+    for snapshot in reversed(symbol_history or []):
+        closing_price = stock_number(snapshot.get("closing_price"))
+        if closing_price is None or closing_price <= 0:
+            continue
+        trade_date = str(snapshot.get("trade_date") or "")
+        if current_market_date and trade_date == current_market_date:
+            continue
+        if trade_date:
+            prices_by_date[trade_date] = closing_price
+        else:
+            undated_prices.append(closing_price)
+
+    prices = [prices_by_date[key] for key in sorted(prices_by_date)]
+    prices.extend(undated_prices)
+    current_closing_price = stock_number(row.get("closing_price"))
+    if current_closing_price is not None and current_closing_price > 0:
+        prices.append(current_closing_price)
+    return prices
 
 
 def read_stock_strategy_history():
@@ -1526,6 +1752,18 @@ def read_stock_strategy_history():
     return history
 
 
+def stock_strategy_technical_required_points(metric, rule):
+    if metric == "rsi":
+        return rule["period"] + 1
+    if metric == "ema":
+        return rule["period"]
+    if metric == "macd":
+        if rule.get("compare_to") == "zero":
+            return rule["slow_period"]
+        return rule["slow_period"] + rule["signal_period"] - 1
+    return 0
+
+
 def evaluate_stock_strategy(rows, history, rules):
     normalized_rules = normalize_stock_strategy_rules(rules)
     active_metrics = [
@@ -1546,6 +1784,19 @@ def evaluate_stock_strategy(rows, history, rules):
         }
         for metric, rule in normalized_rules.items()
         if stock_strategy_rule_is_active(metric, rule) and rule["days"] > 0
+    }
+    technical_coverage = {
+        metric: {
+            "required_points": stock_strategy_technical_required_points(
+                metric,
+                normalized_rules[metric],
+            ),
+            "minimum_points_used": None,
+            "maximum_points_used": None,
+            "insufficient_symbol_count": 0,
+        }
+        for metric in STOCK_STRATEGY_TECHNICAL_METRICS
+        if stock_strategy_rule_is_active(metric, normalized_rules[metric])
     }
 
     for row in rows:
@@ -1571,6 +1822,40 @@ def evaluate_stock_strategy(rows, history, rules):
         row_has_partial_history = False
         row_has_missing_history = False
         row_has_zero_or_missing_value = False
+
+        closing_prices = stock_strategy_closing_prices(row, symbol_history)
+        rsi_rule = normalized_rules["rsi"]
+        ema_rule = normalized_rules["ema"]
+        macd_rule = normalized_rules["macd"]
+        rsi_value = calculate_stock_rsi(
+            closing_prices,
+            rsi_rule["period"],
+        )
+        ema_value = calculate_stock_ema(
+            closing_prices,
+            ema_rule["period"],
+        )
+        macd_values = calculate_stock_macd(
+            closing_prices,
+            macd_rule["fast_period"],
+            macd_rule["slow_period"],
+            macd_rule["signal_period"],
+        )
+        current_closing_price = stock_number(row.get("closing_price"))
+        result.update({
+            "closing_price": current_closing_price,
+            "technical_history_count": len(closing_prices),
+            "rsi": rsi_value,
+            "rsi_period": rsi_rule["period"],
+            "ema": ema_value,
+            "ema_period": ema_rule["period"],
+            "macd": macd_values["macd"],
+            "macd_signal": macd_values["signal"],
+            "macd_histogram": macd_values["histogram"],
+            "macd_fast_period": macd_rule["fast_period"],
+            "macd_slow_period": macd_rule["slow_period"],
+            "macd_signal_period": macd_rule["signal_period"],
+        })
 
         for metric in STOCK_STRATEGY_METRICS:
             rule = normalized_rules[metric]
@@ -1684,6 +1969,50 @@ def evaluate_stock_strategy(rows, history, rules):
                     if not average_passed:
                         passed = False
 
+        for metric in STOCK_STRATEGY_TECHNICAL_METRICS:
+            rule = normalized_rules[metric]
+            if not stock_strategy_rule_is_active(metric, rule):
+                continue
+
+            coverage = technical_coverage[metric]
+            points_used = len(closing_prices)
+            coverage["minimum_points_used"] = (
+                points_used
+                if coverage["minimum_points_used"] is None
+                else min(coverage["minimum_points_used"], points_used)
+            )
+            coverage["maximum_points_used"] = (
+                points_used
+                if coverage["maximum_points_used"] is None
+                else max(coverage["maximum_points_used"], points_used)
+            )
+
+            if metric == "rsi":
+                current_value = rsi_value
+                reference_value = rule["fixed"]
+            elif metric == "ema":
+                current_value = current_closing_price
+                reference_value = ema_value
+            else:
+                current_value = macd_values["macd"]
+                reference_value = (
+                    0
+                    if rule.get("compare_to") == "zero"
+                    else macd_values["signal"]
+                )
+
+            if current_value is None or reference_value is None:
+                passed = False
+                row_has_missing_history = True
+                coverage["insufficient_symbol_count"] += 1
+                continue
+            if not compare_stock_strategy_value(
+                current_value,
+                reference_value,
+                rule["operator"],
+            ):
+                passed = False
+
         if row_has_partial_history:
             partial_history_count += 1
         if row_has_missing_history:
@@ -1702,6 +2031,7 @@ def evaluate_stock_strategy(rows, history, rules):
         "insufficient_history_count": missing_history_count,
         "excluded_zero_or_missing_count": excluded_zero_or_missing_count,
         "history_coverage": history_coverage,
+        "technical_coverage": technical_coverage,
         "rules": normalized_rules,
         "stocks": results,
     }
@@ -1730,6 +2060,37 @@ def watch_market_number(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def watch_market_timestamp(value):
+    """Return a comparable Unix timestamp for an upstream market time."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        if timestamp > 10_000_000_000:
+            timestamp /= 1_000
+        return timestamp
+
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        numeric_timestamp = float(text)
+    except ValueError:
+        numeric_timestamp = None
+    if numeric_timestamp is not None:
+        if numeric_timestamp > 10_000_000_000:
+            numeric_timestamp /= 1_000
+        return numeric_timestamp
+
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=IRAN_TIMEZONE)
+    return parsed.timestamp()
 
 
 def get_rahavard_live_quotes(wait_seconds=4):
@@ -1768,8 +2129,10 @@ def get_rahavard_live_quotes(wait_seconds=4):
                         < RAHAVARD_LIVE_QUOTE_MAX_AGE_SECONDS
                     )
                 }
-                if fresh_quotes:
-                    rahavard_live_quotes_state["data"] = fresh_quotes
+                # A valid file is authoritative even when all entries have
+                # expired. This prevents stale in-memory quotes from living
+                # forever after the live collector stops receiving updates.
+                rahavard_live_quotes_state["data"] = fresh_quotes
                 if required_currency_ids.issubset(fresh_quotes):
                     break
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -1779,7 +2142,17 @@ def get_rahavard_live_quotes(wait_seconds=4):
                 break
             time.sleep(0.15)
 
-        return dict(rahavard_live_quotes_state.get("data") or {})
+        return {
+            int(asset_id): quote
+            for asset_id, quote in (
+                rahavard_live_quotes_state.get("data") or {}
+            ).items()
+            if (
+                isinstance(quote, dict)
+                and now - int(quote.get("fetched_at", 0))
+                < RAHAVARD_LIVE_QUOTE_MAX_AGE_SECONDS
+            )
+        }
 
 
 def normalize_rahavard_live_quote(quote, config):
@@ -1877,12 +2250,18 @@ def parse_rahavard_quote(asset_data, config):
 
 def fetch_rahavard_watch_asset(config, live_quotes=None):
     live_quote = (live_quotes or {}).get(config["asset_id"])
+    normalized_live_quote = None
     if live_quote:
         try:
-            return normalize_rahavard_live_quote(live_quote, config)
+            normalized_live_quote = normalize_rahavard_live_quote(
+                live_quote,
+                config,
+            )
         except (ValueError, TypeError):
             pass
     if config.get("live_required"):
+        if normalized_live_quote:
+            return normalized_live_quote
         raise ValueError("قیمت زنده آخرین معامله هنوز دریافت نشده است.")
 
     response = requests.get(
@@ -1895,7 +2274,17 @@ def fetch_rahavard_watch_asset(config, live_quotes=None):
     asset_data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(asset_data, dict):
         raise ValueError("پاسخ دارایی ره‌آورد معتبر نیست.")
-    return parse_rahavard_quote(asset_data, config)
+    api_quote = parse_rahavard_quote(asset_data, config)
+    if normalized_live_quote:
+        live_time = watch_market_timestamp(
+            normalized_live_quote.get("market_time")
+        )
+        api_time = watch_market_timestamp(api_quote.get("market_time"))
+        if live_time is not None and (
+            api_time is None or live_time > api_time
+        ):
+            return normalized_live_quote
+    return api_quote
 
 
 def fetch_global_copper_quote():

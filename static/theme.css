@@ -2359,6 +2359,10 @@
     box-shadow: inset 3px 0 0 rgba(63, 227, 255, 0.7);
 }
 
+.dashboard-shell .strategy-rule.strategy-rule-wide {
+    grid-template-columns: 180px 145px 145px repeat(3, 105px);
+}
+
 .dashboard-shell .strategy-rule-toggle {
     align-self: end;
     justify-content: flex-start;
@@ -2493,6 +2497,10 @@
 
 @media (max-width: 1050px) {
     .dashboard-shell .strategy-rule {
+        grid-template-columns: 180px 145px;
+    }
+
+    .dashboard-shell .strategy-rule.strategy-rule-wide {
         grid-template-columns: 180px 145px;
     }
 }

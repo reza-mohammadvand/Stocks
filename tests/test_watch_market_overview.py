@@ -117,6 +117,78 @@ class WatchMarketOverviewTests(unittest.TestCase):
                 stock_app.fetch_rahavard_watch_asset(config, live_quotes={})
             request_get.assert_not_called()
 
+    def test_rahavard_asset_prefers_newer_api_quote_over_stale_live_quote(self):
+        config = {
+            "key": "gold_ounce",
+            "asset_id": 2016,
+            "name": "gold ounce",
+            "unit": "USD",
+            "divisor": 1,
+            "source_url": "https://rahavard365.com/asset/2016",
+        }
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "data": {
+                "last_trade": {
+                    "end_date_time": "2026-10-31T01:00:01+03:30",
+                    "close_price": 3_876,
+                    "close_price_change": -4,
+                    "close_price_change_percent": -0.001,
+                },
+            },
+        }
+
+        with patch.object(stock_app.requests, "get", return_value=response):
+            result = stock_app.fetch_rahavard_watch_asset(
+                config,
+                live_quotes={
+                    2016: {
+                        "price": 4_048,
+                        "price_change": -11,
+                        "change_percent": -0.0027,
+                        "market_time": "2026-10-28T15:04:30+03:30",
+                    },
+                },
+            )
+
+        self.assertEqual(result["price"], 3_876)
+        self.assertEqual(result["source"], "rahavard365")
+
+    def test_rahavard_asset_keeps_newer_live_quote(self):
+        config = {
+            "key": "nimai_dollar",
+            "asset_id": 43157,
+            "name": "NIMA dollar",
+            "unit": "toman",
+            "divisor": 10,
+            "source_url": "https://rahavard365.com/asset/43157",
+        }
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "data": {
+                "last_trade": {
+                    "end_date_time": "2026-10-31T08:09:30+03:30",
+                    "close_price": 1_871_664,
+                },
+            },
+        }
+
+        with patch.object(stock_app.requests, "get", return_value=response):
+            result = stock_app.fetch_rahavard_watch_asset(
+                config,
+                live_quotes={
+                    43157: {
+                        "price": 1_875_000,
+                        "market_time": "2026-10-31T08:10:00+03:30",
+                    },
+                },
+            )
+
+        self.assertEqual(result["price"], 187_500)
+        self.assertEqual(result["source"], "rahavard365-live")
+
     def test_global_copper_is_converted_from_pounds_to_metric_tons(self):
         response = Mock()
         response.raise_for_status.return_value = None

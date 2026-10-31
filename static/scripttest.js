@@ -9070,6 +9070,26 @@ const stockStrategyControlMap = {
         operator: "strategy-money-flow-quality-operator",
         fixed: "strategy-money-flow-quality-fixed",
         allowNegativeFixed: true
+    },
+    rsi: {
+        enabled: "strategy-rsi-enabled",
+        operator: "strategy-rsi-operator",
+        fixed: "strategy-rsi-fixed",
+        period: "strategy-rsi-period",
+        fixedMaximum: 100
+    },
+    ema: {
+        enabled: "strategy-ema-enabled",
+        operator: "strategy-ema-operator",
+        period: "strategy-ema-period"
+    },
+    macd: {
+        enabled: "strategy-macd-enabled",
+        operator: "strategy-macd-operator",
+        compareTo: "strategy-macd-compare-to",
+        fastPeriod: "strategy-macd-fast-period",
+        slowPeriod: "strategy-macd-slow-period",
+        signalPeriod: "strategy-macd-signal-period"
     }
 };
 
@@ -9091,14 +9111,41 @@ function readStockStrategyRules() {
                 )
             )
             : 0;
+        const period = controls.period
+            ? Math.max(
+                2,
+                Math.min(250, Number(document.getElementById(controls.period)?.value) || 2)
+            )
+            : 0;
+        const fastPeriod = controls.fastPeriod
+            ? Math.max(
+                2,
+                Math.min(249, Number(document.getElementById(controls.fastPeriod)?.value) || 12)
+            )
+            : 0;
+        const slowPeriod = controls.slowPeriod
+            ? Math.max(
+                fastPeriod + 1,
+                Math.min(250, Number(document.getElementById(controls.slowPeriod)?.value) || 26)
+            )
+            : 0;
+        const signalPeriod = controls.signalPeriod
+            ? Math.max(
+                2,
+                Math.min(250, Number(document.getElementById(controls.signalPeriod)?.value) || 9)
+            )
+            : 0;
         const rawFixed = controls.fixed
             ? Number(document.getElementById(controls.fixed)?.value)
             : 0;
-        const fixed = controls.fixed
+        let fixed = controls.fixed
             ? (controls.allowNegativeFixed
                 ? (Number.isFinite(rawFixed) ? rawFixed : 0)
                 : Math.max(0, rawFixed || 0))
             : 0;
+        if (Number.isFinite(controls.fixedMaximum)) {
+            fixed = Math.min(controls.fixedMaximum, fixed);
+        }
         rules[metric] = {
             enabled: Boolean(document.getElementById(controls.enabled)?.checked),
             operator: controls.operator
@@ -9106,7 +9153,14 @@ function readStockStrategyRules() {
                 : "gte",
             days,
             fixed,
-            consecutive_days: consecutiveDays
+            consecutive_days: consecutiveDays,
+            period,
+            fast_period: fastPeriod,
+            slow_period: slowPeriod,
+            signal_period: signalPeriod,
+            compare_to: controls.compareTo
+                ? (document.getElementById(controls.compareTo)?.value || "signal")
+                : "signal"
         };
     });
     return rules;
@@ -9131,6 +9185,29 @@ function saveStockStrategyRules() {
     }
 }
 
+function saveStockStrategyViewSettings() {
+    try {
+        localStorage.setItem(
+            "stock-strategy-use-saved-data",
+            stockStrategyUseSavedData ? "1" : "0"
+        );
+    } catch (error) {
+        console.warn("Could not save stock strategy view settings.", error);
+    }
+}
+
+function restoreStockStrategyViewSettings() {
+    try {
+        stockStrategyUseSavedData = (
+            localStorage.getItem("stock-strategy-use-saved-data") === "1"
+        );
+        const checkbox = document.getElementById("strategy-use-saved-data");
+        if (checkbox) checkbox.checked = stockStrategyUseSavedData;
+    } catch (error) {
+        console.warn("Could not restore stock strategy view settings.", error);
+    }
+}
+
 function restoreStockStrategyRules() {
     try {
         const saved = JSON.parse(localStorage.getItem("stock-strategy-rules") || "null");
@@ -9151,6 +9228,21 @@ function restoreStockStrategyRules() {
             const consecutiveDays = controls.consecutiveDays
                 ? document.getElementById(controls.consecutiveDays)
                 : null;
+            const period = controls.period
+                ? document.getElementById(controls.period)
+                : null;
+            const fastPeriod = controls.fastPeriod
+                ? document.getElementById(controls.fastPeriod)
+                : null;
+            const slowPeriod = controls.slowPeriod
+                ? document.getElementById(controls.slowPeriod)
+                : null;
+            const signalPeriod = controls.signalPeriod
+                ? document.getElementById(controls.signalPeriod)
+                : null;
+            const compareTo = controls.compareTo
+                ? document.getElementById(controls.compareTo)
+                : null;
             if (enabled) enabled.checked = Boolean(rule.enabled);
             if (operator && ["gte", "lte", "eq"].includes(rule.operator)) {
                 operator.value = rule.operator;
@@ -9158,16 +9250,51 @@ function restoreStockStrategyRules() {
             if (days) days.value = String(Math.max(0, Number(rule.days) || 0));
             if (fixed) {
                 const savedFixed = Number(rule.fixed);
-                fixed.value = String(
+                const restoredFixed = (
                     controls.allowNegativeFixed
                         ? (Number.isFinite(savedFixed) ? savedFixed : 0)
                         : Math.max(0, savedFixed || 0)
+                );
+                fixed.value = String(
+                    Number.isFinite(controls.fixedMaximum)
+                        ? Math.min(controls.fixedMaximum, restoredFixed)
+                        : restoredFixed
                 );
             }
             if (consecutiveDays) {
                 consecutiveDays.value = String(
                     Math.max(0, Number(rule.consecutive_days) || 0)
                 );
+            }
+            if (period) {
+                period.value = String(
+                    Math.max(2, Math.min(250, Number(rule.period) || 2))
+                );
+            }
+            if (fastPeriod) {
+                fastPeriod.value = String(
+                    Math.max(2, Math.min(249, Number(rule.fast_period) || 12))
+                );
+            }
+            if (slowPeriod) {
+                const restoredFast = Math.max(
+                    2,
+                    Math.min(249, Number(rule.fast_period) || 12)
+                );
+                slowPeriod.value = String(
+                    Math.max(
+                        restoredFast + 1,
+                        Math.min(250, Number(rule.slow_period) || 26)
+                    )
+                );
+            }
+            if (signalPeriod) {
+                signalPeriod.value = String(
+                    Math.max(2, Math.min(250, Number(rule.signal_period) || 9))
+                );
+            }
+            if (compareTo && ["signal", "zero"].includes(rule.compare_to)) {
+                compareTo.value = rule.compare_to;
             }
         });
     } catch (error) {
@@ -9176,6 +9303,7 @@ function restoreStockStrategyRules() {
 }
 
 function initializeStockStrategyControls() {
+    restoreStockStrategyViewSettings();
     restoreStockStrategyRules();
     updateStockStrategyRuleStyles();
     document.getElementById("strategy-run-button")?.addEventListener(
@@ -9186,15 +9314,18 @@ function initializeStockStrategyControls() {
         "change",
         event => {
             stockStrategyUseSavedData = event.target.checked;
+            saveStockStrategyViewSettings();
             requestStockStrategy({ showLoading: true });
         }
     );
     document.querySelectorAll(".strategy-rule input, .strategy-rule select")
         .forEach(control => {
-            control.addEventListener("change", () => {
+            const persistControl = () => {
                 updateStockStrategyRuleStyles();
                 saveStockStrategyRules();
-            });
+            };
+            control.addEventListener("input", persistControl);
+            control.addEventListener("change", persistControl);
             control.addEventListener("keydown", event => {
                 if (event.key !== "Enter") return;
                 event.preventDefault();
@@ -9208,6 +9339,9 @@ function formatStockStrategyValue(metric, value) {
     if (value === null || value === undefined || value === "") return "—";
     if (metric === "trade_value") return formatTradeValue(value);
     if (metric === "real_money_flow") return formatTradeValue(value);
+    if (metric === "closing_price" || metric === "ema") {
+        return formatStockInteger(value);
+    }
     if (metric === "trade_to_float_percent") {
         return formatStockCell({ key: metric, format: "precisePercent" }, value, false);
     }
@@ -9252,6 +9386,11 @@ function renderStockStrategyTable(payload) {
                 real_money_flow: "ورود پول حقیقی",
                 money_flow_quality: "کیفیت ورود پول"
             };
+            Object.assign(metricNames, {
+                rsi: "RSI",
+                ema: "EMA",
+                macd: "MACD"
+            });
             const warnings = [];
             Object.entries(payload?.history_coverage || {}).forEach(([metric, coverage]) => {
                 if (!coverage?.partial_symbol_count) return;
@@ -9262,6 +9401,17 @@ function renderStockStrategyTable(payload) {
                     : `${formatter.format(minimum)} تا ${formatter.format(maximum)}روزه`;
                 warnings.push(
                     `${metricNames[metric] || metric}: میانگین ${usedDays} به‌جای ${formatter.format(coverage.requested_days)}روزه`
+                );
+            });
+            Object.entries(payload?.technical_coverage || {}).forEach(([metric, coverage]) => {
+                if (!coverage?.insufficient_symbol_count) return;
+                const minimum = coverage.minimum_points_used;
+                const maximum = coverage.maximum_points_used;
+                const usedPoints = minimum === maximum
+                    ? formatter.format(minimum)
+                    : `${formatter.format(minimum)} تا ${formatter.format(maximum)}`;
+                warnings.push(
+                    `${metricNames[metric] || metric}: ${usedPoints} قیمت پایانی موجود است؛ ${formatter.format(coverage.required_points)} مقدار لازم است`
                 );
             });
             if (payload?.missing_history_count) {
@@ -9290,6 +9440,12 @@ function renderStockStrategyTable(payload) {
         }
     }
 
+    const strategyRules = payload?.rules || {};
+    const rsiPeriod = Number(strategyRules?.rsi?.period) || 14;
+    const emaPeriod = Number(strategyRules?.ema?.period) || 20;
+    const macdFastPeriod = Number(strategyRules?.macd?.fast_period) || 12;
+    const macdSlowPeriod = Number(strategyRules?.macd?.slow_period) || 26;
+    const macdSignalPeriod = Number(strategyRules?.macd?.signal_period) || 9;
     const columns = [
         { key: "symbol", label: "نماد", width: 190 },
         { key: "company", label: "نام شرکت", width: 210 },
@@ -9306,6 +9462,15 @@ function renderStockStrategyTable(payload) {
         { key: "real_money_flow_positive_streak", label: "ورود پول مثبت پیاپی", unit: "روز", metric: "integer", width: 155 },
         { key: "money_flow_quality", label: "کیفیت ورود پول", unit: "درصد", metric: "money_flow_quality", width: 150 }
     ];
+
+    columns.splice(6, 0,
+        { key: "closing_price", label: "قیمت پایانی", unit: "ریال", metric: "closing_price", width: 125 },
+        { key: "ema", label: `EMA ${formatter.format(emaPeriod)}`, unit: "ریال", metric: "ema", width: 125 },
+        { key: "rsi", label: `RSI ${formatter.format(rsiPeriod)}`, metric: "rsi", width: 110 },
+        { key: "macd", label: `MACD ${formatter.format(macdFastPeriod)}،${formatter.format(macdSlowPeriod)}`, metric: "macd", width: 135 },
+        { key: "macd_signal", label: `Signal ${formatter.format(macdSignalPeriod)}`, metric: "macd", width: 115 },
+        { key: "macd_histogram", label: "Histogram", metric: "macd", width: 115 }
+    );
 
     table.querySelector("colgroup")?.remove();
     const colgroup = document.createElement("colgroup");
