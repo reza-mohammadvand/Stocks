@@ -648,7 +648,7 @@
     grid-area: actions;
     position: static;
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     align-items: center;
     gap: 8px;
     width: 100%;
@@ -897,6 +897,85 @@
 
 .dashboard-shell .option-burning-modal-card .expectations-detail-table-wrap {
     margin-top: 18px;
+}
+
+.dashboard-shell .option-filter-modal-card {
+    width: min(1180px, 96vw);
+}
+
+.dashboard-shell .option-filter-form {
+    display: grid;
+    grid-template-columns: minmax(220px, 290px) minmax(190px, 250px) 130px;
+    align-items: end;
+    justify-content: start;
+    gap: 12px;
+    margin: 18px 0 10px;
+    padding: 14px;
+    border: 1px solid rgba(35, 165, 220, 0.32);
+    border-radius: 14px;
+    background: rgba(0, 17, 32, 0.56);
+}
+
+.dashboard-shell .option-filter-field {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    color: #91b4c7;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.dashboard-shell .option-filter-input-wrap {
+    position: relative;
+    display: block;
+}
+
+.dashboard-shell .option-filter-input-wrap input {
+    width: 100%;
+    height: 42px;
+    min-width: 0;
+    margin: 0;
+    padding: 0 11px 0 88px;
+    border: 1px solid rgba(35, 165, 220, 0.4);
+    border-radius: 10px;
+    color: #e4f7ff;
+    background: rgba(0, 10, 22, 0.76);
+    font-family: inherit;
+    font-size: 11px;
+    text-align: right;
+}
+
+.dashboard-shell .option-filter-input-wrap input:focus {
+    border-color: rgba(48, 220, 255, 0.78);
+    outline: 0;
+    box-shadow: 0 0 0 3px rgba(27, 215, 255, 0.08);
+}
+
+.dashboard-shell .option-filter-input-wrap small {
+    position: absolute;
+    top: 50%;
+    left: 11px;
+    color: #648da3;
+    font-size: 9px;
+    transform: translateY(-50%);
+    pointer-events: none;
+}
+
+.dashboard-shell .option-filter-form button {
+    min-width: 130px;
+    min-height: 42px;
+    margin: 0;
+}
+
+.dashboard-shell .option-filter-summary {
+    min-height: 28px;
+    padding: 2px 3px 8px;
+    color: #80a6ba;
+    font-size: 10px;
+}
+
+.dashboard-shell .option-filter-table {
+    min-width: 980px;
 }
 
 .dashboard-shell .stocks-panel {
@@ -2884,6 +2963,14 @@
     .dashboard-shell .expectations-header-actions {
         grid-template-columns: 1fr;
         height: auto;
+    }
+
+    .dashboard-shell .option-filter-form {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-shell .option-filter-form button {
+        width: 100%;
     }
 
     .dashboard-shell .expectations-glance {

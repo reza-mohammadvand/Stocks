@@ -10,7 +10,7 @@
     >
     <title>دیدبان بازار سهام</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='strategy-industry-sort-v1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='option-filter-v1') }}">
     <link rel="icon" href="{{ url_for('static', filename='logo.png', v='market-logo-v2') }}" type="image/png">
 </head>
 <body class="dashboard-shell">
@@ -209,6 +209,9 @@
                         </button>
                         <button id="show-option-burning" class="button-secondary" type="button" disabled>
                             سوختن اختیار
+                        </button>
+                        <button id="show-option-filter" class="button-secondary" type="button" disabled>
+                            فیلتر
                         </button>
                         <button id="refresh-expectations" class="button-primary" type="button">
                             <span class="button-icon refresh-icon" aria-hidden="true">
@@ -1156,10 +1159,89 @@
                             <th data-sort-type="number" tabindex="0">سهم از کل بازار اختیار <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="number" tabindex="0">فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="number" tabindex="0">بازدهی مؤثر <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">اهرم <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="text" tabindex="0">وضعیت <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="number" tabindex="0">شکاف <span class="expectations-sort-indicator">↕</span></th>
                         </tr>
                     </thead>
                     <tbody></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <div id="option-filter-modal" class="expectations-modal" hidden>
+        <div class="expectations-modal-backdrop" data-close-option-filter-modal></div>
+        <section
+            class="expectations-modal-card market-share-options-modal-card option-filter-modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="option-filter-modal-title"
+        >
+            <header>
+                <h3 id="option-filter-modal-title">فیلتر اختیارها</h3>
+                <button
+                    type="button"
+                    class="expectations-modal-close"
+                    data-close-option-filter-modal
+                    aria-label="بستن"
+                >×</button>
+            </header>
+            <form id="option-filter-form" class="option-filter-form">
+                <label class="option-filter-field" for="option-filter-min-trade-value">
+                    <span>حداقل ارزش معاملات</span>
+                    <span class="option-filter-input-wrap">
+                        <input
+                            id="option-filter-min-trade-value"
+                            type="number"
+                            min="0"
+                            step="0.1"
+                            inputmode="decimal"
+                            required
+                        >
+                        <small>میلیون ریال</small>
+                    </span>
+                </label>
+                <label class="option-filter-field" for="option-filter-min-leverage">
+                    <span>حداقل اهرم</span>
+                    <span class="option-filter-input-wrap">
+                        <input
+                            id="option-filter-min-leverage"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            inputmode="decimal"
+                            required
+                        >
+                        <small>برابر</small>
+                    </span>
+                </label>
+                <button id="apply-option-filter" class="button-primary" type="submit">
+                    اعمال فیلتر
+                </button>
+            </form>
+            <div id="option-filter-summary" class="option-filter-summary" aria-live="polite">
+                مقادیر فیلتر را وارد و دکمه «اعمال فیلتر» را انتخاب کنید.
+            </div>
+            <div class="expectations-detail-table-wrap">
+                <table class="expectations-table expectations-summary-table option-filter-table">
+                    <thead>
+                        <tr>
+                            <th data-sort-type="text" tabindex="0">نماد <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">ارزش معاملات (میلیون ریال) <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">آخرین قیمت <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">روز تا سررسید <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">اهرم <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="text" tabindex="0">وضعیت <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">درصد تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">شکاف <span class="expectations-sort-indicator">↕</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td colspan="8" class="expectations-no-result">هنوز فیلتری اعمال نشده است.</td>
+                        </tr>
+                    </tbody>
                 </table>
             </div>
         </section>
@@ -1301,6 +1383,6 @@
         </section>
     </div>
 
-    <script src="{{ url_for('static', filename='scripttest.js', v='strategy-industry-sort-v1') }}"></script>
+    <script src="{{ url_for('static', filename='scripttest.js', v='option-filter-v2') }}"></script>
 </body>
 </html>

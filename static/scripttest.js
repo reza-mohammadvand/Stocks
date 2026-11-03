@@ -4685,6 +4685,15 @@ function renderMarketExpectations(payload) {
     if (expiringButton) expiringButton.disabled = bases.length === 0;
     const marketShareButton = document.getElementById("show-market-share-options");
     if (marketShareButton) marketShareButton.disabled = bases.length === 0;
+    const optionFilterButton = document.getElementById("show-option-filter");
+    if (optionFilterButton) {
+        const hasCallOptions = bases.some(base =>
+            (base.groups || []).some(group => (group.options || []).length > 0)
+        );
+        const hasPutOptions = Array.isArray(payload?.put_options)
+            && payload.put_options.length > 0;
+        optionFilterButton.disabled = !hasCallOptions && !hasPutOptions;
+    }
     const putOptionsButton = document.getElementById("show-put-options");
     if (putOptionsButton) {
         putOptionsButton.disabled = !Array.isArray(payload?.put_options)
@@ -4882,6 +4891,10 @@ async function loadMarketExpectations(force = false) {
     const marketShareButton = document.getElementById("show-market-share-options");
     if (marketShareButton && !hasRenderedData) {
         marketShareButton.disabled = true;
+    }
+    const optionFilterButton = document.getElementById("show-option-filter");
+    if (optionFilterButton && !hasRenderedData) {
+        optionFilterButton.disabled = true;
     }
     const putOptionsButton = document.getElementById("show-put-options");
     if (putOptionsButton && !hasRenderedData) {
@@ -5157,9 +5170,11 @@ function openMarketShareOptionsSummary() {
                 <td class="expectation-percent" data-sort-value="${option.market_trade_value_share ?? ""}">${formatExpectationPercent(option.market_trade_value_share, 4)}</td>
                 <td class="expectation-percent" data-sort-value="${option.breakeven_distance ?? ""}">${formatExpectationPercent(option.breakeven_distance)}</td>
                 <td class="expectation-percent" data-sort-value="${option.monthly_return ?? ""}">${formatExpectationPercent(option.monthly_return)}</td>
+                <td data-sort-value="${option.leverage ?? ""}">${formatExpectationNumber(option.leverage, 2)}</td>
+                <td data-sort-value="${option.status || ""}"><span class="expectation-option-status is-${String(option.status || "").toLowerCase()}">${option.status || "—"}</span></td>
                 <td class="expectation-percent" data-sort-value="${option.spread_percent ?? ""}">${formatExpectationPercent(option.spread_percent)}</td>
             </tr>`).join("")
-        : `<tr><td colspan="9" class="expectations-no-result">اطلاعاتی برای نمایش وجود ندارد.</td></tr>`;
+        : `<tr><td colspan="11" class="expectations-no-result">اطلاعاتی برای نمایش وجود ندارد.</td></tr>`;
 
     resetExpectationSummarySort(modal.querySelector(".market-share-options-table"));
     modal.hidden = false;
@@ -5168,6 +5183,108 @@ function openMarketShareOptionsSummary() {
 
 function closeMarketShareOptionsSummary() {
     const modal = document.getElementById("market-share-options-modal");
+    if (modal) modal.hidden = true;
+    syncExpectationModalBodyState();
+}
+
+function getAllMarketExpectationOptions() {
+    const calls = (marketExpectationsData?.bases || []).flatMap(base =>
+        (base.groups || []).flatMap(group => group.options || [])
+    );
+    const puts = Array.isArray(marketExpectationsData?.put_options)
+        ? marketExpectationsData.put_options
+        : [];
+    const uniqueOptions = new Map();
+    [...calls, ...puts].forEach(option => {
+        if (!option || typeof option !== "object") return;
+        const key = String(option.ins_code || option.symbol || "").trim();
+        if (!key) return;
+        uniqueOptions.set(key, option);
+    });
+    return [...uniqueOptions.values()];
+}
+
+function openOptionFilterModal() {
+    const modal = document.getElementById("option-filter-modal");
+    if (!modal) return;
+    modal.hidden = false;
+    document.body.classList.add("expectations-modal-open");
+    window.setTimeout(() => {
+        document.getElementById("option-filter-min-trade-value")?.focus();
+    }, 0);
+}
+
+function applyOptionFilter(event) {
+    event?.preventDefault();
+    const tradeValueInput = document.getElementById("option-filter-min-trade-value");
+    const leverageInput = document.getElementById("option-filter-min-leverage");
+    const table = document.querySelector(".option-filter-table");
+    const tbody = table?.querySelector("tbody");
+    const summary = document.getElementById("option-filter-summary");
+    if (!tradeValueInput || !leverageInput || !table || !tbody || !summary) return;
+
+    const tradeValueText = tradeValueInput.value.trim();
+    const leverageText = leverageInput.value.trim();
+    const minimumTradeValueMillion = Number(tradeValueText);
+    const minimumLeverage = Number(leverageText);
+    tradeValueInput.setCustomValidity("");
+    leverageInput.setCustomValidity("");
+
+    if (tradeValueText === "" || !Number.isFinite(minimumTradeValueMillion)
+        || minimumTradeValueMillion < 0) {
+        tradeValueInput.setCustomValidity("ارزش معاملات باید یک عدد صفر یا بزرگ‌تر باشد.");
+        tradeValueInput.reportValidity();
+        return;
+    }
+    if (leverageText === "" || !Number.isFinite(minimumLeverage)
+        || minimumLeverage < 0) {
+        leverageInput.setCustomValidity("اهرم باید یک عدد صفر یا بزرگ‌تر باشد.");
+        leverageInput.reportValidity();
+        return;
+    }
+
+    const minimumTradeValue = minimumTradeValueMillion * 1_000_000;
+    const matches = getAllMarketExpectationOptions().filter(option => {
+        const tradeValue = Number(option.trade_value);
+        const leverage = Number(option.leverage);
+        return Number.isFinite(tradeValue)
+            && Number.isFinite(leverage)
+            && tradeValue > minimumTradeValue
+            && leverage > minimumLeverage;
+    }).sort((first, second) =>
+        Number(second.trade_value) - Number(first.trade_value)
+        || Number(second.leverage) - Number(first.leverage)
+        || String(first.symbol || "").localeCompare(String(second.symbol || ""), "fa")
+    );
+
+    tbody.innerHTML = matches.length
+        ? matches.map(option => {
+            const status = ["ITM", "ATM", "OTM"].includes(option.status)
+                ? option.status
+                : "";
+            return `
+                <tr>
+                    <td data-sort-value="${escapeHtml(option.symbol || "")}">${escapeHtml(option.symbol || "—")}</td>
+                    <td data-sort-value="${option.trade_value ?? ""}">${formatExpectationNumber(Number(option.trade_value) / 1_000_000, 1)}</td>
+                    <td data-sort-value="${option.option_last_price ?? ""}">${formatExpectationNumber(option.option_last_price)}</td>
+                    <td data-sort-value="${option.days_remaining ?? ""}">${formatExpectationNumber(option.days_remaining)}</td>
+                    <td data-sort-value="${option.leverage ?? ""}">${formatExpectationNumber(option.leverage, 2)}</td>
+                    <td data-sort-value="${status}"><span class="expectation-option-status is-${status.toLowerCase()}">${status || "—"}</span></td>
+                    <td class="expectation-percent" data-sort-value="${option.breakeven_distance ?? ""}">${formatExpectationPercent(option.breakeven_distance)}</td>
+                    <td class="expectation-percent" data-sort-value="${option.spread_percent ?? ""}">${formatExpectationPercent(option.spread_percent)}</td>
+                </tr>`;
+        }).join("")
+        : `<tr><td colspan="8" class="expectations-no-result">اختیاری مطابق این دو شرط پیدا نشد.</td></tr>`;
+
+    const formatter = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 2 });
+    summary.textContent = matches.length
+        ? `${formatter.format(matches.length)} اختیار با ارزش معاملات بیشتر از ${formatter.format(minimumTradeValueMillion)} میلیون ریال و اهرم بیشتر از ${formatter.format(minimumLeverage)}`
+        : `نتیجه‌ای برای ارزش بیشتر از ${formatter.format(minimumTradeValueMillion)} میلیون ریال و اهرم بیشتر از ${formatter.format(minimumLeverage)} پیدا نشد.`;
+    resetExpectationSummarySort(table);
+}
+
+function closeOptionFilterModal() {
+    const modal = document.getElementById("option-filter-modal");
     if (modal) modal.hidden = true;
     syncExpectationModalBodyState();
 }
@@ -10789,6 +10906,14 @@ document.addEventListener(
             ?.addEventListener("click", openMarketShareOptionsSummary);
 
         document
+            .getElementById("show-option-filter")
+            ?.addEventListener("click", openOptionFilterModal);
+
+        document
+            .getElementById("option-filter-form")
+            ?.addEventListener("submit", applyOptionFilter);
+
+        document
             .getElementById("show-put-options")
             ?.addEventListener("click", openPutOptionsSummary);
 
@@ -10806,6 +10931,14 @@ document.addEventListener(
             .getElementById("expectations-put-count")
             ?.addEventListener("input", event => {
                 event.target.setCustomValidity("");
+            });
+
+        ["option-filter-min-trade-value", "option-filter-min-leverage"]
+            .forEach(inputId => {
+                document.getElementById(inputId)?.addEventListener(
+                    "input",
+                    event => event.target.setCustomValidity("")
+                );
             });
 
         document
@@ -10868,6 +11001,12 @@ document.addEventListener(
             .querySelectorAll("[data-close-market-share-options-modal]")
             .forEach(element => element.addEventListener(
                 "click", closeMarketShareOptionsSummary
+            ));
+
+        document
+            .querySelectorAll("[data-close-option-filter-modal]")
+            .forEach(element => element.addEventListener(
+                "click", closeOptionFilterModal
             ));
 
         document
@@ -10955,6 +11094,7 @@ document.addEventListener(
                 closeNearestExpirySummary();
                 closeExpiringOptionsSummary();
                 closeMarketShareOptionsSummary();
+                closeOptionFilterModal();
                 closePutOptionsSummary();
                 closeOptionBurningSummary();
             }
