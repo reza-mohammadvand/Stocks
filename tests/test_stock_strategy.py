@@ -187,6 +187,56 @@ class StockStrategyTests(unittest.TestCase):
         self.assertEqual(result["data_source"], "daily_snapshot")
         self.assertEqual(result["stocks"][0]["trade_value"], 100)
 
+    def test_strategy_can_use_complete_market_source_and_history(self):
+        all_market_rows = [{
+            "symbol": "نماد کامل",
+            "market_date": "2026-10-26",
+            "trade_value": 120,
+        }]
+        all_market_history = {
+            stock_app.normalize_symbol("نماد کامل"): [{
+                "trade_date": "2026-10-25",
+                "trade_value": 100,
+            }],
+        }
+
+        with (
+            patch.object(
+                stock_app,
+                "read_all_stock_database",
+                return_value=(all_market_rows, {"last_successful_update": "all-now"}),
+            ) as read_all,
+            patch.object(
+                stock_app,
+                "read_stock_database",
+            ) as read_featured,
+            patch.object(
+                stock_app,
+                "read_stock_strategy_history",
+                return_value=all_market_history,
+            ) as read_history,
+        ):
+            result = stock_app.get_stock_strategy(
+                {
+                    "trade_value": {
+                        "enabled": True,
+                        "operator": "gte",
+                        "days": 1,
+                    },
+                },
+                source="all",
+            )
+
+        read_all.assert_called_once_with()
+        read_featured.assert_not_called()
+        read_history.assert_called_once_with(
+            source="all",
+            symbols=["نماد کامل"],
+        )
+        self.assertEqual(result["source"], "all")
+        self.assertEqual(result["source_updated_at"], "all-now")
+        self.assertEqual(result["stocks"][0]["symbol"], "نماد کامل")
+
     def test_money_flow_streak_average_and_quality_are_combined(self):
         current_rows = [{
             "symbol": "نماد۱",
@@ -273,6 +323,36 @@ class StockStrategyTests(unittest.TestCase):
             macd["macd"] - macd["signal"],
         )
 
+    def test_technical_indicators_match_standard_reference_values(self):
+        # Wilder's published-style RSI sample contains both gains and losses,
+        # so it verifies the initial SMA and every recursive smoothing step.
+        rsi_prices = [
+            44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10,
+            45.42, 45.84, 46.08, 45.89, 46.03, 45.61, 46.28,
+            46.28, 46.00, 46.03, 46.41, 46.22, 45.64,
+        ]
+        self.assertAlmostEqual(
+            stock_app.calculate_stock_rsi(rsi_prices, 14),
+            57.91502067008556,
+            places=10,
+        )
+
+        prices = [
+            100, 102, 101, 105, 107, 106, 110, 108, 112, 115,
+            113, 117, 120, 118, 121, 125, 123, 127, 130, 128,
+            132, 135, 133, 138, 140, 137, 142, 145, 143, 148,
+            150, 147, 152, 155, 153, 158, 160, 157, 162, 165,
+        ]
+        self.assertAlmostEqual(
+            stock_app.calculate_stock_ema(prices, 20),
+            147.63780986334072,
+            places=10,
+        )
+        macd = stock_app.calculate_stock_macd(prices, 12, 26, 9)
+        self.assertAlmostEqual(macd["macd"], 11.663368405614875, places=10)
+        self.assertAlmostEqual(macd["signal"], 11.550048656429457, places=10)
+        self.assertAlmostEqual(macd["histogram"], 0.11331974918541832, places=10)
+
     def test_rsi_ema_and_macd_filters_are_combined(self):
         current_rows = [{
             "symbol": "نماد۱",
@@ -317,6 +397,77 @@ class StockStrategyTests(unittest.TestCase):
         self.assertEqual(stock["rsi"], 100)
         self.assertLess(stock["ema"], stock["closing_price"])
         self.assertGreaterEqual(stock["macd"], stock["macd_signal"])
+
+    def test_industry_growth_filters_below_each_industry_average(self):
+        current_rows = [
+            {
+                "symbol": "الف۱",
+                "industry": "صنعت الف",
+                "market_date": "2026-10-04",
+                "closing_price": 120,
+            },
+            {
+                "symbol": "الف۲",
+                "industry": "صنعت الف",
+                "market_date": "2026-10-04",
+                "closing_price": 100,
+            },
+            {
+                "symbol": "ب۱",
+                "industry": "صنعت ب",
+                "market_date": "2026-10-04",
+                "closing_price": 90,
+            },
+            {
+                "symbol": "ب۲",
+                "industry": "صنعت ب",
+                "market_date": "2026-10-04",
+                "closing_price": 110,
+            },
+        ]
+        history = {
+            stock_app.normalize_symbol(row["symbol"]): [
+                {
+                    "trade_date": f"2026-10-0{day}",
+                    "closing_price": 100,
+                }
+                for day in range(1, 4)
+            ]
+            for row in current_rows
+        }
+        rules = {
+            "industry_growth": {
+                "enabled": True,
+                "days": 3,
+            },
+        }
+
+        result = stock_app.evaluate_stock_strategy(current_rows, history, rules)
+
+        self.assertEqual(result["active_filter_count"], 1)
+        self.assertEqual(
+            {stock["symbol"] for stock in result["stocks"]},
+            {"الف۲", "ب۱"},
+        )
+        stocks = {stock["symbol"]: stock for stock in result["stocks"]}
+        self.assertAlmostEqual(stocks["الف۲"]["industry_growth_percent"], 0)
+        self.assertAlmostEqual(
+            stocks["الف۲"]["industry_average_growth_percent"],
+            10,
+        )
+        self.assertAlmostEqual(
+            stocks["الف۲"]["below_industry_average_percent"],
+            10,
+        )
+        self.assertEqual(stocks["الف۲"]["industry_growth_days_used"], 3)
+        self.assertEqual(stocks["الف۲"]["industry_growth_member_count"], 2)
+
+        rules["industry_growth"]["days"] = 5
+        partial = stock_app.evaluate_stock_strategy(current_rows, history, rules)
+        coverage = partial["history_coverage"]["industry_growth"]
+        self.assertEqual(coverage["partial_symbol_count"], 4)
+        self.assertEqual(coverage["minimum_days_used"], 3)
+        self.assertEqual(coverage["maximum_days_used"], 3)
 
     def test_technical_filter_reports_insufficient_closing_history(self):
         result = stock_app.evaluate_stock_strategy(

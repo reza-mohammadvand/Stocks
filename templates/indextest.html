@@ -10,7 +10,7 @@
     >
     <title>دیدبان بازار سهام</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='strategy-indicators-v1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='strategy-industry-sort-v1') }}">
     <link rel="icon" href="{{ url_for('static', filename='logo.png', v='market-logo-v2') }}" type="image/png">
 </head>
 <body class="dashboard-shell">
@@ -37,6 +37,14 @@
                 aria-controls="stocks-tab"
                 aria-selected="true"
             >سهام</button>
+            <button
+                id="all-stocks-tab-button"
+                class="app-tab-button"
+                type="button"
+                data-app-tab="all-stocks-tab"
+                aria-controls="all-stocks-tab"
+                aria-selected="false"
+            >تمام سهام‌ها</button>
             <button
                 id="watchlist-tab-button"
                 class="app-tab-button"
@@ -86,6 +94,7 @@
                 class="hero-image-layer is-visible"
                 src="{{ url_for('static', filename='Stocks.png') }}"
                 data-stocks-src="{{ url_for('static', filename='Stocks.png') }}"
+                data-all-stocks-src="{{ url_for('static', filename='AllStocks.png') }}"
                 data-watchlist-src="{{ url_for('static', filename='Watchlist.png') }}"
                 data-strategy-src="{{ url_for('static', filename='Strategy.png') }}"
                 data-options-src="{{ url_for('static', filename='Options.png') }}"
@@ -158,7 +167,7 @@
                         </button>
                     </div>
 
-                    <div class="expectations-market-share-filter">
+                    <div class="expectations-market-share-filter expectations-value-filter">
                         <label class="field-with-label">
                             <span>تعداد نماد</span>
                             <input
@@ -173,6 +182,24 @@
                         </label>
                         <button id="show-market-share-options" class="button-secondary" type="button" disabled>
                             برترین ارزش معاملات
+                        </button>
+                    </div>
+
+                    <div class="expectations-market-share-filter expectations-put-filter">
+                        <label class="field-with-label">
+                            <span>تعداد نماد</span>
+                            <input
+                                id="expectations-put-count"
+                                type="number"
+                                min="1"
+                                step="1"
+                                inputmode="numeric"
+                                value="10"
+                                aria-label="تعداد اختیارهای فروش پرمعامله"
+                            >
+                        </label>
+                        <button id="show-put-options" class="button-secondary" type="button" disabled>
+                            پرمعامله‌ترین اختیار فروش
                         </button>
                     </div>
 
@@ -367,6 +394,156 @@
             </section>
         </div>
 
+        <div id="all-stocks-tab" class="tab-content">
+            <section class="stocks-panel" aria-labelledby="all-stocks-title">
+                <div class="stocks-filter-bar" aria-label="فیلترهای فهرست تمام سهام‌ها">
+                    <label class="stock-search-box" for="all-stock-search">
+                        <span class="search-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" focusable="false">
+                                <circle cx="11" cy="11" r="6.5"></circle>
+                                <path d="m16 16 4.25 4.25"></path>
+                            </svg>
+                        </span>
+                        <input
+                            id="all-stock-search"
+                            type="search"
+                            placeholder="جست‌وجوی نماد یا شرکت..."
+                            autocomplete="off"
+                        >
+                    </label>
+
+                    <div class="stock-industry-search all-stock-industry-search">
+                        <label class="stock-search-box stock-industry-search-box" for="all-stock-industry-search">
+                            <span class="search-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" focusable="false">
+                                    <circle cx="11" cy="11" r="6.5"></circle>
+                                    <path d="m16 16 4.25 4.25"></path>
+                                </svg>
+                            </span>
+                            <input
+                                id="all-stock-industry-search"
+                                type="search"
+                                placeholder="جست‌وجوی صنعت..."
+                                autocomplete="off"
+                                aria-autocomplete="list"
+                                aria-controls="all-stock-industry-suggestions"
+                                aria-expanded="false"
+                            >
+                        </label>
+                        <div
+                            id="all-stock-industry-suggestions"
+                            class="stock-industry-suggestions"
+                            role="listbox"
+                            hidden
+                        ></div>
+                    </div>
+
+                    <div class="stock-market-filter" aria-label="فیلتر تمام سهام‌ها">
+                        <span class="stock-filter-title">ارزش بازار (همت)</span>
+                        <label aria-label="حداقل ارزش بازار">
+                            <input id="all-stock-market-min" type="number" min="0" step="1" inputmode="decimal" placeholder="حداقل">
+                        </label>
+                        <label aria-label="حداکثر ارزش بازار">
+                            <input id="all-stock-market-max" type="number" min="0" step="1" inputmode="decimal" placeholder="حداکثر">
+                        </label>
+
+                        <label class="stock-industry-toggle" for="all-stock-group-by-industry">
+                            <input id="all-stock-group-by-industry" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <span>تفکیک بر اساس صنعت</span>
+                        </label>
+
+                        <label class="stock-industry-toggle stock-usd-toggle" for="all-stock-trade-value-usd">
+                            <input id="all-stock-trade-value-usd" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <span>ارزش معاملات به دلار آمریکا</span>
+                        </label>
+
+                        <div id="all-stock-column-selector" class="stock-column-selector">
+                            <button
+                                id="all-stock-column-toggle"
+                                class="button-secondary stock-column-toggle"
+                                type="button"
+                                aria-expanded="false"
+                                aria-controls="all-stock-column-menu"
+                            >
+                                <span class="stock-column-button-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" focusable="false">
+                                        <rect x="3" y="4" width="5" height="16" rx="1.5"></rect>
+                                        <rect x="10" y="4" width="5" height="16" rx="1.5"></rect>
+                                        <rect x="17" y="4" width="4" height="16" rx="1.5"></rect>
+                                    </svg>
+                                </span>
+                                <span>انتخاب ستون‌ها</span>
+                                <span class="stock-column-button-chevron" aria-hidden="true">
+                                    <svg viewBox="0 0 16 16" focusable="false">
+                                        <path d="m3 6 5 5 5-5"></path>
+                                    </svg>
+                                </span>
+                            </button>
+                            <div id="all-stock-column-menu" class="stock-column-menu" hidden>
+                                <div id="all-stock-column-options" class="stock-column-options"></div>
+                                <button id="show-all-all-stock-columns" type="button">
+                                    نمایش همه ستون‌ها
+                                </button>
+                            </div>
+                        </div>
+
+                        <button id="apply-all-stock-filter" type="button">اعمال</button>
+                        <button id="clear-all-stock-filter" type="button">پاک‌کردن</button>
+                    </div>
+                </div>
+
+                <div class="stocks-toolbar">
+                    <div class="stocks-heading">
+                        <h2 id="all-stocks-title">تمام سهام‌ها</h2>
+                        <span id="all-stocks-count" aria-live="polite">در حال بارگذاری...</span>
+                    </div>
+                    <div class="stocks-toolbar-actions">
+                        <span id="all-stocks-sync-status" class="stocks-sync-status stock-saved-date" aria-live="polite"></span>
+                        <button id="open-all-stock-notes-complete" class="button-secondary stock-notes-overview-button" type="button">
+                            <span class="button-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" focusable="false">
+                                    <path d="M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"></path>
+                                    <path d="M8 9h8M8 13h8M8 17h5"></path>
+                                </svg>
+                            </span>
+                            <span>همه یادداشت‌ها</span>
+                        </button>
+                        <button id="all-stock-refresh-button" class="button-primary stock-refresh-button" type="button">
+                            <span class="button-icon refresh-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" focusable="false">
+                                    <path d="M20 6v5h-5"></path>
+                                    <path d="M4 18v-5h5"></path>
+                                    <path d="M18.1 9A7 7 0 0 0 6.7 6.3L4 9"></path>
+                                    <path d="M5.9 15A7 7 0 0 0 17.3 17.7L20 15"></path>
+                                </svg>
+                            </span>
+                            <span>به‌روزرسانی آنلاین</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div id="all-stocks-loading" class="expectations-state expectations-state-loading">
+                    <span class="loading-orbit" aria-hidden="true"></span>
+                    <span>در حال خواندن آخرین داده ثبت‌شده...</span>
+                </div>
+                <div id="all-stocks-table-wrap" class="stocks-table-wrap" hidden>
+                    <table id="all-stocks-table" class="stocks-table">
+                        <thead></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div id="all-stocks-empty" class="expectations-state" hidden>
+                    هنوز داده روزانه‌ای ثبت نشده است.
+                </div>
+            </section>
+        </div>
+
         <div id="watchlist-tab" class="tab-content">
             <section class="stocks-panel watchlist-panel" aria-labelledby="watchlist-title">
                 <div class="stocks-filter-bar watchlist-filter-bar" aria-label="فیلترهای دیده‌بان">
@@ -506,6 +683,27 @@
                     </div>
                     <div class="strategy-toolbar-actions">
                         <span id="strategy-source-date" class="stocks-sync-status stock-saved-date" aria-live="polite"></span>
+                        <div class="strategy-source-selector" role="group" aria-label="دامنه اجرای استراتژی">
+                            <button
+                                class="strategy-source-button is-active"
+                                type="button"
+                                data-strategy-source="featured"
+                                aria-pressed="true"
+                            >سهام برتر</button>
+                            <button
+                                class="strategy-source-button"
+                                type="button"
+                                data-strategy-source="all"
+                                aria-pressed="false"
+                            >تمام سهام‌ها</button>
+                        </div>
+                        <label class="stock-industry-toggle stock-saved-data-toggle" for="strategy-group-by-industry">
+                            <input id="strategy-group-by-industry" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <span>تفکیک بر اساس صنعت</span>
+                        </label>
                         <label class="stock-industry-toggle stock-saved-data-toggle" for="strategy-use-saved-data">
                             <input id="strategy-use-saved-data" type="checkbox" role="switch">
                             <span class="stock-toggle-track" aria-hidden="true">
@@ -539,6 +737,20 @@
                         <label class="strategy-field">
                             <span>میانگین چند روزه</span>
                             <input id="strategy-trade-value-days" type="number" min="0" max="250" step="1" value="5" inputmode="numeric">
+                        </label>
+                    </article>
+
+                    <article class="strategy-rule strategy-rule-industry-growth" data-strategy-rule="industry_growth">
+                        <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-industry-growth-enabled">
+                            <input id="strategy-industry-growth-enabled" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <strong>میانگین رشد صنعت</strong>
+                        </label>
+                        <label class="strategy-field">
+                            <span>بازه رشد قیمت پایانی (روز)</span>
+                            <input id="strategy-industry-growth-days" type="number" min="1" max="250" step="1" value="30" inputmode="numeric">
                         </label>
                     </article>
 
@@ -905,6 +1117,7 @@
                             <th data-sort-type="number" tabindex="0">کمینه فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="number" tabindex="0">بیشینه فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="number" tabindex="0">میانگین وزنی <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">میانگین شکاف <span class="expectations-sort-indicator">↕</span></th>
                             <th>جزئیات</th>
                         </tr>
                     </thead>
@@ -943,6 +1156,43 @@
                             <th data-sort-type="number" tabindex="0">سهم از کل بازار اختیار <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="number" tabindex="0">فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="number" tabindex="0">بازدهی مؤثر <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">شکاف <span class="expectations-sort-indicator">↕</span></th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <div id="put-options-modal" class="expectations-modal" hidden>
+        <div class="expectations-modal-backdrop" data-close-put-options-modal></div>
+        <section
+            class="expectations-modal-card market-share-options-modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="put-options-modal-title"
+        >
+            <header>
+                <h3 id="put-options-modal-title">پرمعامله‌ترین اختیارهای فروش</h3>
+                <button
+                    type="button"
+                    class="expectations-modal-close"
+                    data-close-put-options-modal
+                    aria-label="بستن"
+                >×</button>
+            </header>
+            <div class="expectations-detail-table-wrap">
+                <table class="expectations-table expectations-summary-table put-options-table">
+                    <thead>
+                        <tr>
+                            <th data-sort-type="text" tabindex="0">نماد <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">روز تا سررسید <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">درصد تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">قیمت آخرین معامله <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">قیمت اولین سرخط فروش <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">اهرم <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">شکاف <span class="expectations-sort-indicator">↕</span></th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -978,6 +1228,7 @@
                             <th data-sort-type="number" tabindex="0">کمینه فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="number" tabindex="0">بیشینه فاصله تا سر‌به‌سر <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="number" tabindex="0">میانگین وزنی <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">میانگین شکاف <span class="expectations-sort-indicator">↕</span></th>
                             <th>جزئیات</th>
                         </tr>
                     </thead>
@@ -1014,6 +1265,7 @@
                             <th data-sort-type="number" tabindex="0">قیمت آخرین معامله <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="number" tabindex="0">قیمت اولین سرخط خرید <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="text" tabindex="0">وضعیت <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">شکاف <span class="expectations-sort-indicator">↕</span></th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -1049,6 +1301,6 @@
         </section>
     </div>
 
-    <script src="{{ url_for('static', filename='scripttest.js', v='strategy-ranges-crossovers-v3') }}"></script>
+    <script src="{{ url_for('static', filename='scripttest.js', v='strategy-industry-sort-v1') }}"></script>
 </body>
 </html>

@@ -73,6 +73,37 @@ stock_refresh_state = {
     "error": None
 }
 
+all_stock_refresh_lock = threading.Lock()
+all_stock_refresh_state = {
+    "running": False,
+    "started_at": None,
+    "phases": [],
+    "manual": False,
+    "error": None,
+}
+
+stock_price_history_lock = threading.Lock()
+stock_price_history_state = {
+    "running": False,
+    "started_at": None,
+    "total": 0,
+    "completed": 0,
+    "stored_points": 0,
+    "errors": 0,
+    "error": None,
+}
+
+stock_strategy_history_lock = threading.Lock()
+stock_strategy_history_state = {
+    "running": False,
+    "started_at": None,
+    "total": 0,
+    "completed": 0,
+    "stored_points": 0,
+    "errors": 0,
+    "error": None,
+}
+
 watch_market_cache_lock = threading.Lock()
 watch_market_cache = {
     "data": None,
@@ -223,6 +254,14 @@ TSETMC_HEADERS = {
 
 STOCK_STANDARD_SNAPSHOT_MINUTE = 12 * 60 + 30
 STOCK_EXTENDED_SNAPSHOT_MINUTE = 18 * 60
+# The strategy UI accepts technical periods up to 250. MACD may need the
+# slow period plus the signal lookback (250 + 250 - 1), so retain 500 closing
+# prices to cover every supported RSI/EMA/MACD configuration and reduce
+# recursive-indicator seed drift versus charting services.
+STOCK_PRICE_HISTORY_TARGET_DAYS = 500
+STOCK_STRATEGY_HISTORY_TARGET_DAYS = 60
+STOCK_PRICE_HISTORY_WORKERS = 10
+STOCK_STRATEGY_HISTORY_WORKERS = 5
 STOCK_EXTENDED_SESSION_SYMBOLS = {
     "عیار",
     "طلا",
@@ -231,6 +270,27 @@ STOCK_EXTENDED_SESSION_SYMBOLS = {
     "نقرابی",
     "نقران",
 }
+
+# The complete-market tab now contains equity instruments only.  Funds are
+# intentionally excluded even if they are exchange traded.
+ALL_STOCK_EXTENDED_CATEGORIES = {
+    "1A",
+    "2A",
+    "H1",
+    "H2",
+    "Q1",
+    "QS",
+}
+ALL_STOCK_EQUITY_INSTRUMENT_PREFIXES = (
+    "IRO1",
+    "IRO3",
+    "IRO5",
+    "IRO7",
+    "IRR1",
+    "IRR3",
+    "IRR5",
+    "IRR7",
+)
 
 # TSETMC does not currently publish a usable free-float value for these
 # instruments. These user-supplied percentages are authoritative and are
@@ -280,6 +340,7 @@ STOCK_DETAIL_FIELDS = (
     "industry",
     "market_value",
     "last_price",
+    "yesterday_price",
     "last_price_change_percent",
     "closing_price",
     "closing_price_change_percent",
@@ -329,6 +390,7 @@ STOCK_DATABASE_EXTRA_COLUMNS = {
     "ins_code": "TEXT",
     "market_date": "TEXT",
     "last_price": "INTEGER",
+    "yesterday_price": "INTEGER",
     "last_price_change_percent": "REAL",
     "closing_price": "INTEGER",
     "closing_price_change_percent": "REAL",
@@ -418,6 +480,33 @@ def clean_stock_text(value):
         str.maketrans({"ي": "ی", "ى": "ی", "ك": "ک"})
     )
     return re.sub(r"\s+", " ", text)
+
+
+def is_all_stock_equity_instrument(
+    symbol,
+    instrument_id=None,
+    company=None,
+    category=None,
+    session_type=None,
+):
+    """Keep ordinary equity rows; reject funds and numbered side instruments."""
+    clean_symbol = clean_stock_text(symbol)
+    if not clean_symbol or re.search(r"[0-9۰-۹]+$", clean_symbol):
+        return False
+
+    clean_company = clean_stock_text(company)
+    if "صندوق" in clean_company or "گواهی سپرده" in clean_company:
+        return False
+    if clean_stock_text(category).upper() in ALL_STOCK_EXTENDED_CATEGORIES:
+        return False
+
+    clean_instrument_id = str(instrument_id or "").strip().upper()
+    if clean_instrument_id:
+        return clean_instrument_id.startswith(
+            ALL_STOCK_EQUITY_INSTRUMENT_PREFIXES
+        )
+
+    return str(session_type or "standard") != "extended"
 
 
 @contextmanager
@@ -545,6 +634,125 @@ def initialize_stock_database():
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS all_stocks (
+                    symbol TEXT PRIMARY KEY,
+                    position INTEGER NOT NULL,
+                    category TEXT,
+                    session_type TEXT NOT NULL,
+                    trade_date TEXT,
+                    captured_at TEXT NOT NULL,
+                    data_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS all_stock_daily_snapshots (
+                    trade_date TEXT NOT NULL,
+                    trade_date_jalali TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    category TEXT,
+                    session_type TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    data_json TEXT NOT NULL,
+                    PRIMARY KEY (trade_date, symbol)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_all_stock_daily_symbol_date
+                ON all_stock_daily_snapshots (symbol, trade_date DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS all_stock_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_price_history (
+                    symbol TEXT NOT NULL,
+                    ins_code TEXT NOT NULL,
+                    trade_date TEXT NOT NULL,
+                    trade_date_jalali TEXT NOT NULL,
+                    raw_closing_price REAL NOT NULL,
+                    adjusted_closing_price REAL NOT NULL,
+                    raw_last_price REAL,
+                    captured_at TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    PRIMARY KEY (symbol, trade_date)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_stock_price_history_symbol_date
+                ON stock_price_history (symbol, trade_date DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_price_history_sync (
+                    symbol TEXT PRIMARY KEY,
+                    ins_code TEXT NOT NULL,
+                    requested_days INTEGER NOT NULL,
+                    stored_count INTEGER NOT NULL,
+                    latest_trade_date TEXT,
+                    synced_at TEXT NOT NULL,
+                    error TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_strategy_history (
+                    symbol TEXT NOT NULL,
+                    ins_code TEXT NOT NULL,
+                    trade_date TEXT NOT NULL,
+                    trade_date_jalali TEXT NOT NULL,
+                    trade_value REAL,
+                    trade_volume REAL,
+                    trade_count REAL,
+                    price_power INTEGER,
+                    trade_to_float_percent REAL,
+                    trade_to_float_is_estimated INTEGER NOT NULL DEFAULT 0,
+                    real_money_flow REAL,
+                    money_flow_quality REAL,
+                    real_buy_per_capita REAL,
+                    real_sell_per_capita REAL,
+                    real_buy_power REAL,
+                    captured_at TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    PRIMARY KEY (symbol, trade_date)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_stock_strategy_history_symbol_date
+                ON stock_strategy_history (symbol, trade_date DESC)
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_strategy_history_sync (
+                    symbol TEXT PRIMARY KEY,
+                    ins_code TEXT NOT NULL,
+                    requested_days INTEGER NOT NULL,
+                    stored_count INTEGER NOT NULL,
+                    latest_trade_date TEXT,
+                    synced_at TEXT NOT NULL,
+                    error TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS market_daily_snapshots (
                     trade_date TEXT PRIMARY KEY,
                     trade_date_jalali TEXT,
@@ -660,6 +868,379 @@ def read_stock_database():
             ).fetchall()
         }
     return rows, metadata
+
+
+def read_all_stock_database():
+    """Read the last finalized row for every share and exchange-traded fund."""
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        records = connection.execute(
+            """
+            SELECT
+                symbol,
+                position,
+                category,
+                session_type,
+                trade_date,
+                captured_at,
+                data_json
+            FROM all_stocks
+            ORDER BY position, symbol COLLATE NOCASE
+            """
+        ).fetchall()
+        metadata = {
+            row["key"]: row["value"]
+            for row in connection.execute(
+                "SELECT key, value FROM all_stock_metadata"
+            ).fetchall()
+        }
+
+    rows = []
+    for record in records:
+        try:
+            row = json.loads(record["data_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            row = {}
+        if not isinstance(row, dict):
+            row = {}
+        row.update({
+            "symbol": record["symbol"],
+            "category": record["category"],
+            "session_type": record["session_type"],
+            "snapshot_date": record["trade_date"],
+            "captured_at": record["captured_at"],
+        })
+        if not is_all_stock_equity_instrument(
+            row.get("symbol"),
+            row.get("instrument_id"),
+            row.get("company"),
+            row.get("category"),
+            row.get("session_type"),
+        ):
+            continue
+        apply_stock_floating_share_override(row)
+        row.update(calculate_stock_indicators(row))
+        rows.append(row)
+    return rows, metadata
+
+
+def all_stock_due_phases(current_time, metadata=None):
+    """Return daily close phases that have reached their cutoff and are unsaved."""
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+    metadata = metadata or {}
+    trade_date = current_time.date().isoformat()
+    current_minute = current_time.hour * 60 + current_time.minute
+    phases = []
+    if (
+        current_minute >= STOCK_STANDARD_SNAPSHOT_MINUTE
+        and metadata.get("standard_completed_date") != trade_date
+    ):
+        phases.append("standard")
+    return phases
+
+
+def save_all_stock_phase(rows, phase, captured_at=None):
+    """Atomically publish and archive one complete-market close phase."""
+    if phase not in {"standard", "extended"}:
+        raise ValueError("بازه معاملاتی تمام سهام معتبر نیست.")
+    prepared_rows = [
+        dict(row)
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("symbol")
+        and row.get("session_type") == phase
+        and is_all_stock_equity_instrument(
+            row.get("symbol"),
+            row.get("instrument_id"),
+            row.get("company"),
+            row.get("category"),
+            row.get("session_type"),
+        )
+    ]
+    if not prepared_rows:
+        raise RuntimeError("داده‌ای برای ثبت روزانه تمام سهام دریافت نشد.")
+
+    current_time = captured_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+    completed_date = current_time.date().isoformat()
+    captured_at_iso = current_time.isoformat()
+    snapshot_count = 0
+    has_current_market_data = any(
+        normalize_stock_market_date(row.get("market_date")) == completed_date
+        for row in prepared_rows
+    )
+    published_rows = prepared_rows if has_current_market_data else []
+
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if published_rows:
+            connection.execute(
+                "DELETE FROM all_stocks WHERE session_type = ?",
+                (phase,),
+            )
+        for fallback_position, row in enumerate(published_rows):
+            apply_stock_floating_share_override(row)
+            row.update(calculate_stock_indicators(row))
+            symbol = clean_stock_text(row.get("symbol"))
+            category = clean_stock_text(row.get("category"))
+            market_date = normalize_stock_market_date(row.get("market_date"))
+            position = stock_integer(row.get("position"))
+            if position is None:
+                position = fallback_position
+            payload = json.dumps(
+                row,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            connection.execute(
+                """
+                INSERT INTO all_stocks (
+                    symbol,
+                    position,
+                    category,
+                    session_type,
+                    trade_date,
+                    captured_at,
+                    data_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    symbol,
+                    position,
+                    category,
+                    phase,
+                    market_date,
+                    captured_at_iso,
+                    payload,
+                ),
+            )
+
+            # Do not create a duplicate daily row on holidays or when TSETMC is
+            # still reporting a previous market day.
+            if market_date != completed_date:
+                continue
+            market_day = datetime.strptime(market_date, "%Y-%m-%d").date()
+            jalali_date = jdatetime.date.fromgregorian(
+                date=market_day
+            ).strftime("%Y-%m-%d")
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO all_stock_daily_snapshots (
+                    trade_date,
+                    trade_date_jalali,
+                    symbol,
+                    category,
+                    session_type,
+                    captured_at,
+                    data_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    market_date,
+                    jalali_date,
+                    symbol,
+                    category,
+                    phase,
+                    captured_at_iso,
+                    payload,
+                ),
+            )
+            snapshot_count += max(cursor.rowcount, 0)
+
+        metadata = {
+            f"{phase}_completed_date": completed_date,
+            f"{phase}_checked_at": captured_at_iso,
+        }
+        if published_rows:
+            metadata.update({
+                f"{phase}_updated_at": captured_at_iso,
+                f"{phase}_count": str(len(published_rows)),
+                "last_successful_update": captured_at_iso,
+            })
+        connection.executemany(
+            """
+            INSERT INTO all_stock_metadata (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            metadata.items(),
+        )
+
+    daily_price_rows = [
+        row
+        for row in published_rows
+        if normalize_stock_market_date(row.get("market_date")) == completed_date
+    ]
+    save_daily_stock_price_points(daily_price_rows, current_time)
+    save_daily_stock_strategy_points(daily_price_rows, current_time)
+
+    return {
+        "phase": phase,
+        "completed_date": completed_date,
+        "row_count": len(published_rows),
+        "snapshot_count": snapshot_count,
+    }
+
+
+def publish_all_stock_current_phase(rows, phase, captured_at=None):
+    """Publish fresh complete-market rows without changing the daily archive."""
+    if phase not in {"standard", "extended"}:
+        raise ValueError("بازه معاملاتی تمام سهام معتبر نیست.")
+    prepared_rows = [
+        dict(row)
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("symbol")
+        and row.get("session_type") == phase
+        and is_all_stock_equity_instrument(
+            row.get("symbol"),
+            row.get("instrument_id"),
+            row.get("company"),
+            row.get("category"),
+            row.get("session_type"),
+        )
+    ]
+    if not prepared_rows:
+        raise RuntimeError("داده‌ای برای به‌روزرسانی تمام سهام دریافت نشد.")
+
+    current_time = captured_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+    current_date = current_time.date().isoformat()
+    captured_at_iso = current_time.isoformat()
+    has_current_market_data = any(
+        normalize_stock_market_date(row.get("market_date")) == current_date
+        for row in prepared_rows
+    )
+    if not has_current_market_data:
+        return {
+            "phase": phase,
+            "row_count": 0,
+            "published": False,
+        }
+
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "DELETE FROM all_stocks WHERE session_type = ?",
+            (phase,),
+        )
+        for fallback_position, row in enumerate(prepared_rows):
+            apply_stock_floating_share_override(row)
+            row.update(calculate_stock_indicators(row))
+            symbol = clean_stock_text(row.get("symbol"))
+            position = stock_integer(row.get("position"))
+            if position is None:
+                position = fallback_position
+            connection.execute(
+                """
+                INSERT INTO all_stocks (
+                    symbol,
+                    position,
+                    category,
+                    session_type,
+                    trade_date,
+                    captured_at,
+                    data_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    symbol,
+                    position,
+                    clean_stock_text(row.get("category")),
+                    phase,
+                    normalize_stock_market_date(row.get("market_date")),
+                    captured_at_iso,
+                    json.dumps(
+                        row,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
+        connection.executemany(
+            """
+            INSERT INTO all_stock_metadata (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            {
+                f"{phase}_manual_updated_at": captured_at_iso,
+                f"{phase}_count": str(len(prepared_rows)),
+                "last_manual_update": captured_at_iso,
+                "last_successful_update": captured_at_iso,
+            }.items(),
+        )
+
+    return {
+        "phase": phase,
+        "row_count": len(prepared_rows),
+        "published": True,
+    }
+
+
+def read_all_stock_daily_snapshots(trade_date=None, symbol=None):
+    """Read the complete-market daily archive, newest market day by default."""
+    initialize_stock_database()
+    requested_symbol = normalize_symbol(symbol) if symbol else None
+    with stock_database_connection() as connection:
+        selected_date = trade_date
+        if not selected_date:
+            record = connection.execute(
+                "SELECT MAX(trade_date) AS trade_date "
+                "FROM all_stock_daily_snapshots"
+            ).fetchone()
+            selected_date = record["trade_date"] if record else None
+        if not selected_date:
+            return [], None
+        records = connection.execute(
+            """
+            SELECT
+                trade_date,
+                trade_date_jalali,
+                symbol,
+                category,
+                session_type,
+                captured_at,
+                data_json
+            FROM all_stock_daily_snapshots
+            WHERE trade_date = ?
+            ORDER BY symbol COLLATE NOCASE
+            """,
+            (selected_date,),
+        ).fetchall()
+
+    snapshots = []
+    for record in records:
+        if requested_symbol and normalize_symbol(record["symbol"]) != requested_symbol:
+            continue
+        try:
+            data = json.loads(record["data_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            data = {}
+        snapshots.append({
+            "trade_date": record["trade_date"],
+            "trade_date_jalali": record["trade_date_jalali"],
+            "symbol": record["symbol"],
+            "category": record["category"],
+            "session_type": record["session_type"],
+            "captured_at": record["captured_at"],
+            "data": data if isinstance(data, dict) else {},
+        })
+    return snapshots, selected_date
 
 
 def read_stock_watchlist():
@@ -969,6 +1550,1089 @@ def normalize_stock_market_date(value):
         return None
 
 
+def parse_tsetmc_price_history(payload, limit=STOCK_PRICE_HISTORY_TARGET_DAYS):
+    """Normalize and adjust TSETMC daily closes to the newest price scale."""
+    raw_rows = payload.get("closingPriceDaily") if isinstance(payload, dict) else []
+    parsed_rows = []
+    for item in raw_rows if isinstance(raw_rows, list) else []:
+        if not isinstance(item, dict):
+            continue
+        trade_date = normalize_stock_market_date(item.get("dEven"))
+        closing_price = stock_number(item.get("pClosing"))
+        if not trade_date or closing_price is None or closing_price <= 0:
+            continue
+        parsed_rows.append({
+            "trade_date": trade_date,
+            "raw_closing_price": closing_price,
+            "raw_last_price": stock_number(item.get("pDrCotVal")),
+            "yesterday_price": stock_number(item.get("priceYesterday")),
+            "trade_value": stock_number(item.get("qTotCap")),
+            "trade_volume": stock_number(item.get("qTotTran5J")),
+            "trade_count": stock_number(item.get("zTotTran")),
+        })
+
+    parsed_rows.sort(key=lambda item: item["trade_date"], reverse=True)
+    parsed_rows = parsed_rows[:max(1, int(limit or STOCK_PRICE_HISTORY_TARGET_DAYS))]
+    cumulative_adjustment = 1.0
+    adjusted_rows = []
+    for index, item in enumerate(parsed_rows):
+        adjusted_rows.append({
+            **item,
+            "adjusted_closing_price": round(
+                item["raw_closing_price"] * cumulative_adjustment,
+                6,
+            ),
+        })
+        if index + 1 >= len(parsed_rows):
+            continue
+        older_closing = parsed_rows[index + 1]["raw_closing_price"]
+        yesterday_price = item.get("yesterday_price")
+        if (
+            yesterday_price is not None
+            and yesterday_price > 0
+            and older_closing > 0
+        ):
+            cumulative_adjustment *= yesterday_price / older_closing
+    return adjusted_rows
+
+
+def fetch_stock_price_history(
+    symbol,
+    ins_code,
+    limit=STOCK_PRICE_HISTORY_TARGET_DAYS,
+):
+    """Fetch the latest daily closing-price history for one TSETMC instrument."""
+    safe_limit = max(1, min(int(limit or STOCK_PRICE_HISTORY_TARGET_DAYS), 500))
+    payload = fetch_tsetmc_json(
+        "https://cdn.tsetmc.com/api/ClosingPrice/"
+        f"GetClosingPriceDailyList/{ins_code}/{safe_limit}",
+        attempts=3,
+    )
+    return parse_tsetmc_price_history(payload, safe_limit)
+
+
+def store_stock_price_history(
+    symbol,
+    ins_code,
+    points,
+    requested_days=STOCK_PRICE_HISTORY_TARGET_DAYS,
+    captured_at=None,
+):
+    """Upsert one symbol's adjusted history and record backfill coverage."""
+    clean_symbol = clean_stock_text(symbol)
+    clean_ins_code = str(ins_code or "").strip()
+    if not clean_symbol or not clean_ins_code:
+        raise ValueError("نماد یا شناسه TSETMC برای تاریخچه قیمت معتبر نیست.")
+    current_time = captured_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+    captured_at_iso = current_time.isoformat()
+    prepared_points = []
+    for point in points or []:
+        trade_date = str(point.get("trade_date") or "")
+        adjusted_price = stock_number(point.get("adjusted_closing_price"))
+        raw_price = stock_number(point.get("raw_closing_price"))
+        if not trade_date or adjusted_price is None or raw_price is None:
+            continue
+        market_day = datetime.strptime(trade_date, "%Y-%m-%d").date()
+        prepared_points.append((
+            clean_symbol,
+            clean_ins_code,
+            trade_date,
+            jdatetime.date.fromgregorian(date=market_day).strftime("%Y-%m-%d"),
+            raw_price,
+            adjusted_price,
+            stock_number(point.get("raw_last_price")),
+            captured_at_iso,
+            "tsetmc_history",
+        ))
+
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        connection.executemany(
+            """
+            INSERT INTO stock_price_history (
+                symbol,
+                ins_code,
+                trade_date,
+                trade_date_jalali,
+                raw_closing_price,
+                adjusted_closing_price,
+                raw_last_price,
+                captured_at,
+                source
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, trade_date) DO UPDATE SET
+                ins_code = excluded.ins_code,
+                trade_date_jalali = excluded.trade_date_jalali,
+                raw_closing_price = excluded.raw_closing_price,
+                adjusted_closing_price = excluded.adjusted_closing_price,
+                raw_last_price = excluded.raw_last_price,
+                captured_at = excluded.captured_at,
+                source = excluded.source
+            """,
+            prepared_points,
+        )
+        latest_trade_date = max(
+            (point[2] for point in prepared_points),
+            default=None,
+        )
+        connection.execute(
+            """
+            INSERT INTO stock_price_history_sync (
+                symbol,
+                ins_code,
+                requested_days,
+                stored_count,
+                latest_trade_date,
+                synced_at,
+                error
+            )
+            VALUES (?, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(symbol) DO UPDATE SET
+                ins_code = excluded.ins_code,
+                requested_days = excluded.requested_days,
+                stored_count = excluded.stored_count,
+                latest_trade_date = excluded.latest_trade_date,
+                synced_at = excluded.synced_at,
+                error = NULL
+            """,
+            (
+                clean_symbol,
+                clean_ins_code,
+                int(requested_days),
+                len(prepared_points),
+                latest_trade_date,
+                captured_at_iso,
+            ),
+        )
+    return len(prepared_points)
+
+
+def mark_stock_price_history_error(symbol, ins_code, error, captured_at=None):
+    current_time = captured_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO stock_price_history_sync (
+                symbol, ins_code, requested_days, stored_count,
+                latest_trade_date, synced_at, error
+            )
+            VALUES (?, ?, 0, 0, NULL, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                ins_code = excluded.ins_code,
+                synced_at = excluded.synced_at,
+                error = excluded.error
+            """,
+            (
+                clean_stock_text(symbol),
+                str(ins_code or "").strip(),
+                current_time.astimezone(IRAN_TIMEZONE).isoformat(),
+                str(error),
+            ),
+        )
+
+
+def pending_stock_price_history_rows(
+    rows,
+    target_days=STOCK_PRICE_HISTORY_TARGET_DAYS,
+):
+    """Return instruments whose one-time adjusted-price backfill is incomplete."""
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        sync_rows = {
+            normalize_symbol(record["symbol"]): record
+            for record in connection.execute(
+                """
+                SELECT symbol, ins_code, requested_days, stored_count,
+                       synced_at, error
+                FROM stock_price_history_sync
+                """
+            ).fetchall()
+        }
+    pending = []
+    seen = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        symbol = clean_stock_text(row.get("symbol"))
+        ins_code = str(row.get("ins_code") or "").strip()
+        normalized_symbol = normalize_symbol(symbol)
+        if not symbol or not ins_code or normalized_symbol in seen:
+            continue
+        seen.add(normalized_symbol)
+        sync = sync_rows.get(normalized_symbol)
+        needs_refresh = (
+            sync is None
+            or str(sync["ins_code"] or "") != ins_code
+        )
+        if sync is not None and not needs_refresh:
+            if sync["error"]:
+                try:
+                    last_attempt = datetime.fromisoformat(sync["synced_at"])
+                    if last_attempt.tzinfo is None:
+                        last_attempt = last_attempt.replace(tzinfo=IRAN_TIMEZONE)
+                    needs_refresh = (
+                        datetime.now(IRAN_TIMEZONE) - last_attempt
+                        >= timedelta(hours=6)
+                    )
+                except (TypeError, ValueError):
+                    needs_refresh = True
+            else:
+                needs_refresh = (
+                    int(sync["requested_days"] or 0) < int(target_days)
+                )
+        if needs_refresh:
+            pending.append({"symbol": symbol, "ins_code": ins_code})
+    return pending
+
+
+def refresh_stock_price_history(instruments):
+    """Backfill adjusted closes concurrently while serializing SQLite writes."""
+    errors = []
+    stored_points = 0
+    try:
+        with ThreadPoolExecutor(
+            max_workers=min(STOCK_PRICE_HISTORY_WORKERS, len(instruments))
+        ) as executor:
+            futures = {
+                executor.submit(
+                    fetch_stock_price_history,
+                    instrument["symbol"],
+                    instrument["ins_code"],
+                    STOCK_PRICE_HISTORY_TARGET_DAYS,
+                ): instrument
+                for instrument in instruments
+            }
+            for future in as_completed(futures):
+                instrument = futures[future]
+                try:
+                    points = future.result()
+                    stored_points += store_stock_price_history(
+                        instrument["symbol"],
+                        instrument["ins_code"],
+                        points,
+                    )
+                except Exception as error:
+                    errors.append(f"{instrument['symbol']}: {error}")
+                    try:
+                        mark_stock_price_history_error(
+                            instrument["symbol"],
+                            instrument["ins_code"],
+                            error,
+                        )
+                    except sqlite3.Error:
+                        pass
+                finally:
+                    with stock_price_history_lock:
+                        stock_price_history_state["completed"] += 1
+                        stock_price_history_state["stored_points"] = stored_points
+                        stock_price_history_state["errors"] = len(errors)
+    except Exception as error:
+        errors.append(str(error))
+    finally:
+        with stock_price_history_lock:
+            stock_price_history_state["running"] = False
+            stock_price_history_state["stored_points"] = stored_points
+            stock_price_history_state["errors"] = len(errors)
+            stock_price_history_state["error"] = (
+                f"تاریخچه قیمت {len(errors)} نماد کامل نشد."
+                if errors else None
+            )
+
+
+def start_stock_price_history_backfill(rows):
+    """Start the missing 500-session backfill without delaying page responses."""
+    pending = pending_stock_price_history_rows(rows)
+    if not pending:
+        with stock_price_history_lock:
+            if not stock_price_history_state["running"]:
+                stock_price_history_state.update({
+                    "total": len(rows or []),
+                    "completed": len(rows or []),
+                    "errors": 0,
+                    "error": None,
+                })
+        return False
+    with stock_price_history_lock:
+        if stock_price_history_state["running"]:
+            return False
+        stock_price_history_state.update({
+            "running": True,
+            "started_at": datetime.now(IRAN_TIMEZONE).isoformat(),
+            "total": len(pending),
+            "completed": 0,
+            "stored_points": 0,
+            "errors": 0,
+            "error": None,
+        })
+    threading.Thread(
+        target=refresh_stock_price_history,
+        args=(pending,),
+        name="stock-price-history-backfill",
+        daemon=True,
+    ).start()
+    return True
+
+
+def save_daily_stock_price_points(rows, captured_at=None):
+    """Append one daily close and rebase prior prices after corporate actions."""
+    current_time = captured_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+    captured_at_iso = current_time.isoformat()
+    prepared_rows = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        symbol = clean_stock_text(row.get("symbol"))
+        ins_code = str(row.get("ins_code") or "").strip()
+        trade_date = normalize_stock_market_date(row.get("market_date"))
+        closing_price = stock_number(row.get("closing_price"))
+        if not symbol or not ins_code or not trade_date or not closing_price:
+            continue
+        prepared_rows.append((symbol, ins_code, trade_date, closing_price, row))
+    if not prepared_rows:
+        return 0
+
+    inserted_count = 0
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        for symbol, ins_code, trade_date, closing_price, row in prepared_rows:
+            exists = connection.execute(
+                """
+                SELECT 1 FROM stock_price_history
+                WHERE symbol = ? AND trade_date = ?
+                """,
+                (symbol, trade_date),
+            ).fetchone()
+            if exists:
+                continue
+            previous = connection.execute(
+                """
+                SELECT trade_date, raw_closing_price
+                FROM stock_price_history
+                WHERE symbol = ? AND trade_date < ?
+                ORDER BY trade_date DESC
+                LIMIT 1
+                """,
+                (symbol, trade_date),
+            ).fetchone()
+            yesterday_price = stock_number(row.get("yesterday_price"))
+            if previous and yesterday_price and previous["raw_closing_price"]:
+                adjustment = yesterday_price / previous["raw_closing_price"]
+                if abs(adjustment - 1) > 0.000001:
+                    connection.execute(
+                        """
+                        UPDATE stock_price_history
+                        SET adjusted_closing_price = adjusted_closing_price * ?
+                        WHERE symbol = ? AND trade_date < ?
+                        """,
+                        (adjustment, symbol, trade_date),
+                    )
+            market_day = datetime.strptime(trade_date, "%Y-%m-%d").date()
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO stock_price_history (
+                    symbol, ins_code, trade_date, trade_date_jalali,
+                    raw_closing_price, adjusted_closing_price,
+                    raw_last_price, captured_at, source
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    symbol,
+                    ins_code,
+                    trade_date,
+                    jdatetime.date.fromgregorian(date=market_day).strftime("%Y-%m-%d"),
+                    closing_price,
+                    closing_price,
+                    stock_number(row.get("last_price")),
+                    captured_at_iso,
+                    "daily_close",
+                ),
+            )
+            inserted_count += max(cursor.rowcount, 0)
+    return inserted_count
+
+
+def read_stock_price_history(symbols=None):
+    """Read adjusted closes newest-first, optionally limited to selected symbols."""
+    requested_values = (
+        sorted({clean_stock_text(symbol) for symbol in symbols if clean_stock_text(symbol)})
+        if symbols is not None
+        else None
+    )
+    requested_symbols = (
+        {normalize_symbol(symbol) for symbol in requested_values}
+        if requested_values is not None
+        else None
+    )
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        if requested_values is None:
+            records = connection.execute(
+                """
+                SELECT symbol, trade_date, raw_closing_price,
+                       adjusted_closing_price, raw_last_price
+                FROM stock_price_history
+                ORDER BY trade_date DESC
+                """
+            ).fetchall()
+        else:
+            records = []
+            for offset in range(0, len(requested_values), 500):
+                batch = requested_values[offset:offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                records.extend(connection.execute(
+                    f"""
+                    SELECT symbol, trade_date, raw_closing_price,
+                           adjusted_closing_price, raw_last_price
+                    FROM stock_price_history
+                    WHERE symbol IN ({placeholders})
+                    ORDER BY trade_date DESC
+                    """,
+                    batch,
+                ).fetchall())
+    history = {}
+    for record in records:
+        normalized_symbol = normalize_symbol(record["symbol"])
+        if requested_symbols is not None and normalized_symbol not in requested_symbols:
+            continue
+        history.setdefault(normalized_symbol, []).append({
+            "trade_date": record["trade_date"],
+            "closing_price": record["adjusted_closing_price"],
+            "raw_closing_price": record["raw_closing_price"],
+            "last_price": record["raw_last_price"],
+        })
+    return history
+
+
+def parse_tsetmc_client_type_history(
+    payload,
+    limit=STOCK_STRATEGY_HISTORY_TARGET_DAYS,
+):
+    """Normalize the newest historical real/legal trading rows by market date."""
+    raw_rows = payload.get("clientType") if isinstance(payload, dict) else []
+    parsed = []
+    for item in raw_rows if isinstance(raw_rows, list) else []:
+        if not isinstance(item, dict):
+            continue
+        trade_date = normalize_stock_market_date(item.get("recDate"))
+        if not trade_date:
+            continue
+        parsed.append({
+            "trade_date": trade_date,
+            "real_buy_value": stock_number(item.get("buy_I_Value")),
+            "real_sell_value": stock_number(item.get("sell_I_Value")),
+            "real_buy_count": stock_number(
+                item.get("buy_I_Count")
+                if item.get("buy_I_Count") is not None
+                else item.get("buy_CountI")
+            ),
+            "real_sell_count": stock_number(
+                item.get("sell_I_Count")
+                if item.get("sell_I_Count") is not None
+                else item.get("sell_CountI")
+            ),
+            "real_buy_volume": stock_number(item.get("buy_I_Volume")),
+            "real_sell_volume": stock_number(item.get("sell_I_Volume")),
+            "legal_buy_volume": stock_number(item.get("buy_N_Volume")),
+            "legal_sell_volume": stock_number(item.get("sell_N_Volume")),
+        })
+    parsed.sort(key=lambda item: item["trade_date"], reverse=True)
+    return parsed[:max(1, int(limit or STOCK_STRATEGY_HISTORY_TARGET_DAYS))]
+
+
+def fetch_stock_client_type_history(
+    ins_code,
+    limit=STOCK_STRATEGY_HISTORY_TARGET_DAYS,
+):
+    try:
+        response = requests.get(
+            f"https://old.tsetmc.com/tsev2/data/ClientType.aspx?i={ins_code}",
+            headers=TSETMC_HEADERS,
+            timeout=20,
+        )
+        response.raise_for_status()
+        rows = []
+        for raw_row in response.text.strip().split(";"):
+            fields = raw_row.split(",")
+            if len(fields) < 13:
+                continue
+            trade_date = normalize_stock_market_date(fields[0])
+            if not trade_date:
+                continue
+            rows.append({
+                "trade_date": trade_date,
+                "real_buy_count": stock_number(fields[1]),
+                "real_sell_count": stock_number(fields[3]),
+                "real_buy_volume": stock_number(fields[5]),
+                "legal_buy_volume": stock_number(fields[6]),
+                "real_sell_volume": stock_number(fields[7]),
+                "legal_sell_volume": stock_number(fields[8]),
+                "real_buy_value": stock_number(fields[9]),
+                "real_sell_value": stock_number(fields[11]),
+            })
+            if len(rows) >= max(1, int(limit)):
+                break
+        if rows:
+            return rows
+    except requests.RequestException:
+        pass
+
+    payload = fetch_tsetmc_json(
+        f"https://cdn.tsetmc.com/api/ClientType/GetClientTypeHistory/{ins_code}",
+        attempts=3,
+    )
+    return parse_tsetmc_client_type_history(payload, limit)
+
+
+def build_stock_strategy_history_points(
+    price_points,
+    client_points,
+    share_count=None,
+    floating_share_percent=None,
+    limit=STOCK_STRATEGY_HISTORY_TARGET_DAYS,
+):
+    """Combine price/value and client-type history into current strategy metrics."""
+    client_by_date = {
+        point["trade_date"]: point
+        for point in client_points or []
+        if point.get("trade_date")
+    }
+    shares = stock_number(share_count)
+    floating_percent = stock_number(floating_share_percent)
+    floating_share_count = (
+        shares * floating_percent / 100
+        if shares and shares > 0 and floating_percent and floating_percent > 0
+        else None
+    )
+    results = []
+    for price_point in (price_points or [])[:max(1, int(limit))]:
+        trade_date = price_point.get("trade_date")
+        if not trade_date:
+            continue
+        closing_price = stock_number(price_point.get("raw_closing_price"))
+        last_price = stock_number(price_point.get("raw_last_price"))
+        trade_value = stock_number(price_point.get("trade_value"))
+        trade_volume = stock_number(price_point.get("trade_volume"))
+        price_power = None
+        if last_price is not None and closing_price is not None:
+            price_power = (
+                1 if last_price > closing_price
+                else (-1 if last_price < closing_price else 0)
+            )
+        trade_to_float_percent = (
+            round(trade_volume / floating_share_count * 100, 4)
+            if trade_volume is not None and floating_share_count
+            else None
+        )
+
+        client = client_by_date.get(trade_date, {})
+        real_buy_value = stock_number(client.get("real_buy_value"))
+        real_sell_value = stock_number(client.get("real_sell_value"))
+        real_buy_count = stock_number(client.get("real_buy_count"))
+        real_sell_count = stock_number(client.get("real_sell_count"))
+        real_money_flow = (
+            real_buy_value - real_sell_value
+            if real_buy_value is not None and real_sell_value is not None
+            else None
+        )
+        real_buy_per_capita = (
+            real_buy_value / real_buy_count
+            if real_buy_value is not None and real_buy_count and real_buy_count > 0
+            else None
+        )
+        real_sell_per_capita = (
+            real_sell_value / real_sell_count
+            if real_sell_value is not None and real_sell_count and real_sell_count > 0
+            else None
+        )
+        real_buy_power = (
+            real_buy_per_capita / real_sell_per_capita
+            if real_buy_per_capita is not None
+            and real_sell_per_capita is not None
+            and real_sell_per_capita > 0
+            else None
+        )
+        money_flow_quality = (
+            round(real_money_flow / trade_value * 100, 4)
+            if real_money_flow is not None and trade_value and trade_value > 0
+            else None
+        )
+        results.append({
+            "trade_date": trade_date,
+            "trade_value": trade_value,
+            "trade_volume": trade_volume,
+            "trade_count": stock_number(price_point.get("trade_count")),
+            "price_power": price_power,
+            "trade_to_float_percent": trade_to_float_percent,
+            "trade_to_float_is_estimated": trade_to_float_percent is not None,
+            "real_money_flow": real_money_flow,
+            "money_flow_quality": money_flow_quality,
+            "real_buy_per_capita": real_buy_per_capita,
+            "real_sell_per_capita": real_sell_per_capita,
+            "real_buy_power": real_buy_power,
+        })
+    return results
+
+
+def fetch_stock_strategy_history_points(
+    instrument,
+    limit=STOCK_STRATEGY_HISTORY_TARGET_DAYS,
+):
+    price_points = fetch_stock_price_history(
+        instrument.get("symbol"),
+        instrument.get("ins_code"),
+        limit,
+    )
+    client_points = fetch_stock_client_type_history(
+        instrument.get("ins_code"),
+        limit,
+    )
+    return build_stock_strategy_history_points(
+        price_points,
+        client_points,
+        share_count=instrument.get("share_count"),
+        floating_share_percent=instrument.get("floating_share_percent"),
+        limit=limit,
+    )
+
+
+def store_stock_strategy_history(
+    symbol,
+    ins_code,
+    points,
+    requested_days=STOCK_STRATEGY_HISTORY_TARGET_DAYS,
+    captured_at=None,
+):
+    clean_symbol = clean_stock_text(symbol)
+    clean_ins_code = str(ins_code or "").strip()
+    if not clean_symbol or not clean_ins_code:
+        raise ValueError("نماد یا شناسه TSETMC برای تاریخچه استراتژی معتبر نیست.")
+    current_time = captured_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+    captured_at_iso = current_time.isoformat()
+    prepared_points = []
+    for point in points or []:
+        trade_date = str(point.get("trade_date") or "")
+        if not trade_date:
+            continue
+        market_day = datetime.strptime(trade_date, "%Y-%m-%d").date()
+        prepared_points.append((
+            clean_symbol,
+            clean_ins_code,
+            trade_date,
+            jdatetime.date.fromgregorian(date=market_day).strftime("%Y-%m-%d"),
+            stock_number(point.get("trade_value")),
+            stock_number(point.get("trade_volume")),
+            stock_number(point.get("trade_count")),
+            stock_integer(point.get("price_power")),
+            stock_number(point.get("trade_to_float_percent")),
+            1 if point.get("trade_to_float_is_estimated") else 0,
+            stock_number(point.get("real_money_flow")),
+            stock_number(point.get("money_flow_quality")),
+            stock_number(point.get("real_buy_per_capita")),
+            stock_number(point.get("real_sell_per_capita")),
+            stock_number(point.get("real_buy_power")),
+            captured_at_iso,
+            "tsetmc_60_day_backfill",
+        ))
+
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        connection.executemany(
+            """
+            INSERT INTO stock_strategy_history (
+                symbol, ins_code, trade_date, trade_date_jalali,
+                trade_value, trade_volume, trade_count, price_power,
+                trade_to_float_percent, trade_to_float_is_estimated,
+                real_money_flow, money_flow_quality,
+                real_buy_per_capita, real_sell_per_capita, real_buy_power,
+                captured_at, source
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, trade_date) DO UPDATE SET
+                ins_code = excluded.ins_code,
+                trade_date_jalali = excluded.trade_date_jalali,
+                trade_value = excluded.trade_value,
+                trade_volume = excluded.trade_volume,
+                trade_count = excluded.trade_count,
+                price_power = excluded.price_power,
+                trade_to_float_percent = excluded.trade_to_float_percent,
+                trade_to_float_is_estimated = excluded.trade_to_float_is_estimated,
+                real_money_flow = excluded.real_money_flow,
+                money_flow_quality = excluded.money_flow_quality,
+                real_buy_per_capita = excluded.real_buy_per_capita,
+                real_sell_per_capita = excluded.real_sell_per_capita,
+                real_buy_power = excluded.real_buy_power,
+                captured_at = excluded.captured_at,
+                source = excluded.source
+            WHERE stock_strategy_history.source != 'daily_close'
+            """,
+            prepared_points,
+        )
+        latest_trade_date = max(
+            (point[2] for point in prepared_points),
+            default=None,
+        )
+        connection.execute(
+            """
+            INSERT INTO stock_strategy_history_sync (
+                symbol, ins_code, requested_days, stored_count,
+                latest_trade_date, synced_at, error
+            )
+            VALUES (?, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(symbol) DO UPDATE SET
+                ins_code = excluded.ins_code,
+                requested_days = excluded.requested_days,
+                stored_count = excluded.stored_count,
+                latest_trade_date = excluded.latest_trade_date,
+                synced_at = excluded.synced_at,
+                error = NULL
+            """,
+            (
+                clean_symbol,
+                clean_ins_code,
+                int(requested_days),
+                len(prepared_points),
+                latest_trade_date,
+                captured_at_iso,
+            ),
+        )
+    return len(prepared_points)
+
+
+def mark_stock_strategy_history_error(symbol, ins_code, error, captured_at=None):
+    current_time = captured_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO stock_strategy_history_sync (
+                symbol, ins_code, requested_days, stored_count,
+                latest_trade_date, synced_at, error
+            )
+            VALUES (?, ?, 0, 0, NULL, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                ins_code = excluded.ins_code,
+                synced_at = excluded.synced_at,
+                error = excluded.error
+            """,
+            (
+                clean_stock_text(symbol),
+                str(ins_code or "").strip(),
+                current_time.astimezone(IRAN_TIMEZONE).isoformat(),
+                str(error),
+            ),
+        )
+
+
+def pending_stock_strategy_history_rows(
+    rows,
+    target_days=STOCK_STRATEGY_HISTORY_TARGET_DAYS,
+):
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        sync_rows = {
+            normalize_symbol(record["symbol"]): record
+            for record in connection.execute(
+                """
+                SELECT symbol, ins_code, requested_days, synced_at, error
+                FROM stock_strategy_history_sync
+                """
+            ).fetchall()
+        }
+    pending = []
+    seen = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        symbol = clean_stock_text(row.get("symbol"))
+        ins_code = str(row.get("ins_code") or "").strip()
+        normalized_symbol = normalize_symbol(symbol)
+        if not symbol or not ins_code or normalized_symbol in seen:
+            continue
+        seen.add(normalized_symbol)
+        sync = sync_rows.get(normalized_symbol)
+        needs_refresh = (
+            sync is None
+            or str(sync["ins_code"] or "") != ins_code
+        )
+        if sync is not None and not needs_refresh:
+            if sync["error"]:
+                try:
+                    last_attempt = datetime.fromisoformat(sync["synced_at"])
+                    if last_attempt.tzinfo is None:
+                        last_attempt = last_attempt.replace(tzinfo=IRAN_TIMEZONE)
+                    needs_refresh = (
+                        datetime.now(IRAN_TIMEZONE) - last_attempt
+                        >= timedelta(hours=6)
+                    )
+                except (TypeError, ValueError):
+                    needs_refresh = True
+            else:
+                needs_refresh = int(sync["requested_days"] or 0) < int(target_days)
+        if needs_refresh:
+            pending.append({
+                "symbol": symbol,
+                "ins_code": ins_code,
+                "share_count": row.get("share_count"),
+                "floating_share_percent": row.get("floating_share_percent"),
+            })
+    return pending
+
+
+def refresh_stock_strategy_history(instruments):
+    errors = []
+    stored_points = 0
+    try:
+        with ThreadPoolExecutor(
+            max_workers=min(STOCK_STRATEGY_HISTORY_WORKERS, len(instruments))
+        ) as executor:
+            futures = {
+                executor.submit(
+                    fetch_stock_strategy_history_points,
+                    instrument,
+                    STOCK_STRATEGY_HISTORY_TARGET_DAYS,
+                ): instrument
+                for instrument in instruments
+            }
+            for future in as_completed(futures):
+                instrument = futures[future]
+                try:
+                    stored_points += store_stock_strategy_history(
+                        instrument["symbol"],
+                        instrument["ins_code"],
+                        future.result(),
+                    )
+                except Exception as error:
+                    errors.append(f"{instrument['symbol']}: {error}")
+                    try:
+                        mark_stock_strategy_history_error(
+                            instrument["symbol"],
+                            instrument["ins_code"],
+                            error,
+                        )
+                    except sqlite3.Error:
+                        pass
+                finally:
+                    with stock_strategy_history_lock:
+                        stock_strategy_history_state["completed"] += 1
+                        stock_strategy_history_state["stored_points"] = stored_points
+                        stock_strategy_history_state["errors"] = len(errors)
+    except Exception as error:
+        errors.append(str(error))
+    finally:
+        with stock_strategy_history_lock:
+            stock_strategy_history_state["running"] = False
+            stock_strategy_history_state["stored_points"] = stored_points
+            stock_strategy_history_state["errors"] = len(errors)
+            stock_strategy_history_state["error"] = (
+                f"تاریخچه استراتژی {len(errors)} نماد کامل نشد."
+                if errors else None
+            )
+
+
+def start_stock_strategy_history_backfill(rows):
+    pending = pending_stock_strategy_history_rows(rows)
+    if not pending:
+        with stock_strategy_history_lock:
+            if not stock_strategy_history_state["running"]:
+                stock_strategy_history_state.update({
+                    "total": len(rows or []),
+                    "completed": len(rows or []),
+                    "errors": 0,
+                    "error": None,
+                })
+        return False
+    with stock_strategy_history_lock:
+        if stock_strategy_history_state["running"]:
+            return False
+        stock_strategy_history_state.update({
+            "running": True,
+            "started_at": datetime.now(IRAN_TIMEZONE).isoformat(),
+            "total": len(pending),
+            "completed": 0,
+            "stored_points": 0,
+            "errors": 0,
+            "error": None,
+        })
+    threading.Thread(
+        target=refresh_stock_strategy_history,
+        args=(pending,),
+        name="stock-strategy-history-backfill",
+        daemon=True,
+    ).start()
+    return True
+
+
+def save_daily_stock_strategy_points(rows, captured_at=None):
+    current_time = captured_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+    captured_at_iso = current_time.isoformat()
+    prepared = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        symbol = clean_stock_text(row.get("symbol"))
+        ins_code = str(row.get("ins_code") or "").strip()
+        trade_date = normalize_stock_market_date(row.get("market_date"))
+        if not symbol or not ins_code or not trade_date:
+            continue
+        market_day = datetime.strptime(trade_date, "%Y-%m-%d").date()
+        prepared.append((
+            symbol,
+            ins_code,
+            trade_date,
+            jdatetime.date.fromgregorian(date=market_day).strftime("%Y-%m-%d"),
+            stock_number(row.get("trade_value")),
+            stock_number(row.get("trade_volume")),
+            None,
+            stock_integer(row.get("price_power")),
+            stock_number(row.get("trade_to_float_percent")),
+            0,
+            stock_number(row.get("real_money_flow")),
+            stock_number(row.get("money_flow_quality")),
+            stock_number(row.get("real_buy_per_capita")),
+            stock_number(row.get("real_sell_per_capita")),
+            stock_number(row.get("real_buy_power")),
+            captured_at_iso,
+            "daily_close",
+        ))
+    if not prepared:
+        return 0
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        before_changes = connection.total_changes
+        connection.executemany(
+            """
+            INSERT INTO stock_strategy_history (
+                symbol, ins_code, trade_date, trade_date_jalali,
+                trade_value, trade_volume, trade_count, price_power,
+                trade_to_float_percent, trade_to_float_is_estimated,
+                real_money_flow, money_flow_quality,
+                real_buy_per_capita, real_sell_per_capita, real_buy_power,
+                captured_at, source
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, trade_date) DO UPDATE SET
+                ins_code = excluded.ins_code,
+                trade_date_jalali = excluded.trade_date_jalali,
+                trade_value = COALESCE(excluded.trade_value, stock_strategy_history.trade_value),
+                trade_volume = COALESCE(excluded.trade_volume, stock_strategy_history.trade_volume),
+                trade_count = COALESCE(excluded.trade_count, stock_strategy_history.trade_count),
+                price_power = COALESCE(excluded.price_power, stock_strategy_history.price_power),
+                trade_to_float_percent = COALESCE(
+                    excluded.trade_to_float_percent,
+                    stock_strategy_history.trade_to_float_percent
+                ),
+                trade_to_float_is_estimated = CASE
+                    WHEN excluded.trade_to_float_percent IS NOT NULL THEN 0
+                    ELSE stock_strategy_history.trade_to_float_is_estimated
+                END,
+                real_money_flow = COALESCE(
+                    excluded.real_money_flow,
+                    stock_strategy_history.real_money_flow
+                ),
+                money_flow_quality = COALESCE(
+                    excluded.money_flow_quality,
+                    stock_strategy_history.money_flow_quality
+                ),
+                real_buy_per_capita = COALESCE(
+                    excluded.real_buy_per_capita,
+                    stock_strategy_history.real_buy_per_capita
+                ),
+                real_sell_per_capita = COALESCE(
+                    excluded.real_sell_per_capita,
+                    stock_strategy_history.real_sell_per_capita
+                ),
+                real_buy_power = COALESCE(
+                    excluded.real_buy_power,
+                    stock_strategy_history.real_buy_power
+                ),
+                captured_at = excluded.captured_at,
+                source = 'daily_close'
+            WHERE stock_strategy_history.source != 'daily_close'
+            """,
+            prepared,
+        )
+        return connection.total_changes - before_changes
+
+
+def read_stock_strategy_metric_history(symbols=None):
+    requested_values = (
+        sorted({clean_stock_text(symbol) for symbol in symbols if clean_stock_text(symbol)})
+        if symbols is not None
+        else None
+    )
+    requested_symbols = (
+        {normalize_symbol(symbol) for symbol in requested_values}
+        if requested_values is not None
+        else None
+    )
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        if requested_values is None:
+            records = connection.execute(
+                "SELECT * FROM stock_strategy_history ORDER BY trade_date DESC"
+            ).fetchall()
+        else:
+            records = []
+            for offset in range(0, len(requested_values), 500):
+                batch = requested_values[offset:offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                records.extend(connection.execute(
+                    f"""
+                    SELECT * FROM stock_strategy_history
+                    WHERE symbol IN ({placeholders})
+                    ORDER BY trade_date DESC
+                    """,
+                    batch,
+                ).fetchall())
+    history = {}
+    metric_fields = (
+        "trade_value",
+        "trade_volume",
+        "price_power",
+        "trade_to_float_percent",
+        "real_money_flow",
+        "money_flow_quality",
+        "real_buy_per_capita",
+        "real_sell_per_capita",
+        "real_buy_power",
+    )
+    for record in records:
+        normalized_symbol = normalize_symbol(record["symbol"])
+        if requested_symbols is not None and normalized_symbol not in requested_symbols:
+            continue
+        history.setdefault(normalized_symbol, []).append({
+            "trade_date": record["trade_date"],
+            **{field: record[field] for field in metric_fields},
+            "trade_to_float_is_estimated": bool(
+                record["trade_to_float_is_estimated"]
+            ),
+        })
+    return history
+
+
 def save_daily_stock_snapshots(rows, captured_at=None):
     """Keep the first eligible close snapshot per symbol and Tehran day."""
     current_time = captured_at or datetime.now(IRAN_TIMEZONE)
@@ -988,6 +2652,7 @@ def save_daily_stock_snapshots(rows, captured_at=None):
         for symbol in STOCK_EXTENDED_SESSION_SYMBOLS
     }
     inserted_count = 0
+    eligible_rows = []
 
     initialize_stock_database()
     with stock_database_connection() as connection:
@@ -1006,6 +2671,8 @@ def save_daily_stock_snapshots(rows, captured_at=None):
             )
             if current_minute < threshold:
                 continue
+
+            eligible_rows.append(row)
 
             session_type = "extended" if is_extended else "standard"
             snapshot_payload = json.dumps(
@@ -1036,6 +2703,9 @@ def save_daily_stock_snapshots(rows, captured_at=None):
                 ),
             )
             inserted_count += max(cursor.rowcount, 0)
+
+    save_daily_stock_price_points(eligible_rows, current_time)
+    save_daily_stock_strategy_points(eligible_rows, current_time)
 
     return {
         "trade_date": trade_date,
@@ -1106,9 +2776,15 @@ def read_daily_stock_snapshots(trade_date=None, symbol=None):
     return snapshots, selected_date
 
 
-def read_latest_daily_stock_snapshots(symbols=None):
+def read_latest_daily_stock_snapshots(symbols=None, source="featured"):
     """Return the newest archived row available for each requested symbol."""
     initialize_stock_database()
+    source = "all" if source == "all" else "featured"
+    snapshot_table = (
+        "all_stock_daily_snapshots"
+        if source == "all"
+        else "stock_daily_snapshots"
+    )
     requested_symbols = (
         {
             normalize_symbol(symbol)
@@ -1121,7 +2797,7 @@ def read_latest_daily_stock_snapshots(symbols=None):
 
     with stock_database_connection() as connection:
         database_rows = connection.execute(
-            """
+            f"""
             SELECT
                 trade_date,
                 trade_date_jalali,
@@ -1129,7 +2805,7 @@ def read_latest_daily_stock_snapshots(symbols=None):
                 session_type,
                 captured_at,
                 data_json
-            FROM stock_daily_snapshots
+            FROM {snapshot_table}
             ORDER BY trade_date DESC, captured_at DESC
             """
         ).fetchall()
@@ -1186,17 +2862,40 @@ def read_stock_metric_history(symbol, metric, limit=365):
                 trade_date_jalali,
                 symbol,
                 captured_at,
-                data_json
-            FROM stock_daily_snapshots
-            WHERE symbol = ?
-            ORDER BY trade_date DESC, captured_at DESC
+                data_json,
+                source_priority
+            FROM (
+                SELECT
+                    trade_date,
+                    trade_date_jalali,
+                    symbol,
+                    captured_at,
+                    data_json,
+                    0 AS source_priority
+                FROM stock_daily_snapshots
+                WHERE symbol = ?
+                UNION ALL
+                SELECT
+                    trade_date,
+                    trade_date_jalali,
+                    symbol,
+                    captured_at,
+                    data_json,
+                    1 AS source_priority
+                FROM all_stock_daily_snapshots
+                WHERE symbol = ?
+            )
+            ORDER BY trade_date DESC, captured_at DESC, source_priority ASC
             LIMIT ?
             """,
-            (requested_symbol, safe_limit),
+            (requested_symbol, requested_symbol, safe_limit * 2),
         ).fetchall()
 
     points = []
+    seen_dates = set()
     for database_row in reversed(database_rows):
+        if database_row["trade_date"] in seen_dates:
+            continue
         try:
             data = json.loads(database_row["data_json"] or "{}")
         except (TypeError, json.JSONDecodeError):
@@ -1212,19 +2911,23 @@ def read_stock_metric_history(symbol, metric, limit=365):
             "date_jalali": database_row["trade_date_jalali"],
             "value": value,
         })
+        seen_dates.add(database_row["trade_date"])
 
-    return points
+    return points[-safe_limit:]
 
 
-def apply_latest_stock_snapshots(current_rows):
+def apply_latest_stock_snapshots(current_rows, source="featured"):
     """Replace current rows with each symbol's latest daily snapshot when present."""
     source_rows = [
         dict(row)
         for row in current_rows
         if isinstance(row, dict) and row.get("symbol")
     ]
-    snapshots = read_latest_daily_stock_snapshots(
-        [row["symbol"] for row in source_rows]
+    requested_symbols = [row["symbol"] for row in source_rows]
+    snapshots = (
+        read_latest_daily_stock_snapshots(requested_symbols, source="all")
+        if source == "all"
+        else read_latest_daily_stock_snapshots(requested_symbols)
     )
     snapshots_by_symbol = {
         normalize_symbol(snapshot["symbol"]): snapshot
@@ -1620,6 +3323,23 @@ def normalize_stock_strategy_rules(payload):
         "fixed": 0,
         "consecutive_days": 0,
     }
+
+    industry_growth_source = (
+        source.get("industry_growth")
+        if isinstance(source.get("industry_growth"), dict)
+        else {}
+    )
+    normalized["industry_growth"] = {
+        "enabled": bool(industry_growth_source.get("enabled")),
+        "days": normalize_stock_strategy_integer(
+            industry_growth_source.get("days"),
+            30,
+            minimum=1,
+        ),
+        "operator": "lt_industry_average",
+        "fixed": 0,
+        "consecutive_days": 0,
+    }
     return normalized
 
 
@@ -1778,19 +3498,127 @@ def stock_strategy_closing_prices(row, symbol_history):
     return prices
 
 
-def read_stock_strategy_history():
+def calculate_stock_period_growth(closing_prices, requested_days):
+    """Calculate closing-price growth against N prior trading observations."""
+    numeric_prices = []
+    for value in closing_prices or []:
+        numeric_value = stock_number(value)
+        if numeric_value is not None and numeric_value > 0:
+            numeric_prices.append(numeric_value)
+    available_days = len(numeric_prices) - 1
+    if available_days < 1:
+        return None
+    days_used = min(max(1, int(requested_days)), available_days)
+    starting_price = numeric_prices[-(days_used + 1)]
+    ending_price = numeric_prices[-1]
+    return {
+        "growth_percent": ((ending_price / starting_price) - 1) * 100,
+        "days_used": days_used,
+    }
+
+
+def build_stock_industry_growth_comparisons(rows, history, requested_days):
+    """Compare every stock's closing-price growth with its industry average."""
+    requested_days = max(1, int(requested_days))
+    price_series = {}
+    industry_members = {}
+    coverage = {
+        "requested_days": requested_days,
+        "minimum_days_used": None,
+        "maximum_days_used": None,
+        "partial_symbol_count": 0,
+        "valid_symbol_count": 0,
+        "industry_count": 0,
+    }
+
+    for row in rows or []:
+        if not isinstance(row, dict) or not row.get("symbol"):
+            continue
+        symbol_key = normalize_symbol(row["symbol"])
+        industry_label = clean_stock_text(row.get("industry"))
+        industry_key = normalize_symbol(industry_label)
+        symbol_history = history.get(symbol_key, [])
+        closing_prices = stock_strategy_closing_prices(row, symbol_history)
+        price_series[symbol_key] = closing_prices
+        current_closing_price = stock_number(row.get("closing_price"))
+        if current_closing_price is None or current_closing_price <= 0:
+            continue
+        growth = calculate_stock_period_growth(closing_prices, requested_days)
+        if not industry_key or growth is None:
+            continue
+
+        member = {
+            "symbol": row.get("symbol"),
+            "symbol_key": symbol_key,
+            "industry": industry_label,
+            "industry_key": industry_key,
+            "industry_growth_percent": growth["growth_percent"],
+            "industry_growth_days_used": growth["days_used"],
+        }
+        industry_members.setdefault(industry_key, []).append(member)
+        coverage["valid_symbol_count"] += 1
+        if growth["days_used"] < requested_days:
+            coverage["partial_symbol_count"] += 1
+            coverage["minimum_days_used"] = (
+                growth["days_used"]
+                if coverage["minimum_days_used"] is None
+                else min(coverage["minimum_days_used"], growth["days_used"])
+            )
+            coverage["maximum_days_used"] = (
+                growth["days_used"]
+                if coverage["maximum_days_used"] is None
+                else max(coverage["maximum_days_used"], growth["days_used"])
+            )
+
+    comparisons = {}
+    coverage["industry_count"] = len(industry_members)
+    for members in industry_members.values():
+        industry_average = sum(
+            member["industry_growth_percent"] for member in members
+        ) / len(members)
+        for member in members:
+            comparisons[member["symbol_key"]] = {
+                **member,
+                "industry_average_growth_percent": industry_average,
+                "below_industry_average_percent": (
+                    industry_average - member["industry_growth_percent"]
+                ),
+                "industry_growth_member_count": len(members),
+            }
+
+    return comparisons, coverage, price_series
+
+
+def read_stock_strategy_history(source="featured", symbols=None):
+    source = "all" if source == "all" else "featured"
+    requested_symbols = (
+        {normalize_symbol(symbol) for symbol in symbols if normalize_symbol(symbol)}
+        if symbols is not None
+        else None
+    )
+    snapshot_table = (
+        "all_stock_daily_snapshots"
+        if source == "all"
+        else "stock_daily_snapshots"
+    )
     initialize_stock_database()
     with stock_database_connection() as connection:
         records = connection.execute(
-            """
+            f"""
             SELECT trade_date, symbol, data_json
-            FROM stock_daily_snapshots
+            FROM {snapshot_table}
             ORDER BY trade_date DESC, captured_at DESC
             """
         ).fetchall()
 
     history = {}
     for record in records:
+        normalized_symbol = normalize_symbol(record["symbol"])
+        if (
+            requested_symbols is not None
+            and normalized_symbol not in requested_symbols
+        ):
+            continue
         try:
             data = json.loads(record["data_json"] or "{}")
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -1798,7 +3626,48 @@ def read_stock_strategy_history():
         if not isinstance(data, dict):
             continue
         data["trade_date"] = record["trade_date"]
-        history.setdefault(normalize_symbol(record["symbol"]), []).append(data)
+        history.setdefault(normalized_symbol, []).append(data)
+
+    metric_history = read_stock_strategy_metric_history(symbols=symbols)
+    for normalized_symbol, metric_points in metric_history.items():
+        symbol_history = history.setdefault(normalized_symbol, [])
+        by_date = {
+            str(item.get("trade_date") or ""): item
+            for item in symbol_history
+            if item.get("trade_date")
+        }
+        for point in metric_points:
+            trade_date = point["trade_date"]
+            existing = by_date.get(trade_date)
+            if existing is not None:
+                existing.update(point)
+                continue
+            metric_row = dict(point)
+            symbol_history.append(metric_row)
+            by_date[trade_date] = metric_row
+
+    adjusted_history = read_stock_price_history(symbols=symbols)
+    for normalized_symbol, price_points in adjusted_history.items():
+        symbol_history = history.setdefault(normalized_symbol, [])
+        by_date = {
+            str(item.get("trade_date") or ""): item
+            for item in symbol_history
+            if item.get("trade_date")
+        }
+        for point in price_points:
+            trade_date = point["trade_date"]
+            existing = by_date.get(trade_date)
+            if existing is not None:
+                existing["closing_price"] = point["closing_price"]
+                existing["raw_closing_price"] = point["raw_closing_price"]
+                continue
+            price_row = dict(point)
+            symbol_history.append(price_row)
+            by_date[trade_date] = price_row
+        symbol_history.sort(
+            key=lambda item: str(item.get("trade_date") or ""),
+            reverse=True,
+        )
     return history
 
 
@@ -1851,10 +3720,30 @@ def evaluate_stock_strategy(rows, history, rules):
         if stock_strategy_rule_is_active(metric, normalized_rules[metric])
     }
 
+    industry_growth_rule = normalized_rules["industry_growth"]
+    industry_growth_active = stock_strategy_rule_is_active(
+        "industry_growth",
+        industry_growth_rule,
+    )
+    industry_growth_comparisons = {}
+    closing_price_series = {}
+    if industry_growth_active:
+        (
+            industry_growth_comparisons,
+            industry_growth_coverage,
+            closing_price_series,
+        ) = build_stock_industry_growth_comparisons(
+            rows,
+            history,
+            industry_growth_rule["days"],
+        )
+        history_coverage["industry_growth"] = industry_growth_coverage
+
     for row in rows:
         if not isinstance(row, dict) or not row.get("symbol"):
             continue
-        symbol_history = history.get(normalize_symbol(row["symbol"]), [])
+        normalized_symbol = normalize_symbol(row["symbol"])
+        symbol_history = history.get(normalized_symbol, [])
         current_market_date = str(row.get("market_date") or "")
         result = {
             "symbol": row.get("symbol"),
@@ -1875,7 +3764,9 @@ def evaluate_stock_strategy(rows, history, rules):
         row_has_missing_history = False
         row_has_zero_or_missing_value = False
 
-        closing_prices = stock_strategy_closing_prices(row, symbol_history)
+        closing_prices = closing_price_series.get(normalized_symbol)
+        if closing_prices is None:
+            closing_prices = stock_strategy_closing_prices(row, symbol_history)
         rsi_rule = normalized_rules["rsi"]
         ema_rule = normalized_rules["ema"]
         macd_rule = normalized_rules["macd"]
@@ -1919,7 +3810,36 @@ def evaluate_stock_strategy(rows, history, rules):
             "macd_fast_period": macd_rule["fast_period"],
             "macd_slow_period": macd_rule["slow_period"],
             "macd_signal_period": macd_rule["signal_period"],
+            "industry_growth_percent": None,
+            "industry_average_growth_percent": None,
+            "below_industry_average_percent": None,
+            "industry_growth_days_used": 0,
+            "industry_growth_member_count": 0,
         })
+
+        if industry_growth_active:
+            industry_growth = industry_growth_comparisons.get(normalized_symbol)
+            if industry_growth is None:
+                passed = False
+                row_has_missing_history = True
+            else:
+                result.update({
+                    key: industry_growth[key]
+                    for key in (
+                        "industry_growth_percent",
+                        "industry_average_growth_percent",
+                        "below_industry_average_percent",
+                        "industry_growth_days_used",
+                        "industry_growth_member_count",
+                    )
+                })
+                if (
+                    industry_growth["industry_growth_days_used"]
+                    < industry_growth_rule["days"]
+                ):
+                    row_has_partial_history = True
+                if industry_growth["below_industry_average_percent"] <= 0:
+                    passed = False
 
         for metric in STOCK_STRATEGY_METRICS:
             rule = normalized_rules[metric]
@@ -2008,19 +3928,19 @@ def evaluate_stock_strategy(rows, history, rules):
                     result[f"{metric}_average"] = average
                     coverage = history_coverage[metric]
                     used_days = len(historical_values)
-                    coverage["minimum_days_used"] = (
-                        used_days
-                        if coverage["minimum_days_used"] is None
-                        else min(coverage["minimum_days_used"], used_days)
-                    )
-                    coverage["maximum_days_used"] = (
-                        used_days
-                        if coverage["maximum_days_used"] is None
-                        else max(coverage["maximum_days_used"], used_days)
-                    )
                     if used_days < rule["days"]:
                         row_has_partial_history = True
                         coverage["partial_symbol_count"] += 1
+                        coverage["minimum_days_used"] = (
+                            used_days
+                            if coverage["minimum_days_used"] is None
+                            else min(coverage["minimum_days_used"], used_days)
+                        )
+                        coverage["maximum_days_used"] = (
+                            used_days
+                            if coverage["maximum_days_used"] is None
+                            else max(coverage["maximum_days_used"], used_days)
+                        )
                     average_passed = (
                         current_value > average
                         if metric == "real_money_flow"
@@ -2040,17 +3960,6 @@ def evaluate_stock_strategy(rows, history, rules):
 
             coverage = technical_coverage[metric]
             points_used = len(closing_prices)
-            coverage["minimum_points_used"] = (
-                points_used
-                if coverage["minimum_points_used"] is None
-                else min(coverage["minimum_points_used"], points_used)
-            )
-            coverage["maximum_points_used"] = (
-                points_used
-                if coverage["maximum_points_used"] is None
-                else max(coverage["maximum_points_used"], points_used)
-            )
-
             if metric == "rsi":
                 current_value = rsi_value
                 reference_value = rule["fixed"]
@@ -2076,6 +3985,16 @@ def evaluate_stock_strategy(rows, history, rules):
                 passed = False
                 row_has_missing_history = True
                 coverage["insufficient_symbol_count"] += 1
+                coverage["minimum_points_used"] = (
+                    points_used
+                    if coverage["minimum_points_used"] is None
+                    else min(coverage["minimum_points_used"], points_used)
+                )
+                coverage["maximum_points_used"] = (
+                    points_used
+                    if coverage["maximum_points_used"] is None
+                    else max(coverage["maximum_points_used"], points_used)
+                )
                 continue
             if metric == "rsi" and rule["operator"] == "between":
                 if not rule["fixed"] <= current_value <= rule["maximum"]:
@@ -2116,16 +4035,29 @@ def evaluate_stock_strategy(rows, history, rules):
     }
 
 
-def get_stock_strategy(payload, use_saved_data=False):
-    rows, metadata = read_stock_database()
+def get_stock_strategy(payload, use_saved_data=False, source="featured"):
+    source = "all" if source == "all" else "featured"
+    rows, metadata = (
+        read_all_stock_database()
+        if source == "all"
+        else read_stock_database()
+    )
     snapshot_metadata = {}
     if use_saved_data:
-        rows, snapshot_metadata = apply_latest_stock_snapshots(rows)
+        rows, snapshot_metadata = (
+            apply_latest_stock_snapshots(rows, source="all")
+            if source == "all"
+            else apply_latest_stock_snapshots(rows)
+        )
     result = evaluate_stock_strategy(
         rows,
-        read_stock_strategy_history(),
+        read_stock_strategy_history(
+            source=source,
+            symbols=[row.get("symbol") for row in rows if row.get("symbol")],
+        ),
         payload,
     )
+    result["source"] = source
     result["source_updated_at"] = metadata.get("last_successful_update")
     result.update(snapshot_metadata)
     return result
@@ -3057,8 +4989,76 @@ def get_watch_market(force=False):
         }
 
 
-def fetch_stock_market_map():
-    """Fetch current price, volume, and value in one Market Watch request."""
+def parse_all_stock_market_watch(response_text):
+    """Parse ordinary equity instruments from MarketWatchPlus."""
+    instruments = []
+    seen_codes = set()
+    for market_row in str(response_text or "").strip().split(";"):
+        fields = market_row.split(",")
+        if len(fields) < 26:
+            continue
+        ins_code = str(fields[0] or "").strip()
+        instrument_id = str(fields[1] or "").strip().upper()
+        symbol = clean_stock_text(fields[2])
+        company = clean_stock_text(fields[3])
+        category = clean_stock_text(fields[25]).upper()
+        if (
+            not re.fullmatch(r"\d{10,}", ins_code)
+            or ins_code in seen_codes
+            or not symbol
+            or not is_all_stock_equity_instrument(
+                symbol,
+                instrument_id,
+                company,
+                category,
+                "standard",
+            )
+        ):
+            continue
+
+        closing_price = stock_number(fields[6])
+        last_price = stock_number(fields[7])
+        yesterday_price = stock_number(fields[13])
+        price = closing_price if closing_price and closing_price > 0 else last_price
+        session_type = (
+            "extended"
+            if category in ALL_STOCK_EXTENDED_CATEGORIES
+            else "standard"
+        )
+        seen_codes.add(ins_code)
+        instruments.append({
+            "position": len(instruments),
+            "symbol": symbol,
+            "company": company,
+            "ins_code": ins_code,
+            "instrument_id": instrument_id,
+            "category": category,
+            "session_type": session_type,
+            "price": price if price and price > 0 else None,
+            "closing_price": (
+                stock_integer(closing_price)
+                if closing_price and closing_price > 0
+                else None
+            ),
+            "last_price": (
+                stock_integer(last_price)
+                if last_price and last_price > 0
+                else None
+            ),
+            "yesterday_price": (
+                stock_integer(yesterday_price)
+                if yesterday_price and yesterday_price > 0
+                else None
+            ),
+            "trade_volume": stock_integer(fields[9]),
+            "trade_value": stock_integer(fields[10]),
+            "share_count": stock_integer(fields[21]),
+        })
+    return instruments
+
+
+def fetch_all_stock_market_watch():
+    """Fetch the complete share/fund universe with its current market values."""
     response = requests.get(
         "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
         headers=TSETMC_HEADERS,
@@ -3066,40 +5066,28 @@ def fetch_stock_market_map():
     )
     response.raise_for_status()
     response.encoding = "utf-8"
+    return parse_all_stock_market_watch(response.text)
 
-    market_data = {}
-    for market_row in response.text.strip().split(";"):
-        fields = market_row.split(",")
-        if len(fields) < 11:
-            continue
-        symbol = normalize_symbol(fields[2])
-        closing_price = stock_number(fields[6])
-        last_price = stock_number(fields[7])
-        yesterday_price = stock_number(fields[13]) if len(fields) > 13 else None
-        price = closing_price if closing_price and closing_price > 0 else last_price
-        if symbol:
-            market_data[symbol] = {
-                "ins_code": str(fields[0]).strip(),
-                "price": price if price and price > 0 else None,
-                "closing_price": (
-                    stock_integer(closing_price)
-                    if closing_price and closing_price > 0
-                    else None
-                ),
-                "last_price": (
-                    stock_integer(last_price)
-                    if last_price and last_price > 0
-                    else None
-                ),
-                "yesterday_price": (
-                    stock_integer(yesterday_price)
-                    if yesterday_price and yesterday_price > 0
-                    else None
-                ),
-                "trade_volume": stock_integer(fields[9]),
-                "trade_value": stock_integer(fields[10]),
-            }
-    return market_data
+
+def fetch_stock_market_map():
+    """Fetch current price, volume, and value in one Market Watch request."""
+    instruments = fetch_all_stock_market_watch()
+
+    return {
+        normalize_symbol(item["symbol"]): {
+            key: item.get(key)
+            for key in (
+                "ins_code",
+                "price",
+                "closing_price",
+                "last_price",
+                "yesterday_price",
+                "trade_volume",
+                "trade_value",
+            )
+        }
+        for item in instruments
+    }
 
 
 def fetch_closing_data(ins_code):
@@ -3450,6 +5438,7 @@ def fetch_stock_row(symbol, market_map):
         "industry": clean_stock_text(sector.get("lSecVal")),
         "market_value": market_value,
         "last_price": last_price,
+        "yesterday_price": yesterday_price,
         "last_price_change_percent": calculate_stock_change_percent(
             last_price,
             yesterday_price,
@@ -3470,6 +5459,166 @@ def fetch_stock_row(symbol, market_map):
     apply_stock_floating_share_override(row)
     row.update(calculate_stock_indicators(row))
     return row
+
+
+def fetch_all_stock_row(instrument):
+    """Resolve one complete-market row without a symbol-search round trip."""
+    symbol = clean_stock_text(instrument.get("symbol"))
+    ins_code = str(instrument.get("ins_code") or "").strip()
+    if not symbol or not ins_code:
+        raise ValueError("شناسه نماد کامل نیست.")
+
+    warnings = []
+    try:
+        info_payload = fetch_tsetmc_json(
+            f"https://cdn.tsetmc.com/api/Instrument/GetInstrumentInfo/{ins_code}",
+            attempts=2,
+        )
+        info = info_payload.get("instrumentInfo") or {}
+    except (requests.RequestException, ValueError, TypeError) as error:
+        info = {}
+        warnings.append(f"{symbol}: instrument-info: {error}")
+
+    sector = info.get("sector") or {}
+    issued_units = stock_number(info.get("etfIssuedUnit"))
+    listed_shares = stock_number(info.get("zTitad"))
+    market_watch_shares = stock_number(instrument.get("share_count"))
+    units = next(
+        (
+            value
+            for value in (issued_units, listed_shares, market_watch_shares)
+            if value is not None and value > 0
+        ),
+        None,
+    )
+
+    client_type = {
+        "real_buy_volume": None,
+        "real_buy_count": None,
+        "legal_buy_volume": None,
+        "legal_buy_count": None,
+        "real_sell_volume": None,
+        "real_sell_count": None,
+        "legal_sell_volume": None,
+        "legal_sell_count": None,
+    }
+    try:
+        client_type.update(fetch_stock_client_type(ins_code))
+    except (requests.RequestException, ValueError, TypeError) as error:
+        warnings.append(f"{symbol}: client-type: {error}")
+
+    order_book_totals = {
+        "order_book_value": None,
+        "order_book_volume": None,
+        "order_book_count": None,
+        "order_book_buy_value": None,
+        "order_book_buy_volume": None,
+        "order_book_buy_count": None,
+        "order_book_sell_value": None,
+        "order_book_sell_volume": None,
+        "order_book_sell_count": None,
+    }
+    try:
+        order_book_totals.update(fetch_stock_order_book_totals(ins_code))
+    except (requests.RequestException, ValueError, TypeError) as error:
+        warnings.append(f"{symbol}: best-limits: {error}")
+
+    price = stock_number(instrument.get("price"))
+    closing_price = stock_integer(instrument.get("closing_price"))
+    last_price = stock_integer(instrument.get("last_price"))
+    yesterday_price = stock_integer(instrument.get("yesterday_price"))
+    market_value = (
+        int(round(units * price))
+        if units is not None and units > 0 and price is not None and price > 0
+        else None
+    )
+    row = {
+        "position": stock_integer(instrument.get("position")),
+        "symbol": symbol,
+        "category": clean_stock_text(instrument.get("category")).upper(),
+        "session_type": instrument.get("session_type") or "standard",
+        "ins_code": ins_code,
+        "market_date": normalize_stock_market_date(info.get("dEven")),
+        "company": (
+            clean_stock_text(info.get("lVal30"))
+            or clean_stock_text(instrument.get("company"))
+        ),
+        "industry": clean_stock_text(sector.get("lSecVal")),
+        "market_value": market_value,
+        "last_price": last_price,
+        "yesterday_price": yesterday_price,
+        "last_price_change_percent": calculate_stock_change_percent(
+            last_price,
+            yesterday_price,
+        ),
+        "closing_price": closing_price,
+        "closing_price_change_percent": calculate_stock_change_percent(
+            closing_price,
+            yesterday_price,
+        ),
+        "trade_value": stock_integer(instrument.get("trade_value")),
+        "trade_volume": stock_integer(instrument.get("trade_volume")),
+        "share_count": stock_integer(units),
+        "floating_share_percent": stock_number(info.get("kAjCapValCpsIdx")),
+        **client_type,
+        "monthly_average_volume": stock_integer(info.get("qTotTran5JAvg")),
+        **order_book_totals,
+    }
+    apply_stock_floating_share_override(row)
+    row.update(calculate_stock_indicators(row))
+    return row, warnings
+
+
+def fetch_all_stock_phase(phase):
+    """Fetch one close phase for the complete-market tab."""
+    if phase not in {"standard", "extended"}:
+        raise ValueError("بازه معاملاتی تمام سهام معتبر نیست.")
+    instruments = [
+        instrument
+        for instrument in fetch_all_stock_market_watch()
+        if instrument.get("session_type") == phase
+    ]
+    if not instruments:
+        raise RuntimeError("فهرست کامل نمادهای بازار از TSETMC دریافت نشد.")
+
+    rows = []
+    errors = []
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        futures = {
+            executor.submit(fetch_all_stock_row, instrument): instrument
+            for instrument in instruments
+        }
+        for future in as_completed(futures):
+            instrument = futures[future]
+            try:
+                row, row_warnings = future.result()
+                rows.append(row)
+                errors.extend(row_warnings)
+            except (requests.RequestException, ValueError, TypeError) as error:
+                errors.append(f"{instrument.get('symbol')}: {error}")
+
+    rows.sort(key=lambda row: stock_integer(row.get("position")) or 0)
+    return rows, errors
+
+
+def merge_all_stock_rows(fresh_rows, fallback_rows):
+    """Preserve the previous finalized field when a close request is partial."""
+    fallback_by_symbol = {
+        normalize_symbol(row.get("symbol")): row
+        for row in fallback_rows
+        if isinstance(row, dict) and row.get("symbol")
+    }
+    merged = []
+    for fresh_row in fresh_rows:
+        row = dict(fresh_row)
+        fallback = fallback_by_symbol.get(normalize_symbol(row.get("symbol")), {})
+        for field in STOCK_DETAIL_FIELDS:
+            if row.get(field) in (None, "") and fallback.get(field) not in (None, ""):
+                row[field] = fallback.get(field)
+        apply_stock_floating_share_override(row)
+        row.update(calculate_stock_indicators(row))
+        merged.append(row)
+    return merged
 
 
 def merge_stock_rows(symbols, fresh_rows, fallback_rows):
@@ -3712,6 +5861,132 @@ def get_stock_catalog(force_refresh=False, use_saved_data=False):
         "refreshing": refresh_status["running"],
         "refresh_started_at": refresh_status["started_at"],
         "stocks": rows
+    }
+    if refresh_status["error"]:
+        payload["warning"] = refresh_status["error"]
+    return payload
+
+
+def refresh_all_stock_database(phases, manual=False):
+    """Refresh complete-market phases, archiving only scheduled close runs."""
+    error_messages = []
+    completed_phases = []
+    try:
+        for phase in phases:
+            current_rows, _ = read_all_stock_database()
+            rows, errors = fetch_all_stock_phase(phase)
+            rows = merge_all_stock_rows(rows, current_rows)
+            if manual:
+                publish_all_stock_current_phase(
+                    rows,
+                    phase,
+                    datetime.now(IRAN_TIMEZONE),
+                )
+            else:
+                save_all_stock_phase(
+                    rows,
+                    phase,
+                    datetime.now(IRAN_TIMEZONE),
+                )
+            completed_phases.append(phase)
+            if errors:
+                error_messages.append(
+                    f"بخشی از جزئیات {len(errors)} درخواست TSETMC در "
+                    f"بازه {'۱۸:۰۰' if phase == 'extended' else '۱۲:۳۰'} "
+                    "در دسترس نبود."
+                )
+    except Exception as error:
+        error_messages.append(str(error))
+        print("All-stock database refresh error:", error)
+    finally:
+        with all_stock_refresh_lock:
+            all_stock_refresh_state["running"] = False
+            all_stock_refresh_state["phases"] = completed_phases
+            all_stock_refresh_state["manual"] = False
+            all_stock_refresh_state["error"] = " ".join(error_messages) or None
+
+
+def start_all_stock_database_refresh(current_time=None, manual=False):
+    """Start a manual live refresh or only the due daily close phases."""
+    current_time = current_time or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+    _, metadata = read_all_stock_database()
+    phases = ["standard"] if manual else all_stock_due_phases(current_time, metadata)
+    if not phases:
+        return False
+
+    with all_stock_refresh_lock:
+        if all_stock_refresh_state["running"]:
+            return False
+        all_stock_refresh_state.update({
+            "running": True,
+            "started_at": current_time.isoformat(),
+            "phases": list(phases),
+            "manual": bool(manual),
+            "error": None,
+        })
+
+    threading.Thread(
+        target=refresh_all_stock_database,
+        args=(phases, manual),
+        name=(
+            "all-stock-manual-refresh"
+            if manual
+            else "all-stock-daily-refresh"
+        ),
+        daemon=True,
+    ).start()
+    return True
+
+
+def get_all_stock_catalog(
+    check_refresh=True,
+    current_time=None,
+    force_refresh=False,
+):
+    """Serve complete-market rows and optionally trigger a live refresh."""
+    current_time = current_time or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+
+    rows, metadata = read_all_stock_database()
+    if rows:
+        start_stock_price_history_backfill(rows)
+        start_stock_strategy_history_backfill(rows)
+    due_phases = all_stock_due_phases(current_time, metadata)
+    if force_refresh:
+        start_all_stock_database_refresh(current_time, manual=True)
+    elif check_refresh and due_phases:
+        start_all_stock_database_refresh(current_time)
+
+    with all_stock_refresh_lock:
+        refresh_status = dict(all_stock_refresh_state)
+    with stock_price_history_lock:
+        price_history_status = dict(stock_price_history_state)
+    with stock_strategy_history_lock:
+        strategy_history_status = dict(stock_strategy_history_state)
+    payload = {
+        "count": len(rows),
+        "stocks": rows,
+        "data_source": "daily_database",
+        "source_updated_at": metadata.get("last_successful_update"),
+        "standard_completed_date": metadata.get("standard_completed_date"),
+        "extended_completed_date": metadata.get("extended_completed_date"),
+        "standard_count": int(metadata.get("standard_count", "0") or 0),
+        "extended_count": int(metadata.get("extended_count", "0") or 0),
+        "due_phases": due_phases,
+        "refreshing": refresh_status["running"],
+        "refresh_started_at": refresh_status["started_at"],
+        "refresh_phases": refresh_status["phases"],
+        "manual_refresh": refresh_status.get("manual", False),
+        "price_history": price_history_status,
+        "strategy_history": strategy_history_status,
+        "server_time": current_time.isoformat(),
     }
     if refresh_status["error"]:
         payload["warning"] = refresh_status["error"]
@@ -5475,14 +7750,85 @@ def generate_data(use_saved_trade_value=False):
     return []
 
 
-def fetch_market_watch_rows():
+def parse_market_watch_init(response_text):
+    """Return MarketWatch rows and first order-book levels from the batch feed."""
+    market_rows = []
+    best_limits = {}
+    for section in str(response_text or "").split("@"):
+        section_rows = [item for item in section.split(";") if item.strip()]
+        if not section_rows:
+            continue
+
+        if not market_rows:
+            for item in section_rows:
+                fields = item.split(",")
+                if len(fields) >= 26 and str(fields[1]).strip().upper().startswith("IR"):
+                    market_rows = section_rows
+                    break
+
+        for item in section_rows:
+            fields = item.split(",")
+            if len(fields) < 8:
+                continue
+            ins_code = str(fields[0] or "").strip()
+            row_number = stock_integer(fields[1])
+            if not ins_code.isdigit() or row_number != 1:
+                continue
+            best_limits[ins_code] = {
+                "best_buy_count": stock_integer(fields[2]),
+                "best_sell_count": stock_integer(fields[3]),
+                "best_buy_price": stock_number(fields[4]),
+                "best_sell_price": stock_number(fields[5]),
+                "best_buy_volume": stock_integer(fields[6]),
+                "best_sell_volume": stock_integer(fields[7]),
+            }
+
+    return market_rows, best_limits
+
+
+def fetch_market_watch_snapshot():
+    """Fetch instruments and order-book level one in one TSETMC request."""
+    try:
+        response = requests.get(
+            "https://old.tsetmc.com/tsev2/data/MarketWatchInit.aspx?h=0&r=0",
+            headers=TSETMC_HEADERS,
+            timeout=15,
+        )
+        response.raise_for_status()
+        response.encoding = "utf-8"
+        market_rows, best_limits = parse_market_watch_init(response.text)
+        if market_rows:
+            return market_rows, best_limits
+    except requests.RequestException:
+        pass
+
     response = requests.get(
         "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
+        headers=TSETMC_HEADERS,
         timeout=15,
     )
     response.raise_for_status()
     response.encoding = "utf-8"
-    return response.text.strip().split(";")
+    return response.text.strip().split(";"), {}
+
+
+def fetch_market_watch_rows():
+    rows, _ = fetch_market_watch_snapshot()
+    return rows
+
+
+def calculate_option_spread_percent(best_buy_price, best_sell_price):
+    """Return first ask divided by first bid minus one, as a percentage."""
+    buy_price = parse_number(best_buy_price)
+    sell_price = parse_number(best_sell_price)
+    if (
+        buy_price is None
+        or sell_price is None
+        or buy_price <= 0
+        or sell_price <= 0
+    ):
+        return None
+    return ((sell_price / buy_price) - 1) * 100
 
 
 def calculate_option_leverage(base_price, option_last_price):
@@ -5505,6 +7851,29 @@ def calculate_call_option_status(base_price, strike):
     if base_price < strike:
         return "OTM"
     return "ATM"
+
+
+def calculate_put_option_metrics(base_price, strike, premium):
+    """Return the requested put break-even, distance, leverage and moneyness."""
+    base_price = parse_number(base_price)
+    strike = parse_number(strike)
+    premium = parse_number(premium)
+    if (
+        base_price is None
+        or strike is None
+        or premium is None
+        or base_price <= 0
+        or premium <= 0
+    ):
+        return None
+    status = "ITM" if base_price < strike else "OTM" if base_price > strike else "ATM"
+    breakeven_price = strike - premium
+    return {
+        "breakeven_price": breakeven_price,
+        "breakeven_distance": ((breakeven_price / base_price) - 1) * 100,
+        "leverage": base_price / premium,
+        "status": status,
+    }
 
 
 def fetch_option_best_buy_price(ins_code):
@@ -5540,8 +7909,8 @@ def build_option_burning_summary(
     limit=20,
     best_buy_fetcher=fetch_option_best_buy_price,
 ):
-    """Build ranked option-burning rows and attach each contract's best bid."""
-    rows = []
+    """Build ranked rows using contracts whose last price and best bid are valid."""
+    option_groups = []
     special_ranges = {
         normalize_symbol("اهرم"): 4,
         normalize_symbol("موج"): 4,
@@ -5570,59 +7939,77 @@ def build_option_burning_summary(
             if not eligible_options:
                 continue
 
-            maximum_option = max(
-                eligible_options,
-                key=lambda option: parse_number(
-                    option.get("breakeven_distance")
+            option_groups.append({
+                "trading_days": trading_days,
+                "allowed_range": allowed_range,
+                "options": sorted(
+                    eligible_options,
+                    key=lambda option: parse_number(
+                        option.get("breakeven_distance")
+                    ),
+                    reverse=True,
                 ),
-            )
+            })
+
+    def resolve_group(group):
+        """Pick the greatest breakeven only after validating the first bid."""
+        for option in group["options"]:
+            best_buy_price = parse_number(option.get("best_buy_price"))
+            if best_buy_price is None:
+                ins_code = option.get("ins_code")
+                if not ins_code:
+                    continue
+                try:
+                    best_buy_price = parse_number(best_buy_fetcher(ins_code))
+                except Exception:
+                    continue
+            if best_buy_price is None or best_buy_price < 10:
+                continue
+
             percentage = (
-                parse_number(maximum_option.get("breakeven_distance"))
-                / (trading_days * allowed_range)
+                parse_number(option.get("breakeven_distance"))
+                / (group["trading_days"] * group["allowed_range"])
                 * 100
             )
-            rows.append({
-                "symbol": maximum_option.get("symbol"),
-                "days_remaining": int(trading_days),
+            return {
+                "symbol": option.get("symbol"),
+                "days_remaining": int(group["trading_days"]),
                 "option_burning_percentage": round(percentage, 2),
                 "option_last_price": parse_number(
-                    maximum_option.get("option_last_price")
+                    option.get("option_last_price")
                 ),
-                "status": maximum_option.get("status"),
-                "_ins_code": maximum_option.get("ins_code"),
-                "best_buy_price": None,
-            })
+                "status": option.get("status"),
+                "best_buy_price": best_buy_price,
+                "spread_percent": parse_number(option.get("spread_percent")),
+            }
+        return None
+
+    rows = []
+    if option_groups:
+        with ThreadPoolExecutor(max_workers=min(8, len(option_groups))) as executor:
+            futures = [
+                executor.submit(resolve_group, group)
+                for group in option_groups
+            ]
+            for future in as_completed(futures):
+                try:
+                    row = future.result()
+                except Exception:
+                    row = None
+                if row is not None:
+                    rows.append(row)
 
     rows.sort(
         key=lambda row: row["option_burning_percentage"],
         reverse=True,
     )
-    rows = rows[:max(0, int(limit))]
-
-    fetchable_rows = [row for row in rows if row.get("_ins_code")]
-    if fetchable_rows:
-        with ThreadPoolExecutor(max_workers=min(8, len(fetchable_rows))) as executor:
-            futures = {
-                executor.submit(best_buy_fetcher, row["_ins_code"]): row
-                for row in fetchable_rows
-            }
-            for future in as_completed(futures):
-                row = futures[future]
-                try:
-                    row["best_buy_price"] = parse_number(future.result())
-                except Exception:
-                    row["best_buy_price"] = None
-
-    for row in rows:
-        row.pop("_ins_code", None)
-
-    return rows
+    return rows[:max(0, int(limit))]
 
 
 def generate_market_expectations(use_saved_trade_value=False):
     """Build non-visual option rows and expiry-level expectation summaries."""
     try:
-        rows = fetch_market_watch_rows()
+        rows, best_limits_by_code = fetch_market_watch_snapshot()
     except requests.RequestException as error:
         raise RuntimeError("دریافت اطلاعات بازار برای انتظارات بازار ناموفق بود.") from error
 
@@ -5667,6 +8054,7 @@ def generate_market_expectations(use_saved_trade_value=False):
             total_option_market_trade_value += parsed_trade_value
 
     grouped = {}
+    put_options = []
     discovered_roots = set()
 
     for row in rows:
@@ -5678,7 +8066,9 @@ def generate_market_expectations(use_saved_trade_value=False):
         symbol = fields[2].strip()
         description = fields[3].strip()
 
-        if not is_option_description(description, "call"):
+        is_call_option = is_option_description(description, "call")
+        is_put_option = is_option_description(description, "put")
+        if not is_call_option and not is_put_option:
             continue
 
         root = option_symbol_root(symbol)
@@ -5711,7 +8101,48 @@ def generate_market_expectations(use_saved_trade_value=False):
             trade_value = parse_number(fields[10])
 
         trade_value = trade_value if trade_value is not None else 0
+        best_limit = best_limits_by_code.get(ins_code, {})
+        best_buy_price = parse_number(best_limit.get("best_buy_price"))
+        best_sell_price = parse_number(best_limit.get("best_sell_price"))
+        spread_percent = calculate_option_spread_percent(
+            best_buy_price,
+            best_sell_price,
+        )
         leverage = calculate_option_leverage(base_price, option_last_price)
+
+        if is_put_option:
+            metrics = calculate_put_option_metrics(
+                base_price,
+                strike,
+                option_last_price,
+            )
+            if metrics is None:
+                continue
+            put_options.append({
+                "ins_code": ins_code,
+                "symbol": symbol,
+                "days_remaining": days_remaining,
+                "expiry_date": expiry_date,
+                "trade_value": round(trade_value, 2),
+                "strike": strike,
+                "option_last_price": option_last_price,
+                "base_price": base_price,
+                "best_buy_price": best_buy_price,
+                "best_sell_price": best_sell_price,
+                "spread_percent": (
+                    round(spread_percent, 2)
+                    if spread_percent is not None
+                    else None
+                ),
+                "breakeven_price": round(metrics["breakeven_price"], 2),
+                "breakeven_distance": round(
+                    metrics["breakeven_distance"], 2
+                ),
+                "leverage": round(metrics["leverage"], 2),
+                "status": metrics["status"],
+            })
+            continue
+
         status = calculate_call_option_status(base_price, strike)
         breakeven_distance = (
             ((strike + option_last_price) / base_price) - 1
@@ -5743,6 +8174,9 @@ def generate_market_expectations(use_saved_trade_value=False):
             "status": status,
             "breakeven_distance": breakeven_distance,
             "monthly_return": monthly_return,
+            "best_buy_price": best_buy_price,
+            "best_sell_price": best_sell_price,
+            "spread_percent": spread_percent,
         })
 
     bases = {}
@@ -5765,6 +8199,25 @@ def generate_market_expectations(use_saved_trade_value=False):
             )
             if total_trade_value > 0
             else None
+        )
+        spread_rows = [
+            item
+            for item in option_rows
+            if item.get("spread_percent") is not None
+        ]
+        spread_trade_value = sum(item["trade_value"] for item in spread_rows)
+        weighted_spread = (
+            sum(
+                item["trade_value"] * item["spread_percent"]
+                for item in spread_rows
+            ) / spread_trade_value
+            if spread_trade_value > 0
+            else (
+                sum(item["spread_percent"] for item in spread_rows)
+                / len(spread_rows)
+                if spread_rows
+                else None
+            )
         )
         meaningful_rows = [
             item for item in option_rows if item["weight"] > 0.05
@@ -5798,6 +8251,11 @@ def generate_market_expectations(use_saved_trade_value=False):
                 if item["monthly_return"] is not None
                 else None
             )
+            item["spread_percent"] = (
+                round(item["spread_percent"], 2)
+                if item["spread_percent"] is not None
+                else None
+            )
 
         bases.setdefault(base_symbol, []).append({
             "group_id": f"{base_symbol}-{expiry_date}",
@@ -5808,6 +8266,10 @@ def generate_market_expectations(use_saved_trade_value=False):
             "weighted_average": (
                 round(weighted_average, 2)
                 if weighted_average is not None else None
+            ),
+            "weighted_spread": (
+                round(weighted_spread, 2)
+                if weighted_spread is not None else None
             ),
             "minimum": round(minimum, 2) if minimum is not None else None,
             "maximum": round(maximum, 2) if maximum is not None else None,
@@ -5823,6 +8285,10 @@ def generate_market_expectations(use_saved_trade_value=False):
         output.append({"base_symbol": base_symbol, "groups": groups})
 
     option_burning = build_option_burning_summary(output, limit=20)
+    put_options.sort(
+        key=lambda item: (item["trade_value"], item["symbol"]),
+        reverse=True,
+    )
 
     return {
         "generated_at": now.isoformat(),
@@ -5834,6 +8300,7 @@ def generate_market_expectations(use_saved_trade_value=False):
         "discovered_option_roots": sorted(discovered_roots),
         "bases": output,
         "option_burning": option_burning,
+        "put_options": put_options,
     }
 
 
@@ -5908,6 +8375,72 @@ def get_stocks():
             headers={"Cache-Control": "no-store"},
         )
     except (FileNotFoundError, ValueError, OSError, RuntimeError) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=500,
+            content_type="application/json; charset=utf-8",
+        )
+
+
+@app.route("/all-stocks")
+def get_all_stocks():
+    try:
+        force_refresh = request.args.get(
+            "refresh",
+            default="0",
+            type=str,
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        payload = get_all_stock_catalog(
+            check_refresh=True,
+            force_refresh=force_refresh,
+        )
+        return Response(
+            json.dumps(payload, ensure_ascii=False),
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except (FileNotFoundError, ValueError, OSError, RuntimeError) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=500,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
+@app.route("/all-stocks/history")
+def get_all_stock_history():
+    try:
+        trade_date = request.args.get("date", default="", type=str).strip()
+        symbol = request.args.get("symbol", default="", type=str).strip()
+        if trade_date:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        snapshots, selected_date = read_all_stock_daily_snapshots(
+            trade_date=trade_date or None,
+            symbol=symbol or None,
+        )
+        return Response(
+            json.dumps(
+                {
+                    "date": selected_date,
+                    "count": len(snapshots),
+                    "snapshots": snapshots,
+                },
+                ensure_ascii=False,
+            ),
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except ValueError:
+        return Response(
+            json.dumps(
+                {"error": "تاریخ باید با قالب YYYY-MM-DD ارسال شود."},
+                ensure_ascii=False,
+            ),
+            status=400,
+            content_type="application/json; charset=utf-8",
+        )
+    except (FileNotFoundError, OSError, RuntimeError) as error:
         return Response(
             json.dumps({"error": str(error)}, ensure_ascii=False),
             status=500,
@@ -6208,6 +8741,7 @@ def stock_strategy_filter():
                 get_stock_strategy(
                     payload.get("rules") or {},
                     use_saved_data=bool(payload.get("use_saved_data")),
+                    source=payload.get("source") or "featured",
                 ),
                 ensure_ascii=False,
             ),
@@ -6256,6 +8790,14 @@ def get_watch_market_charts():
 
 @app.route("/")
 def index():
+    try:
+        all_market_rows, _ = read_all_stock_database()
+        if all_market_rows:
+            start_stock_price_history_backfill(all_market_rows)
+            start_stock_strategy_history_backfill(all_market_rows)
+    except (OSError, RuntimeError, sqlite3.Error):
+        # Price-history backfill is auxiliary and must never block the UI.
+        pass
     return Response(
         render_template("indextest.html"),
         content_type="text/html; charset=utf-8",

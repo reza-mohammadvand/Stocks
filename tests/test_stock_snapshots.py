@@ -260,6 +260,186 @@ class StockSnapshotTests(unittest.TestCase):
         empty = stock_app.calculate_stock_indicators({})
         self.assertTrue(all(value is None for value in empty.values()))
 
+    def test_price_history_is_adjusted_across_corporate_action(self):
+        payload = {
+            "closingPriceDaily": [
+                {
+                    "dEven": 20261021,
+                    "pClosing": 60,
+                    "pDrCotVal": 61,
+                    "priceYesterday": 50,
+                },
+                {
+                    "dEven": 20261020,
+                    "pClosing": 100,
+                    "pDrCotVal": 101,
+                    "priceYesterday": 100,
+                },
+                {
+                    "dEven": 20261019,
+                    "pClosing": 100,
+                    "pDrCotVal": 100,
+                    "priceYesterday": 98,
+                },
+            ],
+        }
+
+        points = stock_app.parse_tsetmc_price_history(payload, limit=120)
+
+        self.assertEqual(
+            [point["adjusted_closing_price"] for point in points],
+            [60, 50, 50],
+        )
+
+    def test_backfill_and_daily_close_feed_strategy_price_history(self):
+        points = [
+            {
+                "trade_date": "2026-10-20",
+                "raw_closing_price": 100,
+                "adjusted_closing_price": 100,
+                "raw_last_price": 101,
+            },
+            {
+                "trade_date": "2026-10-19",
+                "raw_closing_price": 90,
+                "adjusted_closing_price": 90,
+                "raw_last_price": 91,
+            },
+        ]
+        stored = stock_app.store_stock_price_history(
+            "فولاد",
+            "123",
+            points,
+        )
+        stock_app.save_daily_stock_price_points(
+            [{
+                "symbol": "فولاد",
+                "ins_code": "123",
+                "market_date": "2026-10-21",
+                "closing_price": 55,
+                "last_price": 56,
+                "yesterday_price": 50,
+            }],
+            datetime(
+                2026,
+                10,
+                21,
+                12,
+                30,
+                tzinfo=stock_app.IRAN_TIMEZONE,
+            ),
+        )
+
+        history = stock_app.read_stock_price_history(["فولاد"])[
+            stock_app.normalize_symbol("فولاد")
+        ]
+        strategy_history = stock_app.read_stock_strategy_history(
+            symbols=["فولاد"]
+        )[stock_app.normalize_symbol("فولاد")]
+
+        self.assertEqual(stored, 2)
+        self.assertEqual(
+            [point["closing_price"] for point in history],
+            [55, 50, 45],
+        )
+        self.assertEqual(
+            [point["closing_price"] for point in strategy_history],
+            [55, 50, 45],
+        )
+        self.assertEqual(
+            stock_app.pending_stock_price_history_rows([
+                {"symbol": "فولاد", "ins_code": "123"},
+            ]),
+            [],
+        )
+
+    def test_sixty_day_strategy_metrics_are_built_and_persisted(self):
+        price_points = [{
+            "trade_date": "2026-10-20",
+            "raw_closing_price": 100,
+            "raw_last_price": 110,
+            "trade_value": 10_000,
+            "trade_volume": 100,
+            "trade_count": 12,
+        }]
+        client_payload = {
+            "clientType": [{
+                "recDate": 20261020,
+                "buy_I_Value": 6_000,
+                "sell_I_Value": 2_000,
+                "buy_I_Count": 3,
+                "sell_I_Count": 2,
+                "buy_I_Volume": 60,
+                "sell_I_Volume": 20,
+                "buy_N_Volume": 40,
+                "sell_N_Volume": 80,
+            }],
+        }
+        client_points = stock_app.parse_tsetmc_client_type_history(
+            client_payload,
+            limit=60,
+        )
+        points = stock_app.build_stock_strategy_history_points(
+            price_points,
+            client_points,
+            share_count=10_000,
+            floating_share_percent=20,
+            limit=60,
+        )
+        stored = stock_app.store_stock_strategy_history(
+            "فولاد",
+            "123",
+            points,
+        )
+        history = stock_app.read_stock_strategy_metric_history(["فولاد"])[
+            stock_app.normalize_symbol("فولاد")
+        ]
+
+        self.assertEqual(stored, 1)
+        self.assertEqual(points[0]["price_power"], 1)
+        self.assertEqual(points[0]["trade_to_float_percent"], 5)
+        self.assertEqual(points[0]["real_money_flow"], 4_000)
+        self.assertEqual(points[0]["money_flow_quality"], 40)
+        self.assertEqual(points[0]["real_buy_per_capita"], 2_000)
+        self.assertEqual(points[0]["real_sell_per_capita"], 1_000)
+        self.assertEqual(points[0]["real_buy_power"], 2)
+        self.assertTrue(history[0]["trade_to_float_is_estimated"])
+        daily_row = {
+            "symbol": "فولاد",
+            "ins_code": "123",
+            "market_date": "2026-10-20",
+            "trade_value": 20_000,
+            "trade_volume": 120,
+            "price_power": -1,
+            "trade_to_float_percent": 6,
+            "real_money_flow": 5_000,
+            "money_flow_quality": 25,
+            "real_buy_per_capita": 2_500,
+            "real_sell_per_capita": 1_000,
+            "real_buy_power": 2.5,
+        }
+        stock_app.save_daily_stock_strategy_points([daily_row], self.at(12, 30))
+        stock_app.save_daily_stock_strategy_points(
+            [{**daily_row, "trade_value": 30_000}],
+            self.at(13, 0),
+        )
+        exact_history = stock_app.read_stock_strategy_metric_history(["فولاد"])[
+            stock_app.normalize_symbol("فولاد")
+        ][0]
+        self.assertEqual(exact_history["trade_value"], 20_000)
+        self.assertFalse(exact_history["trade_to_float_is_estimated"])
+        self.assertEqual(
+            stock_app.pending_stock_strategy_history_rows([
+                {
+                    "symbol": "فولاد",
+                    "ins_code": "123",
+                    "share_count": 10_000,
+                    "floating_share_percent": 20,
+                },
+            ]),
+            [],
+        )
+
     def test_manual_floating_share_overrides_survive_refresh_merge(self):
         rows = stock_app.merge_stock_rows(
             [

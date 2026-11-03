@@ -151,6 +151,21 @@ let stockRefreshPollTimer = null;
 let stockAutoRefreshTimer = null;
 const hiddenStockColumns = new Set();
 
+let allStockRows = [];
+let allStockLoaded = false;
+let allStockLoading = false;
+let allStockReloadPending = false;
+let allStockSearchQuery = "";
+let allStockIndustryQuery = "";
+let allStockGroupByIndustry = false;
+let allStockTradeValueInUsd = false;
+let allStockMarketFilter = { min: null, max: null };
+let allStockSort = { ...defaultStockTableSort };
+let allStockSortInteractionStarted = false;
+let allStockRefreshPollTimer = null;
+let allStockAutoRefreshTimer = null;
+const hiddenAllStockColumns = new Set();
+
 let stockWatchlistRows = [];
 let stockWatchlistLoaded = false;
 let stockWatchlistLoading = false;
@@ -168,6 +183,11 @@ let stockStrategyLoaded = false;
 let stockStrategyLoading = false;
 let stockStrategyReloadPending = false;
 let stockStrategyUseSavedData = false;
+let stockStrategySource = "featured";
+let stockStrategyGroupByIndustry = false;
+let stockStrategySort = { key: null, direction: null };
+let stockStrategyTableColumns = [];
+let stockStrategyLastPayload = null;
 let stockStrategyAutoRefreshTimer = null;
 
 let stockNotesActiveSymbol = "";
@@ -4665,6 +4685,11 @@ function renderMarketExpectations(payload) {
     if (expiringButton) expiringButton.disabled = bases.length === 0;
     const marketShareButton = document.getElementById("show-market-share-options");
     if (marketShareButton) marketShareButton.disabled = bases.length === 0;
+    const putOptionsButton = document.getElementById("show-put-options");
+    if (putOptionsButton) {
+        putOptionsButton.disabled = !Array.isArray(payload?.put_options)
+            || payload.put_options.length === 0;
+    }
     const optionBurningButton = document.getElementById("show-option-burning");
     if (optionBurningButton) optionBurningButton.disabled = bases.length === 0;
     const generatedTime = formatExpectationTimestamp(payload?.generated_at);
@@ -4739,6 +4764,7 @@ function renderMarketExpectations(payload) {
                 <th>مینیمم فاصله تا سر‌به‌سر</th>
                 <th>ماکسیمم فاصله تا سر‌به‌سر</th>
                 <th>میانگین وزنی</th>
+                <th>میانگین شکاف</th>
                 <th>جزئیات</th>
             </tr></thead>
             <tbody></tbody>`;
@@ -4752,6 +4778,7 @@ function renderMarketExpectations(payload) {
                 <td class="expectation-percent">${formatExpectationPercent(group.minimum)}</td>
                 <td class="expectation-percent">${formatExpectationPercent(group.maximum)}</td>
                 <td class="expectation-percent expectation-weighted">${formatExpectationPercent(group.weighted_average)}</td>
+                <td class="expectation-percent">${formatExpectationPercent(group.weighted_spread)}</td>
                 <td><button type="button" class="expectations-detail-link" data-base-index="${baseIndex}" data-group-id="${group.group_id}">مشاهده محاسبات</button></td>`;
             tbody.appendChild(row);
         });
@@ -4855,6 +4882,10 @@ async function loadMarketExpectations(force = false) {
     const marketShareButton = document.getElementById("show-market-share-options");
     if (marketShareButton && !hasRenderedData) {
         marketShareButton.disabled = true;
+    }
+    const putOptionsButton = document.getElementById("show-put-options");
+    if (putOptionsButton && !hasRenderedData) {
+        putOptionsButton.disabled = true;
     }
     const optionBurningButton = document.getElementById("show-option-burning");
     if (optionBurningButton && !hasRenderedData) {
@@ -4993,6 +5024,7 @@ function openNearestExpirySummary() {
             <td class="expectation-percent" data-sort-value="${group.minimum ?? ""}">${formatExpectationPercent(group.minimum)}</td>
             <td class="expectation-percent" data-sort-value="${group.maximum ?? ""}">${formatExpectationPercent(group.maximum)}</td>
             <td class="expectation-percent expectation-weighted" data-sort-value="${group.weighted_average ?? ""}">${formatExpectationPercent(group.weighted_average)}</td>
+            <td class="expectation-percent" data-sort-value="${group.weighted_spread ?? ""}">${formatExpectationPercent(group.weighted_spread)}</td>
             <td>
                 <button type="button" class="expectations-detail-link nearest-expiry-detail-link" data-base-index="${baseIndex}" data-group-id="${group.group_id}">
                     مشاهده محاسبات
@@ -5070,9 +5102,10 @@ function openExpiringOptionsSummary() {
                 <td class="expectation-percent" data-sort-value="${group.minimum ?? ""}">${formatExpectationPercent(group.minimum)}</td>
                 <td class="expectation-percent" data-sort-value="${group.maximum ?? ""}">${formatExpectationPercent(group.maximum)}</td>
                 <td class="expectation-percent expectation-weighted" data-sort-value="${group.weighted_average ?? ""}">${formatExpectationPercent(group.weighted_average)}</td>
+                <td class="expectation-percent" data-sort-value="${group.weighted_spread ?? ""}">${formatExpectationPercent(group.weighted_spread)}</td>
                 <td><button type="button" class="expectations-detail-link expiring-option-detail-link" data-base-index="${baseIndex}" data-group-id="${group.group_id}">مشاهده محاسبات</button></td>
             </tr>`).join("")
-        : `<tr><td colspan="7" class="expectations-no-result">سررسیدی در این بازه پیدا نشد.</td></tr>`;
+        : `<tr><td colspan="8" class="expectations-no-result">سررسیدی در این بازه پیدا نشد.</td></tr>`;
 
     resetExpectationSummarySort(modal.querySelector(".expiring-options-table"));
     modal.hidden = false;
@@ -5124,8 +5157,9 @@ function openMarketShareOptionsSummary() {
                 <td class="expectation-percent" data-sort-value="${option.market_trade_value_share ?? ""}">${formatExpectationPercent(option.market_trade_value_share, 4)}</td>
                 <td class="expectation-percent" data-sort-value="${option.breakeven_distance ?? ""}">${formatExpectationPercent(option.breakeven_distance)}</td>
                 <td class="expectation-percent" data-sort-value="${option.monthly_return ?? ""}">${formatExpectationPercent(option.monthly_return)}</td>
+                <td class="expectation-percent" data-sort-value="${option.spread_percent ?? ""}">${formatExpectationPercent(option.spread_percent)}</td>
             </tr>`).join("")
-        : `<tr><td colspan="8" class="expectations-no-result">اطلاعاتی برای نمایش وجود ندارد.</td></tr>`;
+        : `<tr><td colspan="9" class="expectations-no-result">اطلاعاتی برای نمایش وجود ندارد.</td></tr>`;
 
     resetExpectationSummarySort(modal.querySelector(".market-share-options-table"));
     modal.hidden = false;
@@ -5138,10 +5172,59 @@ function closeMarketShareOptionsSummary() {
     syncExpectationModalBodyState();
 }
 
+function openPutOptionsSummary() {
+    const input = document.getElementById("expectations-put-count");
+    const requestedCount = Number(input?.value);
+    if (!Number.isInteger(requestedCount) || requestedCount <= 0) {
+        input?.setCustomValidity("تعداد باید یک عدد صحیح بزرگ‌تر از صفر باشد.");
+        input?.reportValidity();
+        return;
+    }
+    input?.setCustomValidity("");
+
+    const modal = document.getElementById("put-options-modal");
+    const table = modal?.querySelector(".put-options-table");
+    const tbody = table?.querySelector("tbody");
+    const options = Array.isArray(marketExpectationsData?.put_options)
+        ? marketExpectationsData.put_options.slice(0, requestedCount)
+        : [];
+    if (!modal || !table || !tbody) return;
+
+    document.getElementById("put-options-modal-title").textContent =
+        `${formatExpectationNumber(requestedCount)} اختیار فروش پرمعامله`;
+    tbody.innerHTML = options.length
+        ? options.map(option => `
+            <tr>
+                <td data-sort-value="${option.symbol || ""}">${option.symbol || "—"}</td>
+                <td data-sort-value="${option.days_remaining ?? ""}">${formatExpectationNumber(option.days_remaining)}</td>
+                <td class="expectation-percent" data-sort-value="${option.breakeven_distance ?? ""}">${formatExpectationPercent(option.breakeven_distance)}</td>
+                <td data-sort-value="${option.option_last_price ?? ""}">${formatExpectationNumber(option.option_last_price)}</td>
+                <td data-sort-value="${option.best_sell_price ?? ""}">${formatExpectationNumber(option.best_sell_price)}</td>
+                <td data-sort-value="${option.leverage ?? ""}">${formatExpectationNumber(option.leverage, 2)}</td>
+                <td class="expectation-percent" data-sort-value="${option.spread_percent ?? ""}">${formatExpectationPercent(option.spread_percent)}</td>
+            </tr>`).join("")
+        : `<tr><td colspan="7" class="expectations-no-result">اختیار فروش معتبری برای نمایش وجود ندارد.</td></tr>`;
+
+    resetExpectationSummarySort(table);
+    modal.hidden = false;
+    document.body.classList.add("expectations-modal-open");
+}
+
+function closePutOptionsSummary() {
+    const modal = document.getElementById("put-options-modal");
+    if (modal) modal.hidden = true;
+    syncExpectationModalBodyState();
+}
+
 function buildOptionBurningRows() {
     const serverRows = marketExpectationsData?.option_burning;
     if (Array.isArray(serverRows)) {
-        return serverRows.slice(0, 20);
+        return serverRows
+            .filter(option => (
+                Number(option.option_last_price) >= 10
+                && Number(option.best_buy_price) >= 10
+            ))
+            .slice(0, 20);
     }
 
     const bases = marketExpectationsData?.bases;
@@ -5169,9 +5252,12 @@ function buildOptionBurningRows() {
 
             const eligibleOptions = (group.options || []).filter(option => {
                 const premium = Number(option.option_last_price);
+                const bestBuyPrice = Number(option.best_buy_price);
                 const breakeven = Number(option.breakeven_distance);
                 return Number.isFinite(premium)
                     && premium >= 10
+                    && Number.isFinite(bestBuyPrice)
+                    && bestBuyPrice >= 10
                     && Number.isFinite(breakeven);
             });
             if (!eligibleOptions.length) return;
@@ -5215,8 +5301,9 @@ function openOptionBurningSummary() {
                 <td data-sort-value="${option.option_last_price ?? ""}">${formatExpectationNumber(option.option_last_price)}</td>
                 <td data-sort-value="${option.best_buy_price ?? ""}">${formatExpectationNumber(option.best_buy_price)}</td>
                 <td data-sort-value="${option.status || ""}"><span class="expectation-option-status is-${String(option.status || "").toLowerCase()}">${option.status || "—"}</span></td>
+                <td class="expectation-percent" data-sort-value="${option.spread_percent ?? ""}">${formatExpectationPercent(option.spread_percent)}</td>
             </tr>`).join("")
-        : `<tr><td colspan="6" class="expectations-no-result">اختیاری مطابق شرایط محاسبه پیدا نشد.</td></tr>`;
+        : `<tr><td colspan="7" class="expectations-no-result">اختیاری مطابق شرایط محاسبه پیدا نشد.</td></tr>`;
 
     resetExpectationSummarySort(table);
     modal.hidden = false;
@@ -5297,6 +5384,7 @@ function openExpectationDetails(baseIndex, groupId) {
         <span>میانگین وزنی: <strong>${formatExpectationPercent(group.weighted_average)}</strong></span>
         <span>مینیمم: <strong>${formatExpectationPercent(group.minimum)}</strong></span>
         <span>ماکسیمم: <strong>${formatExpectationPercent(group.maximum)}</strong></span>
+        <span>میانگین شکاف: <strong>${formatExpectationPercent(group.weighted_spread)}</strong></span>
         <span>ارزش کل (میلیون ریال): <strong>${formatExpectationNumber(group.total_trade_value / 1_000_000, 1)}</strong></span>`;
 
     const table = modal.querySelector(".expectations-detail-table");
@@ -5312,6 +5400,7 @@ function openExpectationDetails(baseIndex, groupId) {
         <th data-sort-key="status" tabindex="0">وضعیت <span class="expectations-sort-indicator"></span></th>
         <th data-sort-key="strike" tabindex="0">قیمت اعمال <span class="expectations-sort-indicator"></span></th>
         <th data-sort-key="option_last_price" tabindex="0">آخرین قیمت اختیار <span class="expectations-sort-indicator"></span></th>
+        <th data-sort-key="spread_percent" tabindex="0">شکاف <span class="expectations-sort-indicator"></span></th>
     </tr>`;
 
     expectationDetailRows = Array.isArray(group.options)
@@ -5365,6 +5454,7 @@ function renderExpectationDetailRows() {
             <td><span class="expectation-option-status is-${String(option.status || "").toLowerCase()}">${option.status || "—"}</span></td>
             <td>${formatExpectationNumber(option.strike)}</td>
             <td>${formatExpectationNumber(option.option_last_price)}</td>
+            <td class="expectation-percent">${formatExpectationPercent(option.spread_percent)}</td>
         </tr>`).join("");
 
     table.querySelectorAll("th[data-sort-key]").forEach(header => {
@@ -6076,6 +6166,9 @@ async function loadWatchMarket({ forceRefresh = false } = {}) {
         if (stockTradeValueInUsd) {
             renderStockTable();
         }
+        if (allStockTradeValueInUsd) {
+            renderAllStockTable();
+        }
         if (stockWatchlistTradeValueInUsd) {
             renderStockWatchlistTable();
         }
@@ -6102,6 +6195,7 @@ function startWatchMarketAutoRefresh() {
 
 const APP_TAB_ORDER = [
     "stocks-tab",
+    "all-stocks-tab",
     "watchlist-tab",
     "strategy-tab",
     "options-tab",
@@ -6194,6 +6288,7 @@ function transitionHeroImage({ source, alt, tabId }) {
 
 function setActiveAppTab(tabId) {
     const isStocksTab = tabId === "stocks-tab";
+    const isAllStocksTab = tabId === "all-stocks-tab";
     const isStockWatchlistTab = tabId === "watchlist-tab";
     const isStrategyTab = tabId === "strategy-tab";
     const isOptionsTab = tabId === "options-tab";
@@ -6226,7 +6321,9 @@ function setActiveAppTab(tabId) {
     if (heroImage) {
         const nextHeroSource = isStocksTab
             ? heroImage.dataset.stocksSrc
-            : isStockWatchlistTab
+            : isAllStocksTab
+                ? heroImage.dataset.allStocksSrc
+                : isStockWatchlistTab
                 ? heroImage.dataset.watchlistSrc
                 : isStrategyTab
                     ? heroImage.dataset.strategySrc
@@ -6235,7 +6332,9 @@ function setActiveAppTab(tabId) {
                         : heroImage.dataset.marketsSrc;
         const nextHeroAlt = isStocksTab
             ? "تصویر تحلیلی بازار سهام"
-            : isStockWatchlistTab
+            : isAllStocksTab
+                ? "تصویر تحلیلی تمام سهام‌های بازار"
+                : isStockWatchlistTab
                 ? "تصویر تحلیلی دیده‌بان نمادها"
                 : isStrategyTab
                     ? "تصویر تحلیلی استراتژی‌های بازار"
@@ -6253,6 +6352,8 @@ function setActiveAppTab(tabId) {
     if (pageTitle) {
         pageTitle.textContent = isStocksTab
             ? "دیدبان بازار سهام"
+            : isAllStocksTab
+                ? "تمام سهام‌ها"
             : isStockWatchlistTab
                 ? "دیده‌بان نمادها"
             : isStrategyTab
@@ -6263,21 +6364,30 @@ function setActiveAppTab(tabId) {
     }
 
     if (isStocksTab) {
+        setAllStockColumnMenu(false);
         setStockWatchlistColumnMenu(false);
         loadStockCatalog();
+    } else if (isAllStocksTab) {
+        setStockColumnMenu(false);
+        setStockWatchlistColumnMenu(false);
+        loadAllStockCatalog();
     } else if (isStockWatchlistTab) {
         setStockColumnMenu(false);
+        setAllStockColumnMenu(false);
         loadStockWatchlist();
     } else if (isStrategyTab) {
         setStockColumnMenu(false);
+        setAllStockColumnMenu(false);
         setStockWatchlistColumnMenu(false);
         loadStockStrategy();
     } else if (isWatchTab) {
         setStockColumnMenu(false);
+        setAllStockColumnMenu(false);
         setStockWatchlistColumnMenu(false);
         loadWatchMarket();
     } else {
         setStockColumnMenu(false);
+        setAllStockColumnMenu(false);
         setStockWatchlistColumnMenu(false);
     }
 }
@@ -6288,6 +6398,7 @@ function initializeAppTabs() {
             setActiveAppTab(button.dataset.appTab);
             const hash = {
                 "stocks-tab": "#stocks",
+                "all-stocks-tab": "#all-stocks",
                 "watchlist-tab": "#watchlist",
                 "strategy-tab": "#strategy",
                 "options-tab": "#options",
@@ -6299,6 +6410,7 @@ function initializeAppTabs() {
 
     const initialTab = {
         "#options": "options-tab",
+        "#all-stocks": "all-stocks-tab",
         "#watchlist": "watchlist-tab",
         "#strategy": "strategy-tab",
         "#watch": "watch-tab",
@@ -6416,6 +6528,103 @@ function initializeStockColumnSelector() {
     document.addEventListener("click", event => {
         if (!event.target.closest("#stock-column-selector")) {
             setStockColumnMenu(false);
+        }
+    });
+}
+
+function loadAllStockColumnPreferences() {
+    try {
+        const saved = JSON.parse(
+            localStorage.getItem("all-stock-dashboard-hidden-columns") || "[]"
+        );
+        const validKeys = new Set(stockTableColumns.map(column => column.key));
+        if (Array.isArray(saved)) {
+            saved.forEach(key => {
+                if (validKeys.has(key)) hiddenAllStockColumns.add(key);
+            });
+        }
+    } catch (error) {
+        console.warn("Could not restore all-stock column preferences.", error);
+    }
+}
+
+function saveAllStockColumnPreferences() {
+    try {
+        localStorage.setItem(
+            "all-stock-dashboard-hidden-columns",
+            JSON.stringify([...hiddenAllStockColumns])
+        );
+    } catch (error) {
+        console.warn("Could not save all-stock column preferences.", error);
+    }
+}
+
+function setAllStockColumnMenu(open) {
+    const selector = document.getElementById("all-stock-column-selector");
+    const toggle = document.getElementById("all-stock-column-toggle");
+    const menu = document.getElementById("all-stock-column-menu");
+    if (!selector || !toggle || !menu) return;
+    selector.classList.toggle("open", open);
+    toggle.setAttribute("aria-expanded", String(open));
+    menu.hidden = !open;
+}
+
+function renderAllStockColumnControls() {
+    const container = document.getElementById("all-stock-column-options");
+    if (!container) return;
+    const fragment = document.createDocumentFragment();
+    stockTableColumns.forEach(column => {
+        const label = document.createElement("label");
+        label.className = "stock-column-option";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = column.key;
+        checkbox.checked = column.key === "symbol"
+            || !hiddenAllStockColumns.has(column.key);
+        checkbox.disabled = column.key === "symbol";
+        const text = document.createElement("span");
+        text.textContent = column.side
+            ? `${column.label} — ${column.side}`
+            : column.label;
+        checkbox.addEventListener("change", () => {
+            if (checkbox.checked) hiddenAllStockColumns.delete(column.key);
+            else hiddenAllStockColumns.add(column.key);
+            saveAllStockColumnPreferences();
+            renderAllStockTable();
+        });
+        label.append(checkbox, text);
+        fragment.appendChild(label);
+    });
+    container.replaceChildren(fragment);
+}
+
+function initializeAllStockColumnSelector() {
+    loadAllStockColumnPreferences();
+    renderAllStockColumnControls();
+    document.getElementById("all-stock-column-toggle")?.addEventListener(
+        "click",
+        event => {
+            event.stopPropagation();
+            const isOpen = event.currentTarget.getAttribute("aria-expanded") === "true";
+            setAllStockColumnMenu(!isOpen);
+        }
+    );
+    document.getElementById("all-stock-column-menu")?.addEventListener(
+        "click",
+        event => event.stopPropagation()
+    );
+    document.getElementById("show-all-all-stock-columns")?.addEventListener(
+        "click",
+        () => {
+            hiddenAllStockColumns.clear();
+            saveAllStockColumnPreferences();
+            renderAllStockColumnControls();
+            renderAllStockTable();
+        }
+    );
+    document.addEventListener("click", event => {
+        if (!event.target.closest("#all-stock-column-selector")) {
+            setAllStockColumnMenu(false);
         }
     });
 }
@@ -6872,10 +7081,12 @@ async function submitStockNoteForm(event) {
 }
 
 function initializeStockNotes() {
-    document.getElementById("open-all-stock-notes")?.addEventListener(
-        "click",
-        () => openStockNotesModal()
-    );
+    ["open-all-stock-notes", "open-all-stock-notes-complete"].forEach(id => {
+        document.getElementById(id)?.addEventListener(
+            "click",
+            () => openStockNotesModal()
+        );
+    });
     document.getElementById("stock-note-form")?.addEventListener(
         "submit",
         submitStockNoteForm
@@ -7055,6 +7266,129 @@ function initializeStockViewControls() {
     );
 
     ["stock-market-min", "stock-market-max"].forEach(inputId => {
+        document.getElementById(inputId)?.addEventListener("keydown", event => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            applyFilter();
+        });
+    });
+}
+
+function initializeAllStockViewControls() {
+    document.getElementById("all-stock-refresh-button")?.addEventListener(
+        "click",
+        () => requestAllStockCatalog({
+            showLoading: false,
+            forceRefresh: true
+        })
+    );
+    document.getElementById("all-stock-search")?.addEventListener(
+        "input",
+        event => {
+            allStockSearchQuery = normalizeSymbol(
+                event.target.value
+            ).toLocaleLowerCase("fa");
+            renderAllStockTable();
+        }
+    );
+    const industryInput = document.getElementById("all-stock-industry-search");
+    industryInput?.addEventListener("input", event => {
+        allStockIndustryQuery = normalizeSymbol(
+            event.target.value
+        ).toLocaleLowerCase("fa");
+        renderAllStockTable();
+        renderAllStockIndustryOptions();
+        setAllStockIndustrySuggestionMenu(true);
+    });
+    industryInput?.addEventListener("focus", () => {
+        renderAllStockIndustryOptions();
+        setAllStockIndustrySuggestionMenu(true);
+    });
+    industryInput?.addEventListener("keydown", event => {
+        if (event.key === "Escape") {
+            setAllStockIndustrySuggestionMenu(false);
+            event.currentTarget.blur();
+        } else if (event.key === "ArrowDown") {
+            const firstOption = document.querySelector(
+                "#all-stock-industry-suggestions button"
+            );
+            if (firstOption) {
+                event.preventDefault();
+                firstOption.focus();
+            }
+        }
+    });
+    document.addEventListener("click", event => {
+        if (!event.target.closest(".all-stock-industry-search")) {
+            setAllStockIndustrySuggestionMenu(false);
+        }
+    });
+    document.getElementById("all-stock-group-by-industry")?.addEventListener(
+        "change",
+        event => {
+            allStockGroupByIndustry = event.target.checked;
+            renderAllStockTable();
+        }
+    );
+    document.getElementById("all-stock-trade-value-usd")?.addEventListener(
+        "change",
+        event => {
+            allStockTradeValueInUsd = event.target.checked;
+            renderAllStockTable();
+        }
+    );
+
+    const applyFilter = () => {
+        const minInput = document.getElementById("all-stock-market-min");
+        const maxInput = document.getElementById("all-stock-market-max");
+        if (!minInput || !maxInput) return;
+        minInput.setCustomValidity("");
+        maxInput.setCustomValidity("");
+        const minValue = minInput.value === "" ? null : Number(minInput.value);
+        const maxValue = maxInput.value === "" ? null : Number(maxInput.value);
+        if (minValue !== null && (!Number.isFinite(minValue) || minValue < 0)) {
+            minInput.setCustomValidity("حداقل ارزش بازار باید یک عدد مثبت باشد.");
+            minInput.reportValidity();
+            return;
+        }
+        if (maxValue !== null && (!Number.isFinite(maxValue) || maxValue < 0)) {
+            maxInput.setCustomValidity("حداکثر ارزش بازار باید یک عدد مثبت باشد.");
+            maxInput.reportValidity();
+            return;
+        }
+        if (minValue !== null && maxValue !== null && minValue > maxValue) {
+            maxInput.setCustomValidity("حداکثر ارزش بازار باید از حداقل بزرگ‌تر باشد.");
+            maxInput.reportValidity();
+            return;
+        }
+        allStockMarketFilter = { min: minValue, max: maxValue };
+        renderAllStockTable();
+    };
+    document.getElementById("apply-all-stock-filter")?.addEventListener(
+        "click",
+        applyFilter
+    );
+    document.getElementById("clear-all-stock-filter")?.addEventListener(
+        "click",
+        () => {
+            ["all-stock-market-min", "all-stock-market-max"].forEach(id => {
+                const input = document.getElementById(id);
+                if (input) {
+                    input.value = "";
+                    input.setCustomValidity("");
+                }
+            });
+            const searchInput = document.getElementById("all-stock-search");
+            if (searchInput) searchInput.value = "";
+            if (industryInput) industryInput.value = "";
+            allStockSearchQuery = "";
+            allStockIndustryQuery = "";
+            allStockMarketFilter = { min: null, max: null };
+            setAllStockIndustrySuggestionMenu(false);
+            renderAllStockTable();
+        }
+    );
+    ["all-stock-market-min", "all-stock-market-max"].forEach(inputId => {
         document.getElementById(inputId)?.addEventListener("keydown", event => {
             if (event.key !== "Enter") return;
             event.preventDefault();
@@ -8218,6 +8552,266 @@ function renderStockTable() {
     syncFrozenPanes();
 }
 
+function getFilteredAllStockRows() {
+    return allStockRows.filter(stock => {
+        if (allStockSearchQuery) {
+            const searchableValue = [stock.symbol, stock.company]
+                .map(value => normalizeSymbol(value).toLocaleLowerCase("fa"))
+                .join("|");
+            if (!searchableValue.includes(allStockSearchQuery)) return false;
+        }
+        if (allStockIndustryQuery) {
+            const industry = normalizeSymbol(
+                stock.industry
+            ).toLocaleLowerCase("fa");
+            if (!industry.includes(allStockIndustryQuery)) return false;
+        }
+        const marketValue = Number(stock.market_value);
+        if (allStockMarketFilter.min !== null) {
+            if (!Number.isFinite(marketValue)) return false;
+            if (marketValue / 10_000_000_000_000 < allStockMarketFilter.min) {
+                return false;
+            }
+        }
+        if (allStockMarketFilter.max !== null) {
+            if (!Number.isFinite(marketValue)) return false;
+            if (marketValue / 10_000_000_000_000 > allStockMarketFilter.max) {
+                return false;
+            }
+        }
+        return true;
+    });
+}
+
+function getSortedAllStockRows(rows) {
+    const { key, direction } = allStockSort;
+    if (!key || !direction) return [...rows];
+    const column = stockTableColumns.find(item => item.key === key);
+    if (!column) return [...rows];
+    const order = direction === "asc" ? 1 : -1;
+    return [...rows].sort((left, right) => {
+        const leftValue = left[key];
+        const rightValue = right[key];
+        const leftMissing = leftValue === null || leftValue === undefined || leftValue === "";
+        const rightMissing = rightValue === null || rightValue === undefined || rightValue === "";
+        if (leftMissing && rightMissing) return 0;
+        if (leftMissing) return 1;
+        if (rightMissing) return -1;
+        if (column.type === "number") {
+            return (Number(leftValue) - Number(rightValue)) * order;
+        }
+        return String(leftValue).localeCompare(
+            String(rightValue),
+            "fa",
+            { sensitivity: "base", numeric: true }
+        ) * order;
+    });
+}
+
+function sortAllStockTable(columnKey) {
+    if (!stockTableColumns.some(column => column.key === columnKey)) return;
+    if (!allStockSortInteractionStarted || allStockSort.key !== columnKey) {
+        allStockSort = { key: columnKey, direction: "asc" };
+        allStockSortInteractionStarted = true;
+    } else if (allStockSort.direction === "asc") {
+        allStockSort.direction = "desc";
+    } else {
+        allStockSort = { ...defaultStockTableSort };
+        allStockSortInteractionStarted = false;
+    }
+    renderAllStockTable();
+}
+
+function updateAllStockCount(visibleCount) {
+    const count = document.getElementById("all-stocks-count");
+    if (!count) return;
+    const formatter = new Intl.NumberFormat("fa-IR");
+    count.textContent = visibleCount === allStockRows.length
+        ? `${formatter.format(allStockRows.length)} نماد`
+        : `${formatter.format(visibleCount)} از ${formatter.format(allStockRows.length)} نماد`;
+}
+
+function renderAllStockTable() {
+    const table = document.getElementById("all-stocks-table");
+    const wrapper = document.getElementById("all-stocks-table-wrap");
+    if (!table || !wrapper) return;
+    const visibleColumns = stockTableColumns.filter(
+        column => column.key === "symbol" || !hiddenAllStockColumns.has(column.key)
+    );
+    const filteredRows = getFilteredAllStockRows();
+    const displayRows = getSortedAllStockRows(filteredRows);
+    updateAllStockCount(filteredRows.length);
+
+    table.querySelector("colgroup")?.remove();
+    const colgroup = document.createElement("colgroup");
+    visibleColumns.forEach(column => {
+        const col = document.createElement("col");
+        col.style.width = `${column.width || 140}px`;
+        colgroup.appendChild(col);
+    });
+    table.prepend(colgroup);
+    table.style.minWidth = `${Math.max(
+        760,
+        visibleColumns.reduce((sum, column) => sum + (column.width || 140), 0)
+    )}px`;
+
+    const headRow = document.createElement("tr");
+    visibleColumns.forEach(column => {
+        const header = document.createElement("th");
+        const isActive = allStockSort.key === column.key;
+        header.dataset.stockColumn = column.key;
+        if (column.key === "symbol") header.classList.add("stocks-pinned-symbol");
+        if (column.sideKey) header.dataset.stockSide = column.sideKey;
+        header.tabIndex = 0;
+        header.setAttribute(
+            "aria-sort",
+            isActive
+                ? (allStockSort.direction === "asc" ? "ascending" : "descending")
+                : "none"
+        );
+        const heading = document.createElement("span");
+        heading.className = "stocks-column-heading";
+        const label = document.createElement("span");
+        label.className = "stocks-column-title";
+        label.textContent = column.label;
+        heading.appendChild(label);
+        const details = [
+            column.side,
+            getStockColumnUnit(column, allStockTradeValueInUsd)
+        ].filter(Boolean);
+        if (details.length) {
+            const unit = document.createElement("small");
+            unit.className = "stocks-column-unit";
+            unit.textContent = `(${details.join(" · ")})`;
+            heading.appendChild(unit);
+        }
+        const indicator = document.createElement("span");
+        indicator.className = "stocks-sort-indicator";
+        indicator.textContent = isActive
+            ? (allStockSort.direction === "asc" ? "▲" : "▼")
+            : "↕";
+        header.append(heading, indicator);
+        header.addEventListener("click", () => sortAllStockTable(column.key));
+        header.addEventListener("keydown", event => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            sortAllStockTable(column.key);
+        });
+        headRow.appendChild(header);
+    });
+    table.querySelector("thead").replaceChildren(headRow);
+
+    const fragment = document.createDocumentFragment();
+    const appendRow = (stock, grouped = false) => {
+        const row = document.createElement("tr");
+        if (grouped) row.classList.add("stock-industry-member");
+        visibleColumns.forEach(column => {
+            row.appendChild(createStockWatchlistCell(stock, column, {
+                useDollar: allStockTradeValueInUsd,
+                allowDelete: false
+            }));
+        });
+        fragment.appendChild(row);
+    };
+    if (!visibleColumns.length || !displayRows.length) {
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+        cell.className = "stocks-no-columns";
+        cell.colSpan = Math.max(1, visibleColumns.length);
+        cell.textContent = visibleColumns.length
+            ? "نمادی مطابق فیلتر انتخاب‌شده پیدا نشد."
+            : "هیچ ستونی برای نمایش انتخاب نشده است.";
+        row.appendChild(cell);
+        fragment.appendChild(row);
+    } else if (allStockGroupByIndustry) {
+        const groups = new Map();
+        displayRows.forEach(stock => {
+            const industry = stock.industry || "بدون صنعت";
+            if (!groups.has(industry)) groups.set(industry, []);
+            groups.get(industry).push(stock);
+        });
+        groups.forEach((stocks, industry) => {
+            const groupRow = document.createElement("tr");
+            groupRow.className = "stock-industry-group";
+            const groupCell = document.createElement("td");
+            groupCell.colSpan = visibleColumns.length;
+            const groupName = document.createElement("span");
+            groupName.className = "stock-industry-group-name";
+            groupName.textContent = industry;
+            const groupCount = document.createElement("span");
+            groupCount.className = "stock-industry-group-count";
+            groupCount.textContent = `${new Intl.NumberFormat("fa-IR").format(stocks.length)} نماد`;
+            groupCell.append(groupName, groupCount);
+            groupRow.appendChild(groupCell);
+            fragment.appendChild(groupRow);
+            stocks.forEach(stock => appendRow(stock, true));
+        });
+    } else {
+        displayRows.forEach(stock => appendRow(stock));
+    }
+    table.querySelector("tbody").replaceChildren(fragment);
+    initializeStockTableDragScroll(wrapper);
+    initializeFrozenStockTable(wrapper, table);
+}
+
+function setAllStockIndustrySuggestionMenu(open) {
+    const menu = document.getElementById("all-stock-industry-suggestions");
+    const input = document.getElementById("all-stock-industry-search");
+    if (!menu || !input) return;
+    menu.hidden = !open;
+    input.setAttribute("aria-expanded", String(open));
+    document.querySelector(".all-stock-industry-search")
+        ?.classList.toggle("open", open);
+}
+
+function selectAllStockIndustry(industry) {
+    const input = document.getElementById("all-stock-industry-search");
+    if (input) input.value = industry;
+    allStockIndustryQuery = normalizeSymbol(industry).toLocaleLowerCase("fa");
+    setAllStockIndustrySuggestionMenu(false);
+    renderAllStockTable();
+}
+
+function renderAllStockIndustryOptions() {
+    const list = document.getElementById("all-stock-industry-suggestions");
+    if (!list) return;
+    const counts = new Map();
+    allStockRows.forEach(stock => {
+        const industry = String(stock.industry || "").trim();
+        if (industry) counts.set(industry, (counts.get(industry) || 0) + 1);
+    });
+    const industries = [...counts.keys()]
+        .filter(industry => !allStockIndustryQuery
+            || normalizeSymbol(industry).toLocaleLowerCase("fa")
+                .includes(allStockIndustryQuery))
+        .sort((left, right) => left.localeCompare(right, "fa"));
+    const fragment = document.createDocumentFragment();
+    const appendOption = (industry, count, label = industry) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "stock-industry-suggestion";
+        button.setAttribute("role", "option");
+        const name = document.createElement("span");
+        name.className = "stock-industry-suggestion-name";
+        name.textContent = label;
+        const badge = document.createElement("span");
+        badge.className = "stock-industry-suggestion-count";
+        badge.textContent = `${new Intl.NumberFormat("fa-IR").format(count)} نماد`;
+        button.append(name, badge);
+        button.addEventListener("click", () => selectAllStockIndustry(industry));
+        fragment.appendChild(button);
+    };
+    if (allStockIndustryQuery) appendOption("", allStockRows.length, "همه صنایع");
+    industries.forEach(industry => appendOption(industry, counts.get(industry)));
+    if (!industries.length) {
+        const empty = document.createElement("div");
+        empty.className = "stock-industry-suggestions-empty";
+        empty.textContent = "صنعتی مطابق جست‌وجو پیدا نشد.";
+        fragment.appendChild(empty);
+    }
+    list.replaceChildren(fragment);
+}
+
 function getFilteredStockWatchlistRows() {
     return stockWatchlistRows.filter(stock => {
         if (stockWatchlistSearchQuery) {
@@ -8271,7 +8865,9 @@ function sortStockWatchlistTable(columnKey) {
     renderStockWatchlistTable();
 }
 
-function createStockWatchlistCell(stock, column) {
+function createStockWatchlistCell(stock, column, options = {}) {
+    const useDollar = options.useDollar ?? stockWatchlistTradeValueInUsd;
+    const allowDelete = options.allowDelete !== false;
     const cell = document.createElement("td");
     cell.dataset.column = column.key;
     if (column.key === "symbol") cell.classList.add("stocks-pinned-symbol");
@@ -8282,7 +8878,7 @@ function createStockWatchlistCell(stock, column) {
         cell.textContent = formatStockCell(
             column,
             stock[column.key],
-            stockWatchlistTradeValueInUsd
+            useDollar
         );
         if (stock[column.key] !== null && stock[column.key] !== undefined) {
             cell.title = new Intl.NumberFormat("fa-IR", {
@@ -8293,7 +8889,7 @@ function createStockWatchlistCell(stock, column) {
         cell.textContent = formatStockCell(
             column,
             stock[column.key],
-            stockWatchlistTradeValueInUsd
+            useDollar
         );
     }
 
@@ -8313,7 +8909,7 @@ function createStockWatchlistCell(stock, column) {
     ].includes(column.key) && Number.isFinite(Number(stock[column.key]))) {
         if (
             dollarConvertibleStockColumns.has(column.key)
-            && stockWatchlistTradeValueInUsd
+            && useDollar
         ) {
             const dollarValue = convertStockTradeValueToDollar(stock[column.key]);
             const dollarRate = getStockDollarRate();
@@ -8370,15 +8966,21 @@ function createStockWatchlistCell(stock, column) {
 
     if (column.key === "symbol") {
         const symbolContent = document.createElement("span");
-        symbolContent.className = "stocks-symbol-content watchlist-symbol-content";
+        symbolContent.className = allowDelete
+            ? "stocks-symbol-content watchlist-symbol-content"
+            : "stocks-symbol-content";
 
         const symbolText = document.createElement("span");
-        symbolText.className = "watchlist-symbol-name";
+        symbolText.className = allowDelete
+            ? "watchlist-symbol-name"
+            : "stocks-symbol-name";
         symbolText.textContent = stock.symbol || "—";
         symbolContent.appendChild(symbolText);
 
         const symbolActions = document.createElement("span");
-        symbolActions.className = "watchlist-symbol-actions";
+        symbolActions.className = allowDelete
+            ? "watchlist-symbol-actions"
+            : "stocks-symbol-actions";
         if (stock.ins_code) {
             const symbolLink = document.createElement("a");
             symbolLink.className = "stocks-symbol-link";
@@ -8401,26 +9003,29 @@ function createStockWatchlistCell(stock, column) {
         symbolActions.appendChild(
             createStockNotesButton(stock.symbol)
         );
-
-        const deleteButton = document.createElement("button");
-        deleteButton.type = "button";
-        deleteButton.className = "watchlist-delete-button";
-        deleteButton.title = `حذف ${stock.symbol} از دیده‌بان`;
-        deleteButton.setAttribute("aria-label", `حذف نماد ${stock.symbol} از دیده‌بان`);
-        deleteButton.innerHTML = `
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <path d="M4 7h16"></path>
-                <path d="m9 7 1-2h4l1 2"></path>
-                <path d="m6.5 7 .8 12h9.4l.8-12"></path>
-                <path d="M10 11v4M14 11v4"></path>
-            </svg>
-        `;
-        deleteButton.addEventListener("pointerdown", event => event.stopPropagation());
-        deleteButton.addEventListener("click", event => {
-            event.stopPropagation();
-            deleteStockWatchlistSymbol(stock.symbol, deleteButton);
-        });
-        symbolActions.appendChild(deleteButton);
+        if (allowDelete) {
+            const deleteButton = document.createElement("button");
+            deleteButton.type = "button";
+            deleteButton.className = "watchlist-delete-button";
+            deleteButton.title = `حذف ${stock.symbol} از دیده‌بان`;
+            deleteButton.setAttribute("aria-label", `حذف نماد ${stock.symbol} از دیده‌بان`);
+            deleteButton.innerHTML = `
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M4 7h16"></path>
+                    <path d="m9 7 1-2h4l1 2"></path>
+                    <path d="m6.5 7 .8 12h9.4l.8-12"></path>
+                    <path d="M10 11v4M14 11v4"></path>
+                </svg>
+            `;
+            deleteButton.addEventListener("pointerdown", event => event.stopPropagation());
+            deleteButton.addEventListener("click", event => {
+                event.stopPropagation();
+                deleteStockWatchlistSymbol(stock.symbol, deleteButton);
+            });
+            symbolActions.appendChild(deleteButton);
+        } else {
+            symbolActions.appendChild(createStockWatchlistAddButton(stock.symbol));
+        }
         symbolContent.appendChild(symbolActions);
         cell.replaceChildren(symbolContent);
     }
@@ -8840,6 +9445,175 @@ function startStockAutoRefresh() {
     }, STOCK_AUTO_REFRESH_INTERVAL);
 }
 
+function setAllStockRefreshButtonState(isRefreshing) {
+    const button = document.getElementById("all-stock-refresh-button");
+    if (!button) return;
+    button.disabled = Boolean(isRefreshing);
+    button.classList.toggle("is-refreshing", Boolean(isRefreshing));
+    button.setAttribute("aria-busy", isRefreshing ? "true" : "false");
+}
+
+function updateAllStockStatus(payload) {
+    const status = document.getElementById("all-stocks-sync-status");
+    setAllStockRefreshButtonState(Boolean(payload?.refreshing));
+    if (!status) return;
+    status.classList.toggle("is-error", Boolean(payload?.warning));
+    status.title = payload?.warning || "";
+    if (payload?.warning && !payload?.refreshing) {
+        status.textContent = payload.warning;
+        return;
+    }
+    const priceHistory = payload?.price_history;
+    const strategyHistory = payload?.strategy_history;
+    if (priceHistory?.running || strategyHistory?.running) {
+        const formatter = new Intl.NumberFormat("fa-IR");
+        const progress = [];
+        if (priceHistory?.running) {
+            progress.push(`قیمت ${formatter.format(priceHistory.completed || 0)} از ${formatter.format(priceHistory.total || 0)}`);
+        }
+        if (strategyHistory?.running) {
+            progress.push(`استراتژی ${formatter.format(strategyHistory.completed || 0)} از ${formatter.format(strategyHistory.total || 0)}`);
+        }
+        status.textContent = `در حال تکمیل تاریخچه: ${progress.join("؛ ")}`;
+        return;
+    }
+    if (priceHistory?.error || strategyHistory?.error) {
+        status.textContent = [priceHistory?.error, strategyHistory?.error]
+            .filter(Boolean)
+            .join("؛ ");
+        status.classList.add("is-error");
+        return;
+    }
+    status.textContent = "";
+}
+
+function applyAllStockPayload(payload) {
+    const wrapper = document.getElementById("all-stocks-table-wrap");
+    const empty = document.getElementById("all-stocks-empty");
+    const rows = Array.isArray(payload?.stocks) ? payload.stocks : [];
+    allStockRows = rows;
+    allStockLoaded = true;
+    renderAllStockIndustryOptions();
+    updateAllStockStatus(payload);
+    if (!rows.length) {
+        if (wrapper) wrapper.hidden = true;
+        if (empty) {
+            empty.textContent = payload?.refreshing
+                ? "اولین داده روزانه در حال ثبت است."
+                : "هنوز داده روزانه‌ای ثبت نشده است.";
+            empty.hidden = false;
+        }
+        updateAllStockCount(0);
+        return;
+    }
+    if (empty) empty.hidden = true;
+    renderAllStockTable();
+    if (wrapper) wrapper.hidden = false;
+}
+
+function scheduleAllStockRefreshPoll(previousUpdatedAt, attempt = 0) {
+    window.clearTimeout(allStockRefreshPollTimer);
+    if (attempt >= 360) {
+        setAllStockRefreshButtonState(false);
+        return;
+    }
+    allStockRefreshPollTimer = window.setTimeout(async () => {
+        try {
+            const response = await fetch(`/all-stocks?poll=1&_ts=${Date.now()}`, {
+                cache: "no-store"
+            });
+            const payload = await response.json();
+            if (!response.ok) {
+                throw new Error(payload.error || "بررسی ثبت روزانه ناموفق بود.");
+            }
+            const hasNewData = Boolean(
+                payload.source_updated_at
+                && payload.source_updated_at !== previousUpdatedAt
+            );
+            if (hasNewData || !allStockLoaded) applyAllStockPayload(payload);
+            else updateAllStockStatus(payload);
+            if (
+                payload.refreshing
+                || payload?.price_history?.running
+                || payload?.strategy_history?.running
+            ) {
+                scheduleAllStockRefreshPoll(
+                    hasNewData ? payload.source_updated_at : previousUpdatedAt,
+                    attempt + 1
+                );
+            } else if (hasNewData) {
+                applyAllStockPayload(payload);
+            }
+        } catch (error) {
+            console.error("All-stock refresh poll error:", error);
+            setAllStockRefreshButtonState(false);
+        }
+    }, 2_000);
+}
+
+async function requestAllStockCatalog({
+    showLoading = false,
+    forceRefresh = false
+} = {}) {
+    if (allStockLoading) {
+        allStockReloadPending = true;
+        return;
+    }
+    const loading = document.getElementById("all-stocks-loading");
+    const wrapper = document.getElementById("all-stocks-table-wrap");
+    const empty = document.getElementById("all-stocks-empty");
+    allStockLoading = true;
+    if (showLoading && !allStockLoaded) {
+        if (loading) loading.hidden = false;
+        if (wrapper) wrapper.hidden = true;
+        if (empty) empty.hidden = true;
+    }
+    try {
+        const refreshQuery = forceRefresh ? "&refresh=1" : "";
+        const response = await fetch(`/all-stocks?_ts=${Date.now()}${refreshQuery}`, {
+            cache: "no-store"
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.error || "دریافت فهرست تمام سهام‌ها ناموفق بود.");
+        }
+        applyAllStockPayload(payload);
+        if (
+            payload.refreshing
+            || payload?.price_history?.running
+            || payload?.strategy_history?.running
+        ) {
+            scheduleAllStockRefreshPoll(payload.source_updated_at);
+        }
+    } catch (error) {
+        console.error("All-stock catalog error:", error);
+        setAllStockRefreshButtonState(false);
+        if (!allStockLoaded && empty) {
+            empty.textContent = error.message || "دریافت فهرست تمام سهام‌ها ناموفق بود.";
+            empty.hidden = false;
+        }
+    } finally {
+        allStockLoading = false;
+        if (loading) loading.hidden = true;
+        if (allStockReloadPending) {
+            allStockReloadPending = false;
+            window.setTimeout(() => requestAllStockCatalog(), 0);
+        }
+    }
+}
+
+function loadAllStockCatalog() {
+    if (allStockLoaded) return;
+    requestAllStockCatalog({ showLoading: true });
+}
+
+function startAllStockAutoRefresh() {
+    window.clearInterval(allStockAutoRefreshTimer);
+    allStockAutoRefreshTimer = window.setInterval(() => {
+        requestAllStockCatalog();
+    }, DASHBOARD_AUTO_REFRESH_INTERVAL);
+}
+
 function setStockWatchlistBusy(isBusy) {
     const refreshButton = document.getElementById("watchlist-refresh-button");
     if (refreshButton) {
@@ -9048,6 +9822,12 @@ const stockStrategyControlMap = {
         operator: "strategy-trade-value-operator",
         days: "strategy-trade-value-days"
     },
+    industry_growth: {
+        enabled: "strategy-industry-growth-enabled",
+        days: "strategy-industry-growth-days",
+        daysMinimum: 1,
+        daysDefault: 30
+    },
     trade_to_float_percent: {
         enabled: "strategy-trade-to-float-enabled",
         operator: "strategy-trade-to-float-operator",
@@ -9100,10 +9880,19 @@ const stockStrategyControlMap = {
 function readStockStrategyRules() {
     const rules = {};
     Object.entries(stockStrategyControlMap).forEach(([metric, controls]) => {
+        const minimumDays = Number.isFinite(controls.daysMinimum)
+            ? controls.daysMinimum
+            : 0;
+        const defaultDays = Number.isFinite(controls.daysDefault)
+            ? controls.daysDefault
+            : 0;
+        const rawDays = controls.days
+            ? Number(document.getElementById(controls.days)?.value)
+            : 0;
         const days = controls.days
             ? Math.max(
-                0,
-                Math.min(250, Number(document.getElementById(controls.days)?.value) || 0)
+                minimumDays,
+                Math.min(250, Number.isFinite(rawDays) ? rawDays : defaultDays)
             )
             : 0;
         const consecutiveDays = controls.consecutiveDays
@@ -9215,6 +10004,11 @@ function saveStockStrategyViewSettings() {
             "stock-strategy-use-saved-data",
             stockStrategyUseSavedData ? "1" : "0"
         );
+        localStorage.setItem("stock-strategy-source", stockStrategySource);
+        localStorage.setItem(
+            "stock-strategy-group-by-industry",
+            stockStrategyGroupByIndustry ? "1" : "0"
+        );
     } catch (error) {
         console.warn("Could not save stock strategy view settings.", error);
     }
@@ -9225,11 +10019,29 @@ function restoreStockStrategyViewSettings() {
         stockStrategyUseSavedData = (
             localStorage.getItem("stock-strategy-use-saved-data") === "1"
         );
+        stockStrategySource = (
+            localStorage.getItem("stock-strategy-source") === "all"
+                ? "all"
+                : "featured"
+        );
+        stockStrategyGroupByIndustry = (
+            localStorage.getItem("stock-strategy-group-by-industry") === "1"
+        );
         const checkbox = document.getElementById("strategy-use-saved-data");
         if (checkbox) checkbox.checked = stockStrategyUseSavedData;
+        const groupCheckbox = document.getElementById("strategy-group-by-industry");
+        if (groupCheckbox) groupCheckbox.checked = stockStrategyGroupByIndustry;
     } catch (error) {
         console.warn("Could not restore stock strategy view settings.", error);
     }
+}
+
+function updateStockStrategySourceControls() {
+    document.querySelectorAll("[data-strategy-source]").forEach(button => {
+        const isActive = button.dataset.strategySource === stockStrategySource;
+        button.classList.toggle("is-active", isActive);
+        button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
 }
 
 function restoreStockStrategyRules() {
@@ -9280,7 +10092,20 @@ function restoreStockStrategyRules() {
             if (operator && ["gte", "lte", "eq", "between"].includes(rule.operator)) {
                 operator.value = rule.operator;
             }
-            if (days) days.value = String(Math.max(0, Number(rule.days) || 0));
+            if (days) {
+                const minimumDays = Number.isFinite(controls.daysMinimum)
+                    ? controls.daysMinimum
+                    : 0;
+                const defaultDays = Number.isFinite(controls.daysDefault)
+                    ? controls.daysDefault
+                    : 0;
+                days.value = String(
+                    Math.max(
+                        minimumDays,
+                        Math.min(250, Number(rule.days) || defaultDays)
+                    )
+                );
+            }
             if (fixed) {
                 const savedFixed = Number(rule.fixed);
                 const restoredFixed = (
@@ -9365,6 +10190,7 @@ function initializeStockStrategyControls() {
     restoreStockStrategyViewSettings();
     restoreStockStrategyRules();
     updateStockStrategyRuleStyles();
+    updateStockStrategySourceControls();
     document.getElementById("strategy-run-button")?.addEventListener(
         "click",
         () => requestStockStrategy({ showLoading: true })
@@ -9377,6 +10203,29 @@ function initializeStockStrategyControls() {
             requestStockStrategy({ showLoading: true });
         }
     );
+    document.getElementById("strategy-group-by-industry")?.addEventListener(
+        "change",
+        event => {
+            stockStrategyGroupByIndustry = event.target.checked;
+            saveStockStrategyViewSettings();
+            if (stockStrategyLastPayload) {
+                renderStockStrategyTable(stockStrategyLastPayload);
+            }
+        }
+    );
+    document.querySelectorAll("[data-strategy-source]").forEach(button => {
+        button.addEventListener("click", () => {
+            const nextSource = button.dataset.strategySource === "all"
+                ? "all"
+                : "featured";
+            if (nextSource === stockStrategySource) return;
+            stockStrategySource = nextSource;
+            stockStrategyLoaded = false;
+            updateStockStrategySourceControls();
+            saveStockStrategyViewSettings();
+            requestStockStrategy({ showLoading: true });
+        });
+    });
     document.querySelectorAll(".strategy-rule input, .strategy-rule select")
         .forEach(control => {
             const persistControl = () => {
@@ -9406,14 +10255,64 @@ function formatStockStrategyValue(metric, value) {
         if (Number(value) < 0) return "شکست رو به پایین";
         return "بدون تقاطع";
     }
-    if (metric === "trade_to_float_percent") {
-        return formatStockCell({ key: metric, format: "precisePercent" }, value, false);
-    }
-    if (metric === "money_flow_quality") {
+    if ([
+        "trade_to_float_percent",
+        "money_flow_quality",
+        "industry_growth_percent",
+        "industry_average_growth_percent",
+        "below_industry_average_percent"
+    ].includes(metric)) {
         return formatStockCell({ key: metric, format: "precisePercent" }, value, false);
     }
     if (metric === "integer") return formatStockInteger(value);
     return formatStockRatio(value);
+}
+
+function getSortedStockStrategyRows(rows, columns) {
+    const { key, direction } = stockStrategySort;
+    if (!key || !direction) return [...rows];
+    const column = columns.find(item => item.key === key);
+    if (!column) return [...rows];
+    const order = direction === "asc" ? 1 : -1;
+
+    return [...rows].sort((left, right) => {
+        const leftValue = left[key];
+        const rightValue = right[key];
+        const leftMissing = leftValue === null
+            || leftValue === undefined
+            || leftValue === ""
+            || (column.type === "number" && !Number.isFinite(Number(leftValue)));
+        const rightMissing = rightValue === null
+            || rightValue === undefined
+            || rightValue === ""
+            || (column.type === "number" && !Number.isFinite(Number(rightValue)));
+
+        if (leftMissing && rightMissing) return 0;
+        if (leftMissing) return 1;
+        if (rightMissing) return -1;
+        if (column.type === "number") {
+            return (Number(leftValue) - Number(rightValue)) * order;
+        }
+        return String(leftValue).localeCompare(
+            String(rightValue),
+            "fa",
+            { sensitivity: "base", numeric: true }
+        ) * order;
+    });
+}
+
+function sortStockStrategyTable(columnKey) {
+    if (!stockStrategyTableColumns.some(column => column.key === columnKey)) return;
+    if (stockStrategySort.key !== columnKey) {
+        stockStrategySort = { key: columnKey, direction: "asc" };
+    } else if (stockStrategySort.direction === "asc") {
+        stockStrategySort = { key: columnKey, direction: "desc" };
+    } else {
+        stockStrategySort = { key: null, direction: null };
+    }
+    if (stockStrategyLastPayload) {
+        renderStockStrategyTable(stockStrategyLastPayload);
+    }
 }
 
 function renderStockStrategyTable(payload) {
@@ -9424,6 +10323,7 @@ function renderStockStrategyTable(payload) {
     const status = document.getElementById("strategy-status");
     if (!table || !wrapper || !empty) return;
 
+    stockStrategyLastPayload = payload;
     const rows = Array.isArray(payload?.stocks) ? payload.stocks : [];
     const formatter = new Intl.NumberFormat("fa-IR");
     const savedDataStatus = getStockSavedDataStatus(payload);
@@ -9451,6 +10351,7 @@ function renderStockStrategyTable(payload) {
                 money_flow_quality: "کیفیت ورود پول"
             };
             Object.assign(metricNames, {
+                industry_growth: "رشد نسبت به صنعت",
                 rsi: "RSI",
                 ema: "EMA",
                 macd: "MACD"
@@ -9528,7 +10429,37 @@ function renderStockStrategyTable(payload) {
         { key: "money_flow_quality", label: "کیفیت ورود پول", unit: "درصد", metric: "money_flow_quality", width: 150 }
     ];
 
-    columns.splice(6, 0,
+    if (strategyRules?.industry_growth?.enabled) {
+        columns.splice(3, 0,
+            {
+                key: "industry_growth_percent",
+                label: "رشد نماد",
+                unit: "درصد",
+                metric: "industry_growth_percent",
+                historyKey: "industry_growth_days_used",
+                width: 140
+            },
+            {
+                key: "industry_average_growth_percent",
+                label: "میانگین رشد صنعت",
+                unit: "درصد",
+                metric: "industry_average_growth_percent",
+                width: 155
+            },
+            {
+                key: "below_industry_average_percent",
+                label: "پایین‌تر از میانگین صنعت",
+                unit: "درصد",
+                metric: "below_industry_average_percent",
+                width: 175
+            }
+        );
+    }
+
+    const pricePowerColumnIndex = columns.findIndex(
+        column => column.key === "price_power"
+    );
+    columns.splice(pricePowerColumnIndex + 1, 0,
         { key: "closing_price", label: "قیمت پایانی", unit: "ریال", metric: "closing_price", width: 125 },
         { key: "ema", label: `EMA ${formatter.format(emaPeriod)}`, unit: "ریال", metric: "ema", width: 125 },
         { key: "ema_slow", label: `EMA ${formatter.format(emaLongPeriod)}`, unit: "ریال", metric: "ema_slow", width: 125 },
@@ -9538,6 +10469,12 @@ function renderStockStrategyTable(payload) {
         { key: "macd_signal", label: `Signal ${formatter.format(macdSignalPeriod)}`, metric: "macd", width: 115 },
         { key: "macd_histogram", label: "Histogram", metric: "macd", width: 115 }
     );
+    const strategyTextColumns = new Set(["symbol", "company", "industry"]);
+    columns.forEach(column => {
+        column.type = strategyTextColumns.has(column.key) ? "text" : "number";
+    });
+    stockStrategyTableColumns = columns;
+    const displayRows = getSortedStockStrategyRows(rows, columns);
 
     table.querySelector("colgroup")?.remove();
     const colgroup = document.createElement("colgroup");
@@ -9552,8 +10489,17 @@ function renderStockStrategyTable(payload) {
     const headRow = document.createElement("tr");
     columns.forEach(column => {
         const header = document.createElement("th");
+        const isActive = stockStrategySort.key === column.key;
         header.dataset.stockColumn = column.key;
         if (column.key === "symbol") header.classList.add("stocks-pinned-symbol");
+        header.tabIndex = 0;
+        header.setAttribute(
+            "aria-sort",
+            isActive
+                ? (stockStrategySort.direction === "asc" ? "ascending" : "descending")
+                : "none"
+        );
+        header.setAttribute("aria-label", `مرتب‌سازی بر اساس ${column.label}`);
         const heading = document.createElement("span");
         heading.className = "stocks-column-heading";
         const title = document.createElement("span");
@@ -9566,7 +10512,18 @@ function renderStockStrategyTable(payload) {
             unit.textContent = `(${column.unit})`;
             heading.appendChild(unit);
         }
-        header.appendChild(heading);
+        const indicator = document.createElement("span");
+        indicator.className = "stocks-sort-indicator";
+        indicator.textContent = isActive
+            ? (stockStrategySort.direction === "asc" ? "▲" : "▼")
+            : "↕";
+        header.append(heading, indicator);
+        header.addEventListener("click", () => sortStockStrategyTable(column.key));
+        header.addEventListener("keydown", event => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            sortStockStrategyTable(column.key);
+        });
         headRow.appendChild(header);
     });
     table.querySelector("thead").replaceChildren(headRow);
@@ -9581,8 +10538,9 @@ function renderStockStrategyTable(payload) {
     }
 
     const fragment = document.createDocumentFragment();
-    rows.forEach(stock => {
+    const appendStrategyRow = (stock, grouped = false) => {
         const row = document.createElement("tr");
+        if (grouped) row.classList.add("stock-industry-member");
         columns.forEach(column => {
             const cell = document.createElement("td");
             cell.dataset.column = column.key;
@@ -9651,7 +10609,33 @@ function renderStockStrategyTable(payload) {
             row.appendChild(cell);
         });
         fragment.appendChild(row);
-    });
+    };
+    if (stockStrategyGroupByIndustry) {
+        const groups = new Map();
+        displayRows.forEach(stock => {
+            const industry = String(stock.industry || "بدون صنعت").trim() || "بدون صنعت";
+            if (!groups.has(industry)) groups.set(industry, []);
+            groups.get(industry).push(stock);
+        });
+        groups.forEach((stocks, industry) => {
+            const groupRow = document.createElement("tr");
+            groupRow.className = "stock-industry-group";
+            const groupCell = document.createElement("td");
+            groupCell.colSpan = columns.length;
+            const groupName = document.createElement("span");
+            groupName.className = "stock-industry-group-name";
+            groupName.textContent = industry;
+            const groupCount = document.createElement("span");
+            groupCount.className = "stock-industry-group-count";
+            groupCount.textContent = `${formatter.format(stocks.length)} نماد`;
+            groupCell.append(groupName, groupCount);
+            groupRow.appendChild(groupCell);
+            fragment.appendChild(groupRow);
+            stocks.forEach(stock => appendStrategyRow(stock, true));
+        });
+    } else {
+        displayRows.forEach(stock => appendStrategyRow(stock));
+    }
     table.querySelector("tbody").replaceChildren(fragment);
     empty.hidden = true;
     wrapper.hidden = false;
@@ -9668,6 +10652,7 @@ async function requestStockStrategy({ showLoading = false } = {}) {
     const button = document.getElementById("strategy-run-button");
     const status = document.getElementById("strategy-status");
     const requestedSavedData = stockStrategyUseSavedData;
+    const requestedSource = stockStrategySource;
     stockStrategyLoading = true;
     if (loading) loading.hidden = !(showLoading && !stockStrategyLoaded);
     if (button) {
@@ -9681,7 +10666,8 @@ async function requestStockStrategy({ showLoading = false } = {}) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 rules: readStockStrategyRules(),
-                use_saved_data: requestedSavedData
+                use_saved_data: requestedSavedData,
+                source: requestedSource
             }),
             cache: "no-store"
         });
@@ -9689,7 +10675,10 @@ async function requestStockStrategy({ showLoading = false } = {}) {
         if (!response.ok) {
             throw new Error(payload.error || "اجرای استراتژی ناموفق بود.");
         }
-        if (requestedSavedData !== stockStrategyUseSavedData) {
+        if (
+            requestedSavedData !== stockStrategyUseSavedData
+            || requestedSource !== stockStrategySource
+        ) {
             stockStrategyReloadPending = true;
             return;
         }
@@ -9738,15 +10727,19 @@ document.addEventListener(
             () => loadWatchMarket({ forceRefresh: true })
         );
         initializeStockColumnSelector();
+        initializeAllStockColumnSelector();
         initializeStockWatchlistColumnSelector();
         initializeStockViewControls();
+        initializeAllStockViewControls();
         initializeStockWatchlistControls();
         initializeStockNotes();
         initializeHistoryChartControls();
         initializeStockTableDragScroll();
+        initializeStockTableDragScroll("all-stocks-table-wrap");
         initializeStockTableDragScroll("watchlist-table-wrap");
         loadStockWatchlist();
         startStockAutoRefresh();
+        startAllStockAutoRefresh();
         startStockWatchlistAutoRefresh();
         startStockStrategyAutoRefresh();
         startWatchMarketAutoRefresh();
@@ -9796,11 +10789,21 @@ document.addEventListener(
             ?.addEventListener("click", openMarketShareOptionsSummary);
 
         document
+            .getElementById("show-put-options")
+            ?.addEventListener("click", openPutOptionsSummary);
+
+        document
             .getElementById("show-option-burning")
             ?.addEventListener("click", openOptionBurningSummary);
 
         document
             .getElementById("expectations-market-share-count")
+            ?.addEventListener("input", event => {
+                event.target.setCustomValidity("");
+            });
+
+        document
+            .getElementById("expectations-put-count")
             ?.addEventListener("input", event => {
                 event.target.setCustomValidity("");
             });
@@ -9865,6 +10868,12 @@ document.addEventListener(
             .querySelectorAll("[data-close-market-share-options-modal]")
             .forEach(element => element.addEventListener(
                 "click", closeMarketShareOptionsSummary
+            ));
+
+        document
+            .querySelectorAll("[data-close-put-options-modal]")
+            .forEach(element => element.addEventListener(
+                "click", closePutOptionsSummary
             ));
 
         document
@@ -9946,6 +10955,7 @@ document.addEventListener(
                 closeNearestExpirySummary();
                 closeExpiringOptionsSummary();
                 closeMarketShareOptionsSummary();
+                closePutOptionsSummary();
                 closeOptionBurningSummary();
             }
         });

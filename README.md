@@ -4,9 +4,10 @@ Stock Market Watch is a Persian, right-to-left dashboard for analysing the Irani
 
 ## Current interface
 
-The dashboard has five main tabs:
+The dashboard has six main tabs:
 
 - **Stocks**, the default first tab, reads immediately from SQLite and refreshes company, industry, and market-value data from TSETMC in the background.
+- **All Stocks** covers the complete TSETMC equity universe and serves finalized daily rows from SQLite.
 - **Watchlist** stores a persistent user-selected subset of symbols.
 - **Strategy** applies enabled screening rules to current or archived rows.
 - **Options** presents option-based market-expectation analysis.
@@ -53,12 +54,24 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 - Keeps the stock-table header visible inside a height-limited, vertically scrollable table area.
 - Lets users hide or restore columns; the selection is saved in browser storage.
 - Includes a persistent watchlist tab where symbols can be added directly from the Stocks table or removed from the Watchlist. Watchlist rows are stored in SQLite, reuse the full stock-column set, and remain available after a page refresh.
-- Includes a Strategy tab that combines enabled filters with AND logic. Current trading value, free-float turnover, and real buy power can be compared with fixed thresholds and/or N-day averages; real-money flow supports positive-day streaks and comparison with its N-day average, while money-flow quality supports a fixed percentage comparison. Daily averages use SQLite snapshots, report partial history, and exclude zero or missing values.
+- Includes a Strategy tab that combines enabled filters with AND logic and can run against either the curated top-stock list or the complete-market universe. Current trading value, free-float turnover, and real buy power can be compared with fixed thresholds and/or N-day averages; real-money flow supports positive-day streaks and comparison with its N-day average, while money-flow quality supports a fixed percentage comparison. Daily averages use the selected universe's SQLite snapshots, report partial history, and exclude zero or missing values.
+- Adds an industry-relative growth rule that calculates each symbol's N-session closing-price return, compares it with the simple average return of its own industry, and keeps symbols below that average while reporting the percentage-point gap.
 - Adds configurable RSI, EMA, and MACD strategy rules based on archived daily closing prices. RSI supports a custom period, single threshold, or inclusive lower/upper range. EMA can compare the closing price with one EMA or detect a real upward/downward crossover between custom short and long periods. MACD supports custom fast, slow, and signal periods plus Signal/zero-line comparisons. Symbols with insufficient history are excluded with a coverage warning.
+- Automatically backfills 500 TSETMC trading sessions of closing prices for every complete-market symbol. This covers every supported RSI, EMA, and MACD period, including the maximum MACD slow-plus-signal lookback. Historical closes are adjusted onto the newest price scale by chaining TSETMC's previous-close field across corporate actions; later eligible daily closes are appended once and feed RSI, EMA, and MACD dynamically.
+- Backfills 60 trading sessions of every non-technical Strategy metric from TSETMC price/value and client-type history: trading value, price power, real-money flow, per-capita real buy/sell values, real buy power, and money-flow quality. Historical free-float turnover is marked as estimated because it uses the latest available share count and free-float percentage; newly archived daily values are exact.
 - Adds an independent latest-saved-data switch to the Stocks, Watchlist, and Strategy tabs. Each symbol uses its own newest daily SQLite snapshot, so the previous close remains available before the next market session populates live values.
 - Archives refreshed watchlist symbols under the same 12:30/18:00 session rules, including symbols that are not part of the main stock catalogue.
 - Stores persistent symbol notes in SQLite. Notes support importance levels from 1 to 5, editing, deletion, per-symbol history, and an all-symbol overview grouped by symbol.
 - Uses a responsive glass-style interface with Persian typography and right-to-left controls.
+
+### All Stocks
+
+- Reuses the Stocks tab's complete column set, sorting, filters, industry grouping, column selector, dollar view, notes, history charts, TSETMC links, and watchlist actions.
+- Discovers ordinary TSE/IFB equity instruments from TSETMC while excluding funds, derivatives, debt securities, and symbols ending in digits.
+- Finalizes the equity universe once per Tehran day, using the first eligible request at or after 12:30.
+- Keeps the previous finalized rows visible until the new phase has been fetched completely and published atomically.
+- Stores an independent daily row for every resolved symbol in `all_stock_daily_snapshots`; stale previous-market-day responses remain visible as the latest row but are not archived under a new date.
+- Provides a manual online-refresh button that updates the displayed SQLite rows atomically without creating extra daily archive records or changing the once-per-day close rules.
 
 ### Markets
 
@@ -73,7 +86,7 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 - Stores one updatable SQLite snapshot per Tehran day containing the latest free-dollar quote, share-only market trading value, all overview money flows, and every non-gold/non-silver industry money flow.
 - Limits line charts to the regular 09:00–12:30 Tehran stock-market session.
 - Supports on-demand refresh while preserving the previous in-memory dataset if a live refresh fails.
-- Automatically refreshes the Stocks, Watchlist, Options, and Markets datasets every two minutes in the background, regardless of the active tab.
+- Automatically checks the Stocks, All Stocks, Watchlist, Strategy, Options, and Markets datasets every two minutes in the background, regardless of the active tab. All Stocks checks are database-only after that day's eligible close phase has been finalized.
 
 ## Data endpoints
 
@@ -83,6 +96,8 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 | `/option-bases` | Underlying-symbol discovery and option-root mapping |
 | `/stocks` | SQLite-backed online stock catalogue and trading indicators; use `use_saved_data=1` for each symbol's latest daily snapshot |
 | `/stocks/history` | Latest archived daily stock rows; accepts optional `date=YYYY-MM-DD` and `symbol=...` filters |
+| `/all-stocks` | Complete equity catalogue from SQLite; automatically starts only an eligible, not-yet-finalized daily close phase |
+| `/all-stocks/history` | Complete-market daily archive; accepts optional `date=YYYY-MM-DD` and `symbol=...` filters |
 | `/stock-watchlist` | Persistent watchlist collection: `GET` reads rows, `POST` adds a symbol, `GET ?refresh=1` refreshes live data, and `GET ?use_saved_data=1` reads latest snapshots |
 | `/stock-watchlist/<symbol>` | Removes a watchlist symbol with `DELETE` |
 | `/stock-notes` | Reads all notes or one symbol's notes with `GET`; creates a persistent note with `POST` |
@@ -98,8 +113,10 @@ Local snapshots are stored in:
 - `data/trade_value_snapshot.json`
 - `data/order_book_snapshot.json`
 
-The latest stock catalogue, the daily `stock_daily_snapshots` archive, and the
-daily `market_daily_snapshots` archive are stored in `data/stocks.db`. Each
+The latest configured and complete-market catalogues, the daily
+`stock_daily_snapshots` and `all_stock_daily_snapshots` archives, adjusted
+`stock_price_history`, `stock_strategy_history`, and the daily
+`market_daily_snapshots` archive are stored in `data/stocks.db`. Each
 archived stock row includes Gregorian and Jalali trade dates, the capture time,
 session type, and the complete stock-row payload. Market snapshots keep the
 latest value received during each Tehran calendar day.

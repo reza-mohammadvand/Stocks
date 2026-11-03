@@ -318,12 +318,16 @@
 }
 
 .dashboard-shell .expectations-toolbar {
+    grid-template-areas:
+        "search saved days value put"
+        "actions actions actions actions actions";
     grid-template-columns:
-        minmax(200px, 1.35fr)
-        minmax(200px, 1.1fr)
-        minmax(235px, auto)
-        minmax(190px, auto)
-        minmax(360px, auto);
+        minmax(170px, 1.25fr)
+        minmax(175px, 1.05fr)
+        minmax(260px, 1.4fr)
+        minmax(225px, 1.1fr)
+        minmax(250px, 1.2fr);
+    grid-template-rows: repeat(2, 52px);
     align-items: center;
     gap: 10px;
     min-height: 82px;
@@ -349,6 +353,7 @@
 }
 
 .dashboard-shell .expectations-search-box {
+    grid-area: search;
     display: grid;
     grid-template-columns: 25px minmax(0, 1fr);
     align-items: center;
@@ -420,6 +425,7 @@
 }
 
 .dashboard-shell .expectations-saved-toggle {
+    grid-area: saved;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -500,6 +506,24 @@
     align-items: center;
     gap: 7px;
     height: 52px;
+}
+
+.dashboard-shell .expectations-days-filter {
+    grid-area: days;
+}
+
+.dashboard-shell .expectations-value-filter {
+    grid-area: value;
+}
+
+.dashboard-shell .expectations-put-filter {
+    grid-area: put;
+}
+
+.dashboard-shell .expectations-days-filter > button,
+.dashboard-shell .expectations-market-share-filter > button {
+    flex: 1 1 auto;
+    white-space: nowrap;
 }
 
 .dashboard-shell .field-with-label {
@@ -621,6 +645,7 @@
 }
 
 .dashboard-shell .expectations-header-actions {
+    grid-area: actions;
     position: static;
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2137,6 +2162,42 @@
     direction: rtl;
 }
 
+.dashboard-shell .strategy-source-selector {
+    display: inline-grid;
+    grid-template-columns: repeat(2, minmax(92px, auto));
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid rgba(36, 174, 229, 0.38);
+    border-radius: 11px;
+    background: rgba(0, 16, 31, 0.62);
+}
+
+.dashboard-shell .strategy-toolbar .strategy-source-button {
+    width: auto;
+    min-width: 92px;
+    min-height: 32px;
+    padding: 6px 12px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: #88aabd;
+    background: transparent;
+    box-shadow: none;
+    font-size: 10px;
+}
+
+.dashboard-shell .strategy-toolbar .strategy-source-button:hover {
+    color: #d9f6ff;
+    border-color: rgba(49, 190, 241, 0.3);
+    background: rgba(15, 104, 151, 0.16);
+}
+
+.dashboard-shell .strategy-toolbar .strategy-source-button.is-active {
+    color: #f1fbff;
+    border-color: rgba(61, 201, 249, 0.68);
+    background: linear-gradient(135deg, rgba(17, 137, 190, 0.62), rgba(5, 72, 119, 0.7));
+    box-shadow: inset 0 1px 0 rgba(206, 248, 255, 0.14), 0 4px 14px rgba(0, 106, 164, 0.2);
+}
+
 .dashboard-shell .stock-notes-modal-card {
     width: min(900px, 96vw);
     overflow: hidden;
@@ -2363,6 +2424,10 @@
     grid-template-columns: 180px 145px 145px repeat(3, 105px);
 }
 
+.dashboard-shell .strategy-rule.strategy-rule-industry-growth {
+    grid-template-columns: 180px 145px;
+}
+
 .dashboard-shell .strategy-rule-toggle {
     align-self: end;
     justify-content: flex-start;
@@ -2479,7 +2544,13 @@
 }
 
 .dashboard-shell .strategy-table th {
-    cursor: default;
+    cursor: pointer;
+}
+
+.dashboard-shell .strategy-table th[aria-sort="ascending"],
+.dashboard-shell .strategy-table th[aria-sort="descending"] {
+    color: #dff9ff;
+    background: rgba(3, 48, 76, 0.98);
 }
 
 .dashboard-shell .strategy-comparison-stack {
@@ -2525,7 +2596,13 @@
     }
 
     .dashboard-shell .expectations-toolbar {
+        grid-template-areas:
+            "search saved"
+            "days days"
+            "value put"
+            "actions actions";
         grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-rows: repeat(4, 52px);
     }
 
     .dashboard-shell .expectations-header-actions {
@@ -2667,6 +2744,14 @@
         width: 100%;
     }
 
+    .dashboard-shell .strategy-source-selector {
+        width: 100%;
+    }
+
+    .dashboard-shell .strategy-toolbar .strategy-source-button {
+        width: 100%;
+    }
+
     .dashboard-shell .stock-note-form {
         grid-template-columns: 1fr;
     }
@@ -2689,6 +2774,10 @@
     }
 
     .dashboard-shell .strategy-rule {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-shell .strategy-rule.strategy-rule-industry-growth {
         grid-template-columns: 1fr;
     }
 
@@ -2767,7 +2856,15 @@
     }
 
     .dashboard-shell .expectations-toolbar {
+        grid-template-areas:
+            "search"
+            "saved"
+            "days"
+            "value"
+            "put"
+            "actions";
         grid-template-columns: 1fr;
+        grid-template-rows: none;
         padding: 12px;
     }
 
