@@ -5195,13 +5195,26 @@ function getAllMarketExpectationOptions() {
         ? marketExpectationsData.put_options
         : [];
     const uniqueOptions = new Map();
-    [...calls, ...puts].forEach(option => {
+    calls.forEach(option => {
         if (!option || typeof option !== "object") return;
         const key = String(option.ins_code || option.symbol || "").trim();
         if (!key) return;
-        uniqueOptions.set(key, option);
+        uniqueOptions.set(key, { ...option, option_side: "call" });
+    });
+    puts.forEach(option => {
+        if (!option || typeof option !== "object") return;
+        const key = String(option.ins_code || option.symbol || "").trim();
+        if (!key) return;
+        uniqueOptions.set(key, { ...option, option_side: "put" });
     });
     return [...uniqueOptions.values()];
+}
+
+function toggleOptionFilterSide(event) {
+    const button = event.currentTarget;
+    const isActive = button.getAttribute("aria-pressed") === "true";
+    button.setAttribute("aria-pressed", String(!isActive));
+    button.classList.toggle("is-active", !isActive);
 }
 
 function openOptionFilterModal() {
@@ -5218,15 +5231,20 @@ function applyOptionFilter(event) {
     event?.preventDefault();
     const tradeValueInput = document.getElementById("option-filter-min-trade-value");
     const leverageInput = document.getElementById("option-filter-min-leverage");
+    const callToggle = document.getElementById("option-filter-call-toggle");
+    const putToggle = document.getElementById("option-filter-put-toggle");
     const table = document.querySelector(".option-filter-table");
     const tbody = table?.querySelector("tbody");
     const summary = document.getElementById("option-filter-summary");
-    if (!tradeValueInput || !leverageInput || !table || !tbody || !summary) return;
+    if (!tradeValueInput || !leverageInput || !callToggle || !putToggle
+        || !table || !tbody || !summary) return;
 
     const tradeValueText = tradeValueInput.value.trim();
     const leverageText = leverageInput.value.trim();
     const minimumTradeValueMillion = Number(tradeValueText);
     const minimumLeverage = Number(leverageText);
+    const includeCalls = callToggle.getAttribute("aria-pressed") === "true";
+    const includePuts = putToggle.getAttribute("aria-pressed") === "true";
     tradeValueInput.setCustomValidity("");
     leverageInput.setCustomValidity("");
 
@@ -5242,12 +5260,20 @@ function applyOptionFilter(event) {
         leverageInput.reportValidity();
         return;
     }
+    if (!includeCalls && !includePuts) {
+        summary.textContent = "حداقل یکی از گزینه‌های اختیار خرید یا اختیار فروش را فعال کنید.";
+        callToggle.focus();
+        return;
+    }
 
     const minimumTradeValue = minimumTradeValueMillion * 1_000_000;
     const matches = getAllMarketExpectationOptions().filter(option => {
         const tradeValue = Number(option.trade_value);
         const leverage = Number(option.leverage);
-        return Number.isFinite(tradeValue)
+        const sideMatches = (option.option_side === "call" && includeCalls)
+            || (option.option_side === "put" && includePuts);
+        return sideMatches
+            && Number.isFinite(tradeValue)
             && Number.isFinite(leverage)
             && tradeValue > minimumTradeValue
             && leverage > minimumLeverage;
@@ -5277,9 +5303,12 @@ function applyOptionFilter(event) {
         : `<tr><td colspan="8" class="expectations-no-result">اختیاری مطابق این دو شرط پیدا نشد.</td></tr>`;
 
     const formatter = new Intl.NumberFormat("fa-IR", { maximumFractionDigits: 2 });
+    const optionTypeLabel = includeCalls && includePuts
+        ? "اختیار خرید و فروش"
+        : includeCalls ? "اختیار خرید" : "اختیار فروش";
     summary.textContent = matches.length
-        ? `${formatter.format(matches.length)} اختیار با ارزش معاملات بیشتر از ${formatter.format(minimumTradeValueMillion)} میلیون ریال و اهرم بیشتر از ${formatter.format(minimumLeverage)}`
-        : `نتیجه‌ای برای ارزش بیشتر از ${formatter.format(minimumTradeValueMillion)} میلیون ریال و اهرم بیشتر از ${formatter.format(minimumLeverage)} پیدا نشد.`;
+        ? `${formatter.format(matches.length)} ${optionTypeLabel} با ارزش معاملات بیشتر از ${formatter.format(minimumTradeValueMillion)} میلیون ریال و اهرم بیشتر از ${formatter.format(minimumLeverage)}`
+        : `نتیجه‌ای از ${optionTypeLabel} برای ارزش بیشتر از ${formatter.format(minimumTradeValueMillion)} میلیون ریال و اهرم بیشتر از ${formatter.format(minimumLeverage)} پیدا نشد.`;
     resetExpectationSummarySort(table);
 }
 
@@ -10912,6 +10941,10 @@ document.addEventListener(
         document
             .getElementById("option-filter-form")
             ?.addEventListener("submit", applyOptionFilter);
+
+        document
+            .querySelectorAll(".option-filter-side-toggle")
+            .forEach(button => button.addEventListener("click", toggleOptionFilterSide));
 
         document
             .getElementById("show-put-options")

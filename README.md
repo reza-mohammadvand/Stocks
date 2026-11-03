@@ -24,7 +24,7 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 - Calculates break-even distance, weighted averages, and effective returns.
 - Shows the nearest expiries for every underlying symbol.
 - Ranks options by their share of traded value, including leverage and moneyness status.
-- Filters all call and put contracts by minimum traded value and minimum leverage.
+- Filters contracts by minimum traded value and minimum leverage, with independent call/put toggles that can also be enabled together.
 - Supports symbol search, expiry-day filters, sorting, and calculation details.
 - Keeps the last successful dataset visible during refresh and replaces it only after a new response is ready.
 - Refreshes market-expectation data automatically.

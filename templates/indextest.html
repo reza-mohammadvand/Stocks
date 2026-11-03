@@ -10,7 +10,7 @@
     >
     <title>دیدبان بازار سهام</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='option-filter-v1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='option-filter-v2') }}">
     <link rel="icon" href="{{ url_for('static', filename='logo.png', v='market-logo-v2') }}" type="image/png">
 </head>
 <body class="dashboard-shell">
@@ -1216,6 +1216,25 @@
                         <small>برابر</small>
                     </span>
                 </label>
+                <fieldset class="option-filter-side-field">
+                    <legend>نوع اختیار</legend>
+                    <div class="option-filter-side-buttons">
+                        <button
+                            id="option-filter-call-toggle"
+                            class="option-filter-side-toggle is-active"
+                            type="button"
+                            data-option-side="call"
+                            aria-pressed="true"
+                        >اختیار خرید</button>
+                        <button
+                            id="option-filter-put-toggle"
+                            class="option-filter-side-toggle is-active"
+                            type="button"
+                            data-option-side="put"
+                            aria-pressed="true"
+                        >اختیار فروش</button>
+                    </div>
+                </fieldset>
                 <button id="apply-option-filter" class="button-primary" type="submit">
                     اعمال فیلتر
                 </button>
@@ -1383,6 +1402,6 @@
         </section>
     </div>
 
-    <script src="{{ url_for('static', filename='scripttest.js', v='option-filter-v2') }}"></script>
+    <script src="{{ url_for('static', filename='scripttest.js', v='option-filter-v3') }}"></script>
 </body>
 </html>
