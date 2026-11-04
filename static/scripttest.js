@@ -6145,8 +6145,7 @@ function renderWatchMarketCharts() {
         ? value / priceRangeTotal * 100
         : 0;
 
-    container.innerHTML = [
-        createWatchMarketChartCard(
+    const orderFlowCard = createWatchMarketChartCard(
             "ارزش سفارش‌های خرید و فروش",
             "سهام، حق تقدم و صندوق‌های سهامی • پنج ردیف اول بازار",
             [
@@ -6166,8 +6165,8 @@ function renderWatchMarketCharts() {
                     <span class="positive">نسبت خرید به فروش ${orderBuyToSellPercent === null ? "—" : `${watchMarketNumberFormatter.format(orderBuyToSellPercent)}٪`}</span>
                 `
             }
-        ),
-        createWatchMarketChartCard(
+        );
+    const priceRangeCard = createWatchMarketChartCard(
             "محدوده قیمتی آخرین معاملات",
             "توزیع نمادهای سهام، حق تقدم و صندوق‌های سهامی",
             null,
@@ -6197,8 +6196,8 @@ function renderWatchMarketCharts() {
                     <span class="negative">منفی ${watchMarketNumberFormatter.format(rangeShare(negativeRangeTotal))}٪</span>
                 `
             }
-        ),
-        createWatchMarketChartCard(
+        );
+    const moneyFlowCard = createWatchMarketChartCard(
             "ورود پول به سهام",
             "سهام، حق تقدم و صندوق‌های سهامی؛ مثبت به معنی ورود پول",
             null,
@@ -6214,8 +6213,8 @@ function renderWatchMarketCharts() {
                 moneyFlow.unit
             ),
             formatWatchMarketCompact(latestMoneyFlow, moneyFlow.unit)
-        ),
-        createWatchMarketChartCard(
+        );
+    const breadthCard = createWatchMarketChartCard(
             "نمادهای مثبت و منفی",
             "سهام، حق تقدم و صندوق‌های سهامی",
             [
@@ -6239,8 +6238,8 @@ function renderWatchMarketCharts() {
                 breadth.unit
             ),
             `${formatWatchMarketCompact(lastValue(breadth.positive))} مثبت`
-        ),
-        createWatchMarketChartCard(
+        );
+    const orderSnapshotCard = createWatchMarketChartCard(
             "ارزش لحظه‌ای سفارش‌ها و صف‌ها",
             "نمای فعلی پنج ردیف اول سفارش و صف‌های خرید و فروش",
             null,
@@ -6251,8 +6250,8 @@ function renderWatchMarketCharts() {
                 [red, green, "#f97316", cyan]
             ),
             null
-        ),
-        createWatchMarketChartCard(
+        );
+    const excitementCard = createWatchMarketChartCard(
             "هیجان بازار",
             "شاخص محاسبه‌شده از برتری تعداد نمادهای مثبت یا منفی؛ بازه ‎−۱۰۰ تا ‎+۱۰۰",
             [{ name: "هیجان بازار", color: violet }],
@@ -6270,7 +6269,15 @@ function renderWatchMarketCharts() {
             latestExcitement === null || latestExcitement === undefined
                 ? "—"
                 : `${watchMarketSignedFormatter.format(latestExcitement)}٪`
-        )
+        );
+
+    container.innerHTML = [
+        orderFlowCard,
+        orderSnapshotCard,
+        breadthCard,
+        priceRangeCard,
+        moneyFlowCard,
+        excitementCard
     ].join("");
     empty.hidden = true;
     container.hidden = false;
@@ -10576,7 +10583,7 @@ function renderStockStrategyTable(payload) {
     ];
 
     if (strategyRules?.industry_growth?.enabled) {
-        columns.splice(3, 0,
+        columns.push(
             {
                 key: "industry_growth_percent",
                 label: "رشد نماد",

@@ -743,20 +743,6 @@
                         </label>
                     </article>
 
-                    <article class="strategy-rule strategy-rule-industry-growth" data-strategy-rule="industry_growth">
-                        <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-industry-growth-enabled">
-                            <input id="strategy-industry-growth-enabled" type="checkbox" role="switch">
-                            <span class="stock-toggle-track" aria-hidden="true">
-                                <span class="stock-toggle-thumb"></span>
-                            </span>
-                            <strong>میانگین رشد صنعت</strong>
-                        </label>
-                        <label class="strategy-field">
-                            <span>بازه رشد قیمت پایانی (روز)</span>
-                            <input id="strategy-industry-growth-days" type="number" min="1" max="250" step="1" value="30" inputmode="numeric">
-                        </label>
-                    </article>
-
                     <article class="strategy-rule" data-strategy-rule="trade_to_float_percent">
                         <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-trade-to-float-enabled">
                             <input id="strategy-trade-to-float-enabled" type="checkbox" role="switch">
@@ -846,6 +832,20 @@
                         <label class="strategy-field">
                             <span>درصد کیفیت ورود پول</span>
                             <input id="strategy-money-flow-quality-fixed" type="number" step="0.01" value="0" inputmode="decimal">
+                        </label>
+                    </article>
+
+                    <article class="strategy-rule strategy-rule-industry-growth" data-strategy-rule="industry_growth">
+                        <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-industry-growth-enabled">
+                            <input id="strategy-industry-growth-enabled" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <strong>میانگین رشد صنعت</strong>
+                        </label>
+                        <label class="strategy-field">
+                            <span>بازه رشد قیمت پایانی (روز)</span>
+                            <input id="strategy-industry-growth-days" type="number" min="1" max="250" step="1" value="30" inputmode="numeric">
                         </label>
                     </article>
 
@@ -1402,6 +1402,6 @@
         </section>
     </div>
 
-    <script src="{{ url_for('static', filename='scripttest.js', v='option-filter-v3') }}"></script>
+    <script src="{{ url_for('static', filename='scripttest.js', v='market-layout-v1') }}"></script>
 </body>
 </html>
