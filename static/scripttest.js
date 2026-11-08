@@ -197,6 +197,7 @@ let stockNotesCurrentItems = [];
 let stockNotesLoading = false;
 
 const DASHBOARD_AUTO_REFRESH_INTERVAL = 2 * 60_000;
+const OPTION_AUTO_REFRESH_INTERVAL = 30_000;
 const STOCK_REFRESH_POLL_INTERVAL = 1_500;
 const STOCK_AUTO_REFRESH_INTERVAL = DASHBOARD_AUTO_REFRESH_INTERVAL;
 
@@ -4996,7 +4997,7 @@ function startMarketExpectationsAutoRefresh() {
 
     marketExpectationsRefreshTimer = setInterval(() => {
         loadMarketExpectations(true);
-    }, DASHBOARD_AUTO_REFRESH_INTERVAL);
+    }, OPTION_AUTO_REFRESH_INTERVAL);
 }
 
 function openNearestExpirySummary() {
@@ -5224,12 +5225,13 @@ function openOptionFilterModal() {
     modal.hidden = false;
     document.body.classList.add("expectations-modal-open");
     window.setTimeout(() => {
-        document.getElementById("option-filter-min-trade-value")?.focus();
+        document.getElementById("option-filter-symbol")?.focus();
     }, 0);
 }
 
 function applyOptionFilter(event) {
     event?.preventDefault();
+    const symbolInput = document.getElementById("option-filter-symbol");
     const tradeValueInput = document.getElementById("option-filter-min-trade-value");
     const leverageInput = document.getElementById("option-filter-min-leverage");
     const callToggle = document.getElementById("option-filter-call-toggle");
@@ -5237,9 +5239,11 @@ function applyOptionFilter(event) {
     const table = document.querySelector(".option-filter-table");
     const tbody = table?.querySelector("tbody");
     const summary = document.getElementById("option-filter-summary");
-    if (!tradeValueInput || !leverageInput || !callToggle || !putToggle
+    if (!symbolInput || !tradeValueInput || !leverageInput || !callToggle || !putToggle
         || !table || !tbody || !summary) return;
 
+    const symbolQueryText = symbolInput.value.trim();
+    const symbolQuery = normalizeSymbol(symbolQueryText).toLocaleLowerCase("fa");
     const tradeValueText = tradeValueInput.value.trim();
     const leverageText = leverageInput.value.trim();
     const minimumTradeValueMillion = Number(tradeValueText);
@@ -5271,9 +5275,13 @@ function applyOptionFilter(event) {
     const matches = getAllMarketExpectationOptions().filter(option => {
         const tradeValue = Number(option.trade_value);
         const leverage = Number(option.leverage);
+        const symbolMatches = !symbolQuery || normalizeSymbol(option.symbol)
+            .toLocaleLowerCase("fa")
+            .includes(symbolQuery);
         const sideMatches = (option.option_side === "call" && includeCalls)
             || (option.option_side === "put" && includePuts);
-        return sideMatches
+        return symbolMatches
+            && sideMatches
             && Number.isFinite(tradeValue)
             && Number.isFinite(leverage)
             && tradeValue > minimumTradeValue
@@ -5307,9 +5315,12 @@ function applyOptionFilter(event) {
     const optionTypeLabel = includeCalls && includePuts
         ? "اختیار خرید و فروش"
         : includeCalls ? "اختیار خرید" : "اختیار فروش";
+    const symbolFilterLabel = symbolQueryText
+        ? ` و نماد شامل «${symbolQueryText}»`
+        : "";
     summary.textContent = matches.length
-        ? `${formatter.format(matches.length)} ${optionTypeLabel} با ارزش معاملات بیشتر از ${formatter.format(minimumTradeValueMillion)} میلیون ریال و اهرم بیشتر از ${formatter.format(minimumLeverage)}`
-        : `نتیجه‌ای از ${optionTypeLabel} برای ارزش بیشتر از ${formatter.format(minimumTradeValueMillion)} میلیون ریال و اهرم بیشتر از ${formatter.format(minimumLeverage)} پیدا نشد.`;
+        ? `${formatter.format(matches.length)} ${optionTypeLabel} با ارزش معاملات بیشتر از ${formatter.format(minimumTradeValueMillion)} میلیون ریال، اهرم بیشتر از ${formatter.format(minimumLeverage)}${symbolFilterLabel}`
+        : `نتیجه‌ای از ${optionTypeLabel} برای ارزش بیشتر از ${formatter.format(minimumTradeValueMillion)} میلیون ریال، اهرم بیشتر از ${formatter.format(minimumLeverage)}${symbolFilterLabel} پیدا نشد.`;
     resetExpectationSummarySort(table);
 }
 
@@ -10147,6 +10158,14 @@ const stockStrategyControlMap = {
         fixed: "strategy-money-flow-quality-fixed",
         allowNegativeFixed: true
     },
+    symbol_industry_compare: {
+        enabled: "strategy-symbol-industry-enabled",
+        symbol: "strategy-symbol-industry-symbol",
+        days: "strategy-symbol-industry-days",
+        includeIndustry: "strategy-symbol-industry-include-peers",
+        daysMinimum: 1,
+        daysDefault: 10
+    },
     rsi: {
         enabled: "strategy-rsi-enabled",
         operator: "strategy-rsi-operator",
@@ -10264,6 +10283,12 @@ function readStockStrategyRules() {
             fast_period: fastPeriod,
             slow_period: slowPeriod,
             signal_period: signalPeriod,
+            symbol: controls.symbol
+                ? String(document.getElementById(controls.symbol)?.value || "").trim()
+                : "",
+            include_industry: controls.includeIndustry
+                ? Boolean(document.getElementById(controls.includeIndustry)?.checked)
+                : false,
             compare_to: controls.compareTo
                 ? (document.getElementById(controls.compareTo)?.value || "signal")
                 : "signal",
@@ -10384,6 +10409,12 @@ function restoreStockStrategyRules() {
             const mode = controls.mode
                 ? document.getElementById(controls.mode)
                 : null;
+            const symbol = controls.symbol
+                ? document.getElementById(controls.symbol)
+                : null;
+            const includeIndustry = controls.includeIndustry
+                ? document.getElementById(controls.includeIndustry)
+                : null;
             if (enabled) enabled.checked = Boolean(rule.enabled);
             if (operator && ["gte", "lte", "eq", "between"].includes(rule.operator)) {
                 operator.value = rule.operator;
@@ -10476,6 +10507,12 @@ function restoreStockStrategyRules() {
             if (mode && ["price", "crossover"].includes(rule.mode)) {
                 mode.value = rule.mode;
             }
+            if (symbol) {
+                symbol.value = String(rule.symbol || "");
+            }
+            if (includeIndustry) {
+                includeIndustry.checked = rule.include_industry !== false;
+            }
         });
     } catch (error) {
         console.warn("Could not restore stock strategy rules.", error);
@@ -10552,6 +10589,9 @@ function initializeStockStrategyControls() {
 async function loadStrategyBuyQueueFilter(event) {
     event?.preventDefault();
     const input = document.getElementById("strategy-buy-queue-count");
+    const previousDayToggle = document.getElementById(
+        "strategy-buy-queue-use-previous-day"
+    );
     const button = document.getElementById("strategy-buy-queue-button");
     const modal = document.getElementById("strategy-buy-queue-modal");
     const table = modal?.querySelector(".strategy-buy-queue-table");
@@ -10580,7 +10620,8 @@ async function loadStrategyBuyQueueFilter(event) {
     try {
         const params = new URLSearchParams({
             count: String(requestedCount),
-            source: stockStrategySource
+            source: stockStrategySource,
+            use_previous_day: previousDayToggle?.checked ? "1" : "0"
         });
         const response = await fetch(`/stock-buy-queues?${params}`, {
             cache: "no-store"
@@ -10604,10 +10645,23 @@ async function loadStrategyBuyQueueFilter(event) {
 
         const formatter = new Intl.NumberFormat("fa-IR");
         const sourceLabel = payload.source === "all" ? "تمام سهام‌ها" : "سهام برتر";
+        const dataModeLabel = payload.data_mode === "previous_day"
+            ? "دیتای روز قبل"
+            : "آخرین دیتاست";
         summary.textContent = rows.length
-            ? `${formatter.format(rows.length)} مورد نخست از ${formatter.format(payload.matched_count || rows.length)} نماد صف خرید در ${sourceLabel}؛ مرتب‌شده بر اساس ارزش معاملات روز قبل`
-            : `در ${sourceLabel} نمادی با صف خرید در آخرین داده پیدا نشد.`;
+            ? `${formatter.format(rows.length)} مورد نخست از ${formatter.format(payload.matched_count || rows.length)} نماد صف خرید در ${sourceLabel} بر اساس ${dataModeLabel}؛ مرتب‌شده بر اساس ارزش صف خرید`
+            : `در ${sourceLabel} نمادی با صف خرید بر اساس ${dataModeLabel} پیدا نشد.`;
         resetExpectationSummarySort(table);
+        const buyQueueValueHeader = table.querySelectorAll("th[data-sort-type]")[1];
+        if (buyQueueValueHeader) {
+            table.dataset.sortColumn = "1";
+            table.dataset.sortDirection = "desc";
+            buyQueueValueHeader.setAttribute("aria-sort", "descending");
+            const indicator = buyQueueValueHeader.querySelector(
+                ".expectations-sort-indicator"
+            );
+            if (indicator) indicator.textContent = "▼";
+        }
     } catch (error) {
         console.error("Buy queue filter error:", error);
         summary.textContent = error.message || "دریافت نمادهای صف خرید ناموفق بود.";
@@ -10647,7 +10701,9 @@ function formatStockStrategyValue(metric, value) {
         "money_flow_quality",
         "industry_growth_percent",
         "industry_average_growth_percent",
-        "below_industry_average_percent"
+        "below_industry_average_percent",
+        "symbol_industry_return_percent",
+        "symbol_industry_average_return_percent"
     ].includes(metric)) {
         return formatStockCell({ key: metric, format: "precisePercent" }, value, false);
     }
@@ -10712,6 +10768,7 @@ function renderStockStrategyTable(payload) {
 
     stockStrategyLastPayload = payload;
     const rows = Array.isArray(payload?.stocks) ? payload.stocks : [];
+    const strategyRules = payload?.rules || {};
     const formatter = new Intl.NumberFormat("fa-IR");
     const savedDataStatus = getStockSavedDataStatus(payload);
     const sourceDate = document.getElementById("strategy-source-date");
@@ -10739,6 +10796,7 @@ function renderStockStrategyTable(payload) {
             };
             Object.assign(metricNames, {
                 industry_growth: "رشد نسبت به صنعت",
+                symbol_industry_compare: "مقایسه نماد با صنعت",
                 rsi: "RSI",
                 ema: "EMA",
                 macd: "MACD"
@@ -10781,6 +10839,17 @@ function renderStockStrategyTable(payload) {
                     `${formatter.format(payload.missing_snapshot_count)} نماد بدون آرشیو روزانه از آخرین دیتای فعلی استفاده کرد`
                 );
             }
+            if (
+                strategyRules?.symbol_industry_compare?.enabled
+                && payload?.symbol_industry_target_found === false
+            ) {
+                const targetSymbol = payload?.symbol_industry_target_symbol;
+                warnings.push(
+                    targetSymbol
+                        ? `نماد «${targetSymbol}» یا سابقه معتبر آن پیدا نشد`
+                        : "نام نماد برای مقایسه با صنعت وارد نشده است"
+                );
+            }
 
             if (warnings.length) {
                 status.textContent = `هشدار: ${warnings.join("؛ ")}`;
@@ -10792,7 +10861,6 @@ function renderStockStrategyTable(payload) {
         }
     }
 
-    const strategyRules = payload?.rules || {};
     const rsiPeriod = Number(strategyRules?.rsi?.period) || 14;
     const emaPeriod = Number(strategyRules?.ema?.period) || 20;
     const emaLongPeriod = Number(strategyRules?.ema?.long_period) || 50;
@@ -10839,6 +10907,26 @@ function renderStockStrategyTable(payload) {
                 unit: "درصد",
                 metric: "below_industry_average_percent",
                 width: 175
+            }
+        );
+    }
+
+    if (strategyRules?.symbol_industry_compare?.enabled) {
+        columns.push(
+            {
+                key: "symbol_industry_return_percent",
+                label: "بازدهی نماد",
+                unit: "درصد",
+                metric: "symbol_industry_return_percent",
+                historyKey: "symbol_industry_days_used",
+                width: 140
+            },
+            {
+                key: "symbol_industry_average_return_percent",
+                label: "میانگین بازدهی صنعت",
+                unit: "درصد",
+                metric: "symbol_industry_average_return_percent",
+                width: 165
             }
         );
     }

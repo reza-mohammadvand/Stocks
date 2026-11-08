@@ -3344,6 +3344,28 @@ def normalize_stock_strategy_rules(payload):
         "consecutive_days": 0,
     }
 
+    symbol_industry_source = (
+        source.get("symbol_industry_compare")
+        if isinstance(source.get("symbol_industry_compare"), dict)
+        else {}
+    )
+    normalized["symbol_industry_compare"] = {
+        "enabled": bool(symbol_industry_source.get("enabled")),
+        "symbol": normalize_symbol(symbol_industry_source.get("symbol")),
+        "days": normalize_stock_strategy_integer(
+            symbol_industry_source.get("days"),
+            10,
+            minimum=1,
+        ),
+        "include_industry": symbol_industry_source.get(
+            "include_industry",
+            True,
+        ) is not False,
+        "operator": "compare_with_industry",
+        "fixed": 0,
+        "consecutive_days": 0,
+    }
+
     return normalized
 
 
@@ -3795,6 +3817,32 @@ def evaluate_stock_strategy(rows, history, rules):
         )
         history_coverage["industry_growth"] = industry_growth_coverage
 
+    symbol_industry_rule = normalized_rules["symbol_industry_compare"]
+    symbol_industry_active = stock_strategy_rule_is_active(
+        "symbol_industry_compare",
+        symbol_industry_rule,
+    )
+    symbol_industry_comparisons = {}
+    symbol_industry_target = None
+    if symbol_industry_active:
+        (
+            symbol_industry_comparisons,
+            symbol_industry_coverage,
+            symbol_industry_price_series,
+        ) = build_stock_industry_growth_comparisons(
+            rows,
+            history,
+            symbol_industry_rule["days"],
+        )
+        history_coverage[
+            "symbol_industry_compare"
+        ] = symbol_industry_coverage
+        symbol_industry_target = symbol_industry_comparisons.get(
+            symbol_industry_rule["symbol"]
+        )
+        if not closing_price_series:
+            closing_price_series = symbol_industry_price_series
+
     for row in rows:
         if not isinstance(row, dict) or not row.get("symbol"):
             continue
@@ -3871,6 +3919,10 @@ def evaluate_stock_strategy(rows, history, rules):
             "below_industry_average_percent": None,
             "industry_growth_days_used": 0,
             "industry_growth_member_count": 0,
+            "symbol_industry_return_percent": None,
+            "symbol_industry_average_return_percent": None,
+            "symbol_industry_days_used": 0,
+            "symbol_industry_member_count": 0,
         })
 
         if industry_growth_active:
@@ -3896,6 +3948,51 @@ def evaluate_stock_strategy(rows, history, rules):
                     row_has_partial_history = True
                 if industry_growth["below_industry_average_percent"] <= 0:
                     passed = False
+
+        if symbol_industry_active:
+            comparison = symbol_industry_comparisons.get(normalized_symbol)
+            selected_industry_key = (
+                symbol_industry_target.get("industry_key")
+                if symbol_industry_target
+                else None
+            )
+            is_selected_symbol = (
+                normalized_symbol == symbol_industry_rule["symbol"]
+            )
+            is_selected_industry = bool(
+                symbol_industry_rule["include_industry"]
+                and comparison
+                and selected_industry_key
+                and comparison.get("industry_key") == selected_industry_key
+            )
+            if (
+                symbol_industry_target is None
+                or not (is_selected_symbol or is_selected_industry)
+            ):
+                passed = False
+            elif comparison is None:
+                passed = False
+                row_has_missing_history = True
+            else:
+                result.update({
+                    "symbol_industry_return_percent": comparison[
+                        "industry_growth_percent"
+                    ],
+                    "symbol_industry_average_return_percent": comparison[
+                        "industry_average_growth_percent"
+                    ],
+                    "symbol_industry_days_used": comparison[
+                        "industry_growth_days_used"
+                    ],
+                    "symbol_industry_member_count": comparison[
+                        "industry_growth_member_count"
+                    ],
+                })
+                if (
+                    comparison["industry_growth_days_used"]
+                    < symbol_industry_rule["days"]
+                ):
+                    row_has_partial_history = True
 
         for metric in STOCK_STRATEGY_METRICS:
             rule = normalized_rules[metric]
@@ -4086,6 +4183,21 @@ def evaluate_stock_strategy(rows, history, rules):
         "excluded_zero_or_missing_count": excluded_zero_or_missing_count,
         "history_coverage": history_coverage,
         "technical_coverage": technical_coverage,
+        "symbol_industry_target_found": (
+            symbol_industry_target is not None
+            if symbol_industry_active
+            else None
+        ),
+        "symbol_industry_target_symbol": (
+            symbol_industry_target.get("symbol")
+            if symbol_industry_target
+            else symbol_industry_rule.get("symbol") or None
+        ),
+        "symbol_industry_target_industry": (
+            symbol_industry_target.get("industry")
+            if symbol_industry_target
+            else None
+        ),
         "rules": normalized_rules,
         "stocks": results,
     }
@@ -4119,39 +4231,80 @@ def get_stock_strategy(payload, use_saved_data=False, source="featured"):
     return result
 
 
-def build_stock_buy_queue_summary(rows, history, limit=10):
+def build_stock_buy_queue_summary(
+    rows,
+    history,
+    limit=10,
+    use_previous_day=False,
+    reference_date=None,
+):
     requested_limit = normalize_stock_strategy_integer(
         limit,
         10,
         minimum=1,
         maximum=100,
     )
+    reference_date = str(
+        reference_date or datetime.now(IRAN_TIMEZONE).date().isoformat()
+    )
     results = []
+    target_dates = set()
     for row in rows:
-        if (
-            not isinstance(row, dict)
-            or not row.get("symbol")
-            or stock_strategy_buy_queue_state(row) is not True
-        ):
-            continue
-
-        buy_queue_value = stock_number(row.get("order_book_buy_value"))
-        if buy_queue_value is None or buy_queue_value <= 0:
+        if not isinstance(row, dict) or not row.get("symbol"):
             continue
 
         normalized_symbol = normalize_symbol(row["symbol"])
-        current_market_date = str(row.get("market_date") or "")
-        historical_rows = []
-        seen_dates = {current_market_date} if current_market_date else set()
-        for snapshot in history.get(normalized_symbol, []):
-            if not isinstance(snapshot, dict):
+        dated_candidates = []
+        seen_candidate_dates = set()
+        symbol_history = history.get(normalized_symbol, [])
+        candidate_rows = (
+            [*symbol_history, row]
+            if use_previous_day
+            else [row, *symbol_history]
+        )
+        for candidate in candidate_rows:
+            if not isinstance(candidate, dict):
                 continue
-            trade_date = str(snapshot.get("trade_date") or "")
-            if trade_date and trade_date in seen_dates:
+            candidate_date = str(
+                candidate.get("trade_date")
+                or candidate.get("market_date")
+                or ""
+            )
+            if not candidate_date or candidate_date in seen_candidate_dates:
                 continue
-            if trade_date:
-                seen_dates.add(trade_date)
-            historical_rows.append(snapshot)
+            seen_candidate_dates.add(candidate_date)
+            dated_candidates.append((candidate_date, candidate))
+        dated_candidates.sort(key=lambda item: item[0], reverse=True)
+
+        target_date = str(row.get("market_date") or row.get("trade_date") or "")
+        target_row = row
+        if use_previous_day:
+            previous_candidate = next(
+                (
+                    candidate
+                    for candidate in dated_candidates
+                    if candidate[0] < reference_date
+                ),
+                None,
+            )
+            if previous_candidate is None:
+                continue
+            target_date, target_row = previous_candidate
+
+        if stock_strategy_buy_queue_state(target_row) is not True:
+            continue
+
+        buy_queue_value = stock_number(
+            target_row.get("order_book_buy_value")
+        )
+        if buy_queue_value is None or buy_queue_value <= 0:
+            continue
+
+        historical_rows = [
+            candidate
+            for candidate_date, candidate in dated_candidates
+            if candidate_date < target_date
+        ]
 
         previous_snapshot = historical_rows[0] if historical_rows else None
         previous_trade_value = stock_number(
@@ -4174,7 +4327,7 @@ def build_stock_buy_queue_summary(rows, history, limit=10):
         results.append({
             "symbol": row.get("symbol"),
             "ins_code": row.get("ins_code"),
-            "market_date": current_market_date or None,
+            "market_date": target_date or None,
             "previous_trade_date": (
                 previous_snapshot.get("trade_date")
                 if previous_snapshot
@@ -4187,12 +4340,14 @@ def build_stock_buy_queue_summary(rows, history, limit=10):
                 consecutive_previous_queue_days
             ),
         })
+        if target_date:
+            target_dates.add(target_date)
 
     results.sort(
         key=lambda item: (
+            item["buy_queue_value"],
             item["previous_trade_value"] is not None,
             item["previous_trade_value"] or 0,
-            item["buy_queue_value"],
         ),
         reverse=True,
     )
@@ -4201,10 +4356,16 @@ def build_stock_buy_queue_summary(rows, history, limit=10):
         "matched_count": len(results),
         "count": min(len(results), requested_limit),
         "stocks": results[:requested_limit],
+        "data_mode": "previous_day" if use_previous_day else "latest",
+        "data_dates": sorted(target_dates, reverse=True),
     }
 
 
-def get_stock_buy_queue_summary(limit=10, source="all"):
+def get_stock_buy_queue_summary(
+    limit=10,
+    source="all",
+    use_previous_day=False,
+):
     source = "featured" if source == "featured" else "all"
     rows, metadata = (
         read_stock_database()
@@ -4218,6 +4379,7 @@ def get_stock_buy_queue_summary(limit=10, source="all"):
             symbols=[row.get("symbol") for row in rows if row.get("symbol")],
         ),
         limit=limit,
+        use_previous_day=use_previous_day,
     )
     result.update({
         "source": source,
@@ -8929,6 +9091,9 @@ def stock_buy_queue_filter():
                 get_stock_buy_queue_summary(
                     limit=request.args.get("count", default=10, type=int),
                     source=request.args.get("source") or "all",
+                    use_previous_day=request.args.get(
+                        "use_previous_day", default="0", type=str
+                    ).strip().lower() in {"1", "true", "yes", "on"},
                 ),
                 ensure_ascii=False,
             ),

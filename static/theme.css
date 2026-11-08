@@ -905,7 +905,7 @@
 
 .dashboard-shell .option-filter-form {
     display: grid;
-    grid-template-columns: minmax(210px, 275px) minmax(180px, 235px) minmax(190px, 230px) 130px;
+    grid-template-columns: minmax(150px, 190px) minmax(200px, 250px) minmax(150px, 190px) minmax(190px, 230px) 130px;
     align-items: end;
     justify-content: start;
     gap: 12px;
@@ -949,6 +949,10 @@
     border-color: rgba(48, 220, 255, 0.78);
     outline: 0;
     box-shadow: 0 0 0 3px rgba(27, 215, 255, 0.08);
+}
+
+.dashboard-shell .option-filter-symbol-wrap input {
+    padding-left: 11px;
 }
 
 .dashboard-shell .option-filter-input-wrap small {
@@ -2611,6 +2615,25 @@
     grid-template-columns: 180px 145px;
 }
 
+.dashboard-shell .strategy-rule.strategy-rule-symbol-industry {
+    grid-template-columns: 180px 145px 105px 180px;
+}
+
+.dashboard-shell .strategy-symbol-field input {
+    width: 145px;
+}
+
+.dashboard-shell .strategy-peer-toggle {
+    align-self: end;
+    width: 180px;
+    height: 31px;
+    min-height: 31px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 4px 7px;
+    font-size: 10px;
+}
+
 .dashboard-shell .strategy-rule-toggle {
     align-self: end;
     justify-content: flex-start;
@@ -2755,6 +2778,10 @@
     }
 
     .dashboard-shell .strategy-rule.strategy-rule-wide {
+        grid-template-columns: 180px 145px;
+    }
+
+    .dashboard-shell .strategy-rule.strategy-rule-symbol-industry {
         grid-template-columns: 180px 145px;
     }
 }
@@ -2961,6 +2988,10 @@
     }
 
     .dashboard-shell .strategy-rule.strategy-rule-industry-growth {
+        grid-template-columns: 1fr;
+    }
+
+    .dashboard-shell .strategy-rule.strategy-rule-symbol-industry {
         grid-template-columns: 1fr;
     }
 

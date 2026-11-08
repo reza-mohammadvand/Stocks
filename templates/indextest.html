@@ -10,7 +10,7 @@
     >
     <title>دیدبان بازار سهام</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='price-power-status-v1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='symbol-industry-compare-v1') }}">
     <link rel="icon" href="{{ url_for('static', filename='logo.png', v='market-logo-v2') }}" type="image/png">
 </head>
 <body class="dashboard-shell">
@@ -714,6 +714,17 @@
                             </span>
                             <span>آخرین دیتای ذخیره‌شده</span>
                         </label>
+                        <label
+                            class="stock-industry-toggle stock-saved-data-toggle"
+                            for="strategy-buy-queue-use-previous-day"
+                            title="در حالت خاموش، آخرین دیتاست فعلی بررسی می‌شود"
+                        >
+                            <input id="strategy-buy-queue-use-previous-day" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <span>صف خرید روز قبل</span>
+                        </label>
                         <form id="strategy-buy-queue-form" class="strategy-buy-queue-filter" autocomplete="off">
                             <label for="strategy-buy-queue-count" aria-label="تعداد نمادهای صف خرید">
                                 <input
@@ -851,6 +862,31 @@
                         <label class="strategy-field">
                             <span>درصد کیفیت ورود پول</span>
                             <input id="strategy-money-flow-quality-fixed" type="number" step="0.01" value="0" inputmode="decimal">
+                        </label>
+                    </article>
+
+                    <article class="strategy-rule strategy-rule-symbol-industry" data-strategy-rule="symbol_industry_compare">
+                        <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-symbol-industry-enabled">
+                            <input id="strategy-symbol-industry-enabled" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <strong>مقایسه نماد با صنعت</strong>
+                        </label>
+                        <label class="strategy-field strategy-symbol-field">
+                            <span>نام نماد</span>
+                            <input id="strategy-symbol-industry-symbol" type="search" placeholder="نماد" autocomplete="off">
+                        </label>
+                        <label class="strategy-field">
+                            <span>بازه بازدهی (روز)</span>
+                            <input id="strategy-symbol-industry-days" type="number" min="1" max="250" step="1" value="10" inputmode="numeric">
+                        </label>
+                        <label class="stock-industry-toggle stock-saved-data-toggle strategy-peer-toggle" for="strategy-symbol-industry-include-peers">
+                            <input id="strategy-symbol-industry-include-peers" type="checkbox" role="switch" checked>
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <span>نمایش هم‌صنعتی‌ها</span>
                         </label>
                     </article>
 
@@ -1246,6 +1282,17 @@
                 >×</button>
             </header>
             <form id="option-filter-form" class="option-filter-form">
+                <label class="option-filter-field" for="option-filter-symbol">
+                    <span>نماد</span>
+                    <span class="option-filter-input-wrap option-filter-symbol-wrap">
+                        <input
+                            id="option-filter-symbol"
+                            type="search"
+                            placeholder="نام نماد"
+                            autocomplete="off"
+                        >
+                    </span>
+                </label>
                 <label class="option-filter-field" for="option-filter-min-trade-value">
                     <span>حداقل ارزش معاملات</span>
                     <span class="option-filter-input-wrap">
@@ -1460,6 +1507,6 @@
         </section>
     </div>
 
-    <script src="{{ url_for('static', filename='scripttest.js', v='price-power-status-v5') }}"></script>
+    <script src="{{ url_for('static', filename='scripttest.js', v='symbol-industry-compare-v1') }}"></script>
 </body>
 </html>

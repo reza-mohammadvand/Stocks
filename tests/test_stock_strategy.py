@@ -307,7 +307,7 @@ class StockStrategyTests(unittest.TestCase):
         self.assertEqual(result["active_filter_count"], 0)
         self.assertEqual(result["count"], 1)
 
-    def test_buy_queue_summary_ranks_by_previous_trade_value(self):
+    def test_buy_queue_summary_ranks_by_buy_queue_value(self):
         current_rows = [
             {
                 "symbol": "نماد۱",
@@ -332,7 +332,7 @@ class StockStrategyTests(unittest.TestCase):
             stock_app.normalize_symbol("نماد۱"): [
                 {
                     "trade_date": "2026-10-26",
-                    "trade_value": 2_000,
+                    "trade_value": 4_000,
                     "order_book_buy_value": 400,
                     "order_book_sell_value": 0,
                 },
@@ -384,6 +384,32 @@ class StockStrategyTests(unittest.TestCase):
             item for item in all_results["stocks"] if item["symbol"] == "نماد۱"
         )
         self.assertEqual(first_symbol["consecutive_previous_queue_days"], 2)
+
+        previous_day_result = stock_app.build_stock_buy_queue_summary(
+            current_rows,
+            history,
+            limit=10,
+            use_previous_day=True,
+            reference_date="2026-10-27",
+        )
+        self.assertEqual(previous_day_result["data_mode"], "previous_day")
+        self.assertEqual(previous_day_result["matched_count"], 1)
+        self.assertEqual(
+            previous_day_result["stocks"][0]["symbol"],
+            "نماد۱",
+        )
+        self.assertEqual(
+            previous_day_result["stocks"][0]["market_date"],
+            "2026-10-26",
+        )
+        self.assertEqual(
+            previous_day_result["stocks"][0]["buy_queue_value"],
+            400,
+        )
+        self.assertEqual(
+            previous_day_result["stocks"][0]["previous_trade_value"],
+            1_500,
+        )
 
     def test_technical_indicator_calculations(self):
         values = [100, 101, 102, 103, 104, 105, 106, 107, 108, 110]
@@ -546,6 +572,92 @@ class StockStrategyTests(unittest.TestCase):
         self.assertEqual(coverage["partial_symbol_count"], 4)
         self.assertEqual(coverage["minimum_days_used"], 3)
         self.assertEqual(coverage["maximum_days_used"], 3)
+
+    def test_symbol_industry_comparison_can_include_or_hide_peers(self):
+        current_rows = [
+            {
+                "symbol": "الف۱",
+                "industry": "صنعت الف",
+                "market_date": "2026-10-04",
+                "closing_price": 120,
+            },
+            {
+                "symbol": "الف۲",
+                "industry": "صنعت الف",
+                "market_date": "2026-10-04",
+                "closing_price": 100,
+            },
+            {
+                "symbol": "ب۱",
+                "industry": "صنعت ب",
+                "market_date": "2026-10-04",
+                "closing_price": 90,
+            },
+        ]
+        history = {
+            stock_app.normalize_symbol(row["symbol"]): [
+                {
+                    "trade_date": f"2026-10-0{day}",
+                    "closing_price": 100,
+                }
+                for day in range(1, 4)
+            ]
+            for row in current_rows
+        }
+        rules = {
+            "symbol_industry_compare": {
+                "enabled": True,
+                "symbol": "الف۱",
+                "days": 3,
+                "include_industry": True,
+            },
+        }
+
+        result = stock_app.evaluate_stock_strategy(
+            current_rows,
+            history,
+            rules,
+        )
+
+        self.assertEqual(result["active_filter_count"], 1)
+        self.assertTrue(result["symbol_industry_target_found"])
+        self.assertEqual(result["symbol_industry_target_industry"], "صنعت الف")
+        self.assertEqual(
+            {stock["symbol"] for stock in result["stocks"]},
+            {"الف۱", "الف۲"},
+        )
+        stocks = {stock["symbol"]: stock for stock in result["stocks"]}
+        self.assertAlmostEqual(
+            stocks["الف۱"]["symbol_industry_return_percent"],
+            20,
+        )
+        self.assertAlmostEqual(
+            stocks["الف۱"]["symbol_industry_average_return_percent"],
+            10,
+        )
+        self.assertAlmostEqual(
+            stocks["الف۲"]["symbol_industry_return_percent"],
+            0,
+        )
+        self.assertEqual(stocks["الف۱"]["symbol_industry_days_used"], 3)
+
+        rules["symbol_industry_compare"]["include_industry"] = False
+        selected_only = stock_app.evaluate_stock_strategy(
+            current_rows,
+            history,
+            rules,
+        )
+        self.assertEqual(selected_only["count"], 1)
+        self.assertEqual(selected_only["stocks"][0]["symbol"], "الف۱")
+
+        rules["symbol_industry_compare"]["symbol"] = "ناموجود"
+        missing = stock_app.evaluate_stock_strategy(
+            current_rows,
+            history,
+            rules,
+        )
+        self.assertEqual(missing["count"], 0)
+        self.assertFalse(missing["symbol_industry_target_found"])
 
     def test_technical_filter_reports_insufficient_closing_history(self):
         result = stock_app.evaluate_stock_strategy(
