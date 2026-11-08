@@ -2906,11 +2906,14 @@ def read_stock_metric_history(symbol, metric, limit=365):
         value = stock_number(data.get(metric))
         if value is None:
             continue
-        points.append({
+        point = {
             "date": database_row["trade_date"],
             "date_jalali": database_row["trade_date_jalali"],
             "value": value,
-        })
+        }
+        if metric == "price_power":
+            point["status"] = stock_price_power_status(data)
+        points.append(point)
         seen_dates.add(database_row["trade_date"])
 
     return points[-safe_limit:]
@@ -3340,6 +3343,7 @@ def normalize_stock_strategy_rules(payload):
         "fixed": 0,
         "consecutive_days": 0,
     }
+
     return normalized
 
 
@@ -3362,6 +3366,58 @@ def compare_stock_strategy_value(current_value, reference_value, operator):
         tolerance = max(1e-9, abs(reference_number) * 1e-9)
         return abs(current_number - reference_number) <= tolerance
     return current_number >= reference_number
+
+
+def stock_order_book_presence(row):
+    """Return buy/sell presence for a known order book, or None if missing."""
+    if not isinstance(row, dict):
+        return None
+    buy_values = [
+        stock_number(row.get("order_book_buy_value")),
+        stock_number(row.get("order_book_buy_volume")),
+        stock_number(row.get("order_book_buy_count")),
+    ]
+    sell_values = [
+        stock_number(row.get("order_book_sell_value")),
+        stock_number(row.get("order_book_sell_volume")),
+        stock_number(row.get("order_book_sell_count")),
+    ]
+    if all(value is None for value in buy_values + sell_values):
+        return None
+    has_buy_orders = any(value is not None and value > 0 for value in buy_values)
+    has_sell_orders = any(value is not None and value > 0 for value in sell_values)
+    return has_buy_orders, has_sell_orders
+
+
+def stock_strategy_buy_queue_state(row):
+    """Return True/False for a known order book, or None when it is missing."""
+    presence = stock_order_book_presence(row)
+    if presence is None:
+        return None
+    has_buy_orders, has_sell_orders = presence
+    return has_buy_orders and not has_sell_orders
+
+
+def stock_price_power_status(row):
+    """Map the saved price-power fields to a human-readable market status."""
+    if not isinstance(row, dict):
+        return None
+    price_power = stock_number(row.get("price_power"))
+    if price_power is None:
+        return None
+    if price_power > 0:
+        return "positive"
+    if price_power < 0:
+        return "negative"
+
+    presence = stock_order_book_presence(row)
+    if presence is not None:
+        has_buy_orders, has_sell_orders = presence
+        if has_buy_orders and not has_sell_orders:
+            return "buy_queue"
+        if has_sell_orders and not has_buy_orders:
+            return "sell_queue"
+    return "neutral"
 
 
 def calculate_stock_ema_series(values, period):
@@ -4060,6 +4116,114 @@ def get_stock_strategy(payload, use_saved_data=False, source="featured"):
     result["source"] = source
     result["source_updated_at"] = metadata.get("last_successful_update")
     result.update(snapshot_metadata)
+    return result
+
+
+def build_stock_buy_queue_summary(rows, history, limit=10):
+    requested_limit = normalize_stock_strategy_integer(
+        limit,
+        10,
+        minimum=1,
+        maximum=100,
+    )
+    results = []
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or not row.get("symbol")
+            or stock_strategy_buy_queue_state(row) is not True
+        ):
+            continue
+
+        buy_queue_value = stock_number(row.get("order_book_buy_value"))
+        if buy_queue_value is None or buy_queue_value <= 0:
+            continue
+
+        normalized_symbol = normalize_symbol(row["symbol"])
+        current_market_date = str(row.get("market_date") or "")
+        historical_rows = []
+        seen_dates = {current_market_date} if current_market_date else set()
+        for snapshot in history.get(normalized_symbol, []):
+            if not isinstance(snapshot, dict):
+                continue
+            trade_date = str(snapshot.get("trade_date") or "")
+            if trade_date and trade_date in seen_dates:
+                continue
+            if trade_date:
+                seen_dates.add(trade_date)
+            historical_rows.append(snapshot)
+
+        previous_snapshot = historical_rows[0] if historical_rows else None
+        previous_trade_value = stock_number(
+            previous_snapshot.get("trade_value")
+            if previous_snapshot
+            else None
+        )
+        consecutive_previous_queue_days = 0
+        for snapshot in historical_rows:
+            if stock_strategy_buy_queue_state(snapshot) is not True:
+                break
+            consecutive_previous_queue_days += 1
+
+        previous_to_queue_percent = (
+            round(previous_trade_value / buy_queue_value * 100, 4)
+            if previous_trade_value is not None
+            and previous_trade_value >= 0
+            else None
+        )
+        results.append({
+            "symbol": row.get("symbol"),
+            "ins_code": row.get("ins_code"),
+            "market_date": current_market_date or None,
+            "previous_trade_date": (
+                previous_snapshot.get("trade_date")
+                if previous_snapshot
+                else None
+            ),
+            "buy_queue_value": buy_queue_value,
+            "previous_trade_value": previous_trade_value,
+            "previous_to_queue_percent": previous_to_queue_percent,
+            "consecutive_previous_queue_days": (
+                consecutive_previous_queue_days
+            ),
+        })
+
+    results.sort(
+        key=lambda item: (
+            item["previous_trade_value"] is not None,
+            item["previous_trade_value"] or 0,
+            item["buy_queue_value"],
+        ),
+        reverse=True,
+    )
+    return {
+        "requested_count": requested_limit,
+        "matched_count": len(results),
+        "count": min(len(results), requested_limit),
+        "stocks": results[:requested_limit],
+    }
+
+
+def get_stock_buy_queue_summary(limit=10, source="all"):
+    source = "featured" if source == "featured" else "all"
+    rows, metadata = (
+        read_stock_database()
+        if source == "featured"
+        else read_all_stock_database()
+    )
+    result = build_stock_buy_queue_summary(
+        rows,
+        read_stock_strategy_history(
+            source=source,
+            symbols=[row.get("symbol") for row in rows if row.get("symbol")],
+        ),
+        limit=limit,
+    )
+    result.update({
+        "source": source,
+        "source_updated_at": metadata.get("last_successful_update"),
+        "evaluated_count": len(rows),
+    })
     return result
 
 
@@ -8742,6 +8906,29 @@ def stock_strategy_filter():
                     payload.get("rules") or {},
                     use_saved_data=bool(payload.get("use_saved_data")),
                     source=payload.get("source") or "featured",
+                ),
+                ensure_ascii=False,
+            ),
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=500,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
+@app.route("/stock-buy-queues")
+def stock_buy_queue_filter():
+    try:
+        return Response(
+            json.dumps(
+                get_stock_buy_queue_summary(
+                    limit=request.args.get("count", default=10, type=int),
+                    source=request.args.get("source") or "all",
                 ),
                 ensure_ascii=False,
             ),

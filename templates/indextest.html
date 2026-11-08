@@ -10,7 +10,7 @@
     >
     <title>دیدبان بازار سهام</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='option-filter-v2') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='price-power-status-v1') }}">
     <link rel="icon" href="{{ url_for('static', filename='logo.png', v='market-logo-v2') }}" type="image/png">
 </head>
 <body class="dashboard-shell">
@@ -714,6 +714,25 @@
                             </span>
                             <span>آخرین دیتای ذخیره‌شده</span>
                         </label>
+                        <form id="strategy-buy-queue-form" class="strategy-buy-queue-filter" autocomplete="off">
+                            <label for="strategy-buy-queue-count" aria-label="تعداد نمادهای صف خرید">
+                                <input
+                                    id="strategy-buy-queue-count"
+                                    type="number"
+                                    min="1"
+                                    max="100"
+                                    step="1"
+                                    value="10"
+                                    inputmode="numeric"
+                                    aria-label="تعداد نمادهای صف خرید"
+                                    title="تعداد نمادهای صف خرید"
+                                    required
+                                >
+                            </label>
+                            <button id="strategy-buy-queue-button" class="button-secondary" type="submit">
+                                نمایش صف خرید
+                            </button>
+                        </form>
                         <button id="strategy-run-button" class="button-primary" type="button">
                             اجرای فیلتر
                         </button>
@@ -1014,6 +1033,45 @@
             </section>
         </div>
     </main>
+
+    <div id="strategy-buy-queue-modal" class="expectations-modal" hidden>
+        <div class="expectations-modal-backdrop" data-close-strategy-buy-queue-modal></div>
+        <section
+            class="expectations-modal-card strategy-buy-queue-modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="strategy-buy-queue-modal-title"
+        >
+            <header>
+                <h3 id="strategy-buy-queue-modal-title">نمادهای صف خرید</h3>
+                <button
+                    type="button"
+                    class="expectations-modal-close"
+                    data-close-strategy-buy-queue-modal
+                    aria-label="بستن"
+                >×</button>
+            </header>
+            <div id="strategy-buy-queue-summary" class="option-filter-summary" aria-live="polite"></div>
+            <div class="expectations-detail-table-wrap">
+                <table class="expectations-table expectations-summary-table strategy-buy-queue-table">
+                    <thead>
+                        <tr>
+                            <th data-sort-type="text" tabindex="0">نماد <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">ارزش صف خرید (میلیون ریال) <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">ارزش معاملات روز قبل (میلیون ریال) <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">نسبت معاملات قبلی به صف خرید <span class="expectations-sort-indicator">↕</span></th>
+                            <th data-sort-type="number" tabindex="0">صف خرید پیاپی قبلی (روز) <span class="expectations-sort-indicator">↕</span></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td colspan="5" class="expectations-no-result">هنوز فیلتری اجرا نشده است.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
 
     <div id="stock-notes-modal" class="expectations-modal" hidden>
         <div class="expectations-modal-backdrop" data-close-stock-notes-modal></div>
@@ -1402,6 +1460,6 @@
         </section>
     </div>
 
-    <script src="{{ url_for('static', filename='scripttest.js', v='market-layout-v1') }}"></script>
+    <script src="{{ url_for('static', filename='scripttest.js', v='price-power-status-v5') }}"></script>
 </body>
 </html>

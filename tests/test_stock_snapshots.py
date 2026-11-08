@@ -181,6 +181,11 @@ class StockSnapshotTests(unittest.TestCase):
     def test_stock_metric_history_returns_daily_points_in_date_order(self):
         first_row = self.row("فولاد", 100)
         first_row["trade_value"] = 10_000_000_000
+        first_row.update({
+            "price_power": 0,
+            "order_book_buy_value": 1_000,
+            "order_book_sell_value": 0,
+        })
         stock_app.save_daily_stock_snapshots([first_row], self.at(12, 30))
 
         second_time = datetime(
@@ -197,12 +202,21 @@ class StockSnapshotTests(unittest.TestCase):
             market_date="2026-10-20",
         )
         second_row["trade_value"] = 20_000_000_000
+        second_row.update({
+            "price_power": 0,
+            "order_book_buy_value": 0,
+            "order_book_sell_value": 1_000,
+        })
         stock_app.save_daily_stock_snapshots([second_row], second_time)
 
         with stock_app.app.test_client() as client:
             response = client.get(
                 "/stocks/metric-history"
                 "?symbol=فولاد&metric=trade_value&limit=365"
+            )
+            price_power_response = client.get(
+                "/stocks/metric-history"
+                "?symbol=فولاد&metric=price_power&limit=365"
             )
             invalid = client.get(
                 "/stocks/metric-history?symbol=فولاد&metric=unknown"
@@ -216,6 +230,14 @@ class StockSnapshotTests(unittest.TestCase):
             ["2026-10-19", "2026-10-20"],
         )
         self.assertEqual(payload["points"][1]["value"], 20_000_000_000)
+        self.assertEqual(price_power_response.status_code, 200)
+        self.assertEqual(
+            [
+                point["status"]
+                for point in price_power_response.get_json()["points"]
+            ],
+            ["buy_queue", "sell_queue"],
+        )
         self.assertEqual(invalid.status_code, 400)
 
     def test_calculate_stock_indicators(self):

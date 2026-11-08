@@ -86,7 +86,8 @@ const stockHistoryMetricConfigs = {
         label: "قدرت قیمت",
         unit: "وضعیت",
         scale: 1,
-        digits: 0
+        digits: 0,
+        chartType: "price_power_status"
     },
     trade_value: {
         label: "ارزش معاملات",
@@ -8086,11 +8087,153 @@ function formatHistoryChartDate(point) {
     ).replaceAll("-", "/");
 }
 
+function renderPricePowerStatusChart(points, config) {
+    const canvas = document.getElementById("history-chart-canvas");
+    const state = document.getElementById("history-chart-state");
+    const meta = document.getElementById("history-chart-meta");
+    if (!canvas || !state || !meta) return;
+
+    const statuses = [
+        { key: "buy_queue", label: "صف خرید", color: "#43ef9c" },
+        { key: "positive", label: "صعودی", color: "#36d9ff" },
+        { key: "neutral", label: "خنثی", color: "#91a8b5" },
+        { key: "negative", label: "نزولی", color: "#ffad66" },
+        { key: "sell_queue", label: "صف فروش", color: "#ff6678" }
+    ];
+    const statusByKey = new Map(statuses.map(item => [item.key, item]));
+    const statusFromPoint = point => {
+        if (statusByKey.has(point?.status)) return point.status;
+        const value = Number(point?.value);
+        if (!Number.isFinite(value)) return null;
+        if (value > 0) return "positive";
+        if (value < 0) return "negative";
+        return "neutral";
+    };
+    const prepared = (Array.isArray(points) ? points : [])
+        .map(point => ({ ...point, chartStatus: statusFromPoint(point) }))
+        .filter(point => statusByKey.has(point.chartStatus));
+
+    if (!prepared.length) {
+        canvas.hidden = true;
+        canvas.replaceChildren();
+        meta.replaceChildren();
+        state.hidden = false;
+        state.textContent = "دادهٔ روزانه‌ای برای قدرت قیمت ذخیره نشده است.";
+        return;
+    }
+
+    const width = 960;
+    const height = 370;
+    // Reserve a separate column for the status legend so the first data
+    // marker never overlaps the coloured bullet or its Persian label.
+    const padding = { top: 22, right: 28, bottom: 58, left: 168 };
+    const plotWidth = width - padding.left - padding.right;
+    const plotHeight = height - padding.top - padding.bottom;
+    const laneHeight = plotHeight / statuses.length;
+    const xForIndex = index => prepared.length === 1
+        ? padding.left + plotWidth / 2
+        : padding.left + index / (prepared.length - 1) * plotWidth;
+    const laneCenter = index => padding.top + laneHeight * (index + 0.5);
+
+    const statusBulletX = 116;
+    const statusLabelX = 102;
+    const lanes = statuses.map((status, index) => {
+        return `
+        <rect
+            class="history-status-lane ${index % 2 ? "is-alternate" : ""}"
+            x="${padding.left}"
+            y="${padding.top + laneHeight * index}"
+            width="${plotWidth}"
+            height="${laneHeight}"
+        ></rect>
+        <line
+            class="history-chart-grid-line"
+            x1="${padding.left}"
+            y1="${padding.top + laneHeight * index}"
+            x2="${width - padding.right}"
+            y2="${padding.top + laneHeight * index}"
+        ></line>
+        <circle cx="${statusBulletX}" cy="${laneCenter(index)}" r="4" fill="${status.color}"></circle>
+        <text
+            class="history-chart-status-label"
+            x="${statusLabelX}"
+            y="${laneCenter(index) + 4}"
+            text-anchor="start"
+            direction="rtl"
+        >${status.label}</text>
+    `;
+    }).join("");
+
+    const markerWidth = Math.max(
+        2.5,
+        Math.min(12, plotWidth / Math.max(prepared.length, 1) * 0.62)
+    );
+    const markers = prepared.map((point, index) => {
+        const statusIndex = statuses.findIndex(
+            item => item.key === point.chartStatus
+        );
+        const status = statuses[statusIndex];
+        const x = xForIndex(index);
+        const y = laneCenter(statusIndex);
+        return `
+            <rect
+                class="history-status-marker"
+                x="${(x - markerWidth / 2).toFixed(2)}"
+                y="${(y - 11).toFixed(2)}"
+                width="${markerWidth.toFixed(2)}"
+                height="22"
+                rx="${Math.min(5, markerWidth / 2).toFixed(2)}"
+                fill="${status.color}"
+            >
+                <title>${escapeHtml(`${formatHistoryChartDate(point)}: ${status.label}`)}</title>
+            </rect>`;
+    }).join("");
+
+    const labelIndexes = new Set([
+        0,
+        Math.floor((prepared.length - 1) * 0.25),
+        Math.floor((prepared.length - 1) * 0.5),
+        Math.floor((prepared.length - 1) * 0.75),
+        prepared.length - 1
+    ]);
+    const dateLabels = [...labelIndexes].sort((a, b) => a - b).map(index => `
+        <text class="history-chart-date-label" x="${xForIndex(index)}" y="${height - 20}" text-anchor="middle">${escapeHtml(formatHistoryChartDate(prepared[index]))}</text>
+    `).join("");
+
+    canvas.innerHTML = `
+        <svg class="history-chart-svg history-status-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="نمودار وضعیت ${escapeHtml(config.label)}">
+            ${lanes}
+            ${markers}
+            ${dateLabels}
+        </svg>`;
+    canvas.hidden = false;
+    state.hidden = true;
+    state.textContent = "";
+
+    const latest = prepared.at(-1);
+    const latestStatus = statusByKey.get(latest.chartStatus);
+    const counts = new Map(statuses.map(status => [status.key, 0]));
+    prepared.forEach(point => counts.set(
+        point.chartStatus,
+        (counts.get(point.chartStatus) || 0) + 1
+    ));
+    meta.innerHTML = `
+        <span>بازه: <strong>${escapeHtml(formatHistoryChartDate(prepared[0]))} تا ${escapeHtml(formatHistoryChartDate(latest))}</strong></span>
+        <span>آخرین وضعیت: <strong style="color:${latestStatus.color}">${latestStatus.label}</strong></span>
+        ${statuses.map(status => `
+            <span>${status.label}: <strong>${formatHistoryChartNumber(counts.get(status.key), 0)} روز</strong></span>
+        `).join("")}`;
+}
+
 function renderHistoricalMetricChart(points, config) {
     const canvas = document.getElementById("history-chart-canvas");
     const state = document.getElementById("history-chart-state");
     const meta = document.getElementById("history-chart-meta");
     if (!canvas || !state || !meta) return;
+    if (config?.chartType === "price_power_status") {
+        renderPricePowerStatusChart(points, config);
+        return;
+    }
 
     const scale = Number(config.scale) || 1;
     const prepared = (Array.isArray(points) ? points : [])
@@ -10348,6 +10491,16 @@ function initializeStockStrategyControls() {
         "click",
         () => requestStockStrategy({ showLoading: true })
     );
+    document.getElementById("strategy-buy-queue-form")?.addEventListener(
+        "submit",
+        loadStrategyBuyQueueFilter
+    );
+    document
+        .querySelectorAll("[data-close-strategy-buy-queue-modal]")
+        .forEach(element => element.addEventListener(
+            "click",
+            closeStrategyBuyQueueModal
+        ));
     document.getElementById("strategy-use-saved-data")?.addEventListener(
         "change",
         event => {
@@ -10396,10 +10549,91 @@ function initializeStockStrategyControls() {
         });
 }
 
+async function loadStrategyBuyQueueFilter(event) {
+    event?.preventDefault();
+    const input = document.getElementById("strategy-buy-queue-count");
+    const button = document.getElementById("strategy-buy-queue-button");
+    const modal = document.getElementById("strategy-buy-queue-modal");
+    const table = modal?.querySelector(".strategy-buy-queue-table");
+    const tbody = table?.querySelector("tbody");
+    const summary = document.getElementById("strategy-buy-queue-summary");
+    const requestedCount = Number(input?.value);
+    if (!input || !button || !modal || !table || !tbody || !summary) return;
+
+    input.setCustomValidity("");
+    if (!Number.isInteger(requestedCount) || requestedCount < 1 || requestedCount > 100) {
+        input.setCustomValidity("تعداد باید یک عدد صحیح بین ۱ تا ۱۰۰ باشد.");
+        input.reportValidity();
+        return;
+    }
+
+    modal.hidden = false;
+    document.body.classList.add("expectations-modal-open");
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    summary.textContent = "";
+    tbody.innerHTML = `
+        <tr>
+            <td colspan="5" class="expectations-no-result">در حال دریافت داده‌ها...</td>
+        </tr>`;
+
+    try {
+        const params = new URLSearchParams({
+            count: String(requestedCount),
+            source: stockStrategySource
+        });
+        const response = await fetch(`/stock-buy-queues?${params}`, {
+            cache: "no-store"
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.error || "دریافت نمادهای صف خرید ناموفق بود.");
+        }
+
+        const rows = Array.isArray(payload?.stocks) ? payload.stocks : [];
+        tbody.innerHTML = rows.length
+            ? rows.map(stock => `
+                <tr>
+                    <td data-sort-value="${escapeHtml(stock.symbol || "")}">${escapeHtml(stock.symbol || "—")}</td>
+                    <td data-sort-value="${stock.buy_queue_value ?? ""}">${formatScaledStockNumber(stock.buy_queue_value, 1_000_000)}</td>
+                    <td data-sort-value="${stock.previous_trade_value ?? ""}">${formatScaledStockNumber(stock.previous_trade_value, 1_000_000)}</td>
+                    <td class="expectation-percent" data-sort-value="${stock.previous_to_queue_percent ?? ""}">${formatExpectationPercent(stock.previous_to_queue_percent)}</td>
+                    <td data-sort-value="${stock.consecutive_previous_queue_days ?? 0}">${formatStockInteger(stock.consecutive_previous_queue_days || 0)}</td>
+                </tr>`).join("")
+            : `<tr><td colspan="5" class="expectations-no-result">در آخرین داده نمادی با صف خرید پیدا نشد.</td></tr>`;
+
+        const formatter = new Intl.NumberFormat("fa-IR");
+        const sourceLabel = payload.source === "all" ? "تمام سهام‌ها" : "سهام برتر";
+        summary.textContent = rows.length
+            ? `${formatter.format(rows.length)} مورد نخست از ${formatter.format(payload.matched_count || rows.length)} نماد صف خرید در ${sourceLabel}؛ مرتب‌شده بر اساس ارزش معاملات روز قبل`
+            : `در ${sourceLabel} نمادی با صف خرید در آخرین داده پیدا نشد.`;
+        resetExpectationSummarySort(table);
+    } catch (error) {
+        console.error("Buy queue filter error:", error);
+        summary.textContent = error.message || "دریافت نمادهای صف خرید ناموفق بود.";
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="5" class="expectations-no-result">امکان نمایش اطلاعات وجود ندارد.</td>
+            </tr>`;
+    } finally {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+    }
+}
+
+function closeStrategyBuyQueueModal() {
+    const modal = document.getElementById("strategy-buy-queue-modal");
+    if (modal) modal.hidden = true;
+    syncExpectationModalBodyState();
+}
+
 function formatStockStrategyValue(metric, value) {
     if (value === null || value === undefined || value === "") return "—";
     if (metric === "trade_value") return formatTradeValue(value);
     if (metric === "real_money_flow") return formatTradeValue(value);
+    if (metric === "trade_volume") {
+        return formatStockCell({ key: metric, format: "million" }, value, false);
+    }
     if (["closing_price", "ema", "ema_slow"].includes(metric)) {
         return formatStockInteger(value);
     }
@@ -11137,6 +11371,7 @@ document.addEventListener(
                 closeOptionFilterModal();
                 closePutOptionsSummary();
                 closeOptionBurningSummary();
+                closeStrategyBuyQueueModal();
             }
         });
 

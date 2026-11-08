@@ -2330,6 +2330,57 @@
     box-shadow: inset 0 1px 0 rgba(206, 248, 255, 0.14), 0 4px 14px rgba(0, 106, 164, 0.2);
 }
 
+.dashboard-shell .strategy-buy-queue-filter {
+    display: flex;
+    align-items: flex-end;
+    gap: 7px;
+    margin: 0;
+}
+
+.dashboard-shell .strategy-buy-queue-filter label {
+    display: grid;
+    gap: 3px;
+    color: #88aabd;
+    font-size: 9px;
+}
+
+.dashboard-shell .strategy-buy-queue-filter input {
+    width: 68px;
+    height: 32px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0 8px;
+    border: 1px solid rgba(35, 165, 220, 0.4);
+    border-radius: 9px;
+    outline: 0;
+    color: #e4f7ff;
+    background: rgba(0, 13, 27, 0.76);
+    font-family: inherit;
+    font-size: 10px;
+    text-align: center;
+}
+
+.dashboard-shell .strategy-buy-queue-filter input:focus {
+    border-color: rgba(48, 220, 255, 0.78);
+    box-shadow: 0 0 0 3px rgba(27, 215, 255, 0.08);
+}
+
+.dashboard-shell .strategy-toolbar .strategy-buy-queue-filter button {
+    min-width: 108px;
+    min-height: 32px;
+    margin: 0;
+    padding: 6px 11px;
+    font-size: 10px;
+}
+
+.dashboard-shell .strategy-buy-queue-modal-card {
+    width: min(1080px, 96vw);
+}
+
+.dashboard-shell .strategy-buy-queue-table {
+    min-width: 850px;
+}
+
 .dashboard-shell .stock-notes-modal-card {
     width: min(900px, 96vw);
     overflow: hidden;
@@ -2911,6 +2962,17 @@
 
     .dashboard-shell .strategy-rule.strategy-rule-industry-growth {
         grid-template-columns: 1fr;
+    }
+
+    .dashboard-shell .strategy-buy-queue-filter {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        width: 100%;
+    }
+
+    .dashboard-shell .strategy-buy-queue-filter label,
+    .dashboard-shell .strategy-buy-queue-filter input {
+        width: 100%;
     }
 
     .dashboard-shell .stocks-filter-bar > .stock-search-box,
@@ -3819,6 +3881,27 @@
     fill: #7799ad;
     font-family: inherit;
     font-size: 10px;
+}
+
+.dashboard-shell .history-status-lane {
+    fill: rgba(6, 37, 58, 0.34);
+}
+
+.dashboard-shell .history-status-lane.is-alternate {
+    fill: rgba(18, 68, 91, 0.24);
+}
+
+.dashboard-shell .history-chart-status-label {
+    fill: #b7d2df;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 720;
+}
+
+.dashboard-shell .history-status-marker {
+    stroke: rgba(220, 251, 255, 0.44);
+    stroke-width: 0.8;
+    filter: drop-shadow(0 0 4px rgba(64, 218, 255, 0.22));
 }
 
 @media (max-width: 620px) {
