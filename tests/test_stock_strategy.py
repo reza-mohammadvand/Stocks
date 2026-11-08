@@ -312,18 +312,21 @@ class StockStrategyTests(unittest.TestCase):
             {
                 "symbol": "نماد۱",
                 "market_date": "2026-10-27",
+                "trade_value": 2_500,
                 "order_book_buy_value": 500,
                 "order_book_sell_value": 0,
             },
             {
                 "symbol": "نماد۲",
                 "market_date": "2026-10-27",
+                "trade_value": 3_500,
                 "order_book_buy_value": 1_000,
                 "order_book_sell_value": 0,
             },
             {
                 "symbol": "بدون صف",
                 "market_date": "2026-10-27",
+                "trade_value": 2_000,
                 "order_book_buy_value": 900,
                 "order_book_sell_value": 10,
             },
@@ -368,11 +371,14 @@ class StockStrategyTests(unittest.TestCase):
         self.assertEqual(result["matched_count"], 2)
         self.assertEqual(result["count"], 1)
         self.assertEqual(result["stocks"][0]["symbol"], "نماد۲")
-        self.assertEqual(result["stocks"][0]["previous_trade_value"], 3_000)
-        self.assertEqual(result["stocks"][0]["previous_to_queue_percent"], 300)
+        self.assertEqual(result["stocks"][0]["trade_value"], 3_500)
+        self.assertAlmostEqual(
+            result["stocks"][0]["traded_value_percent"],
+            77.7778,
+        )
         self.assertEqual(
-            result["stocks"][0]["consecutive_previous_queue_days"],
-            0,
+            result["stocks"][0]["consecutive_queue_days"],
+            1,
         )
 
         all_results = stock_app.build_stock_buy_queue_summary(
@@ -383,7 +389,7 @@ class StockStrategyTests(unittest.TestCase):
         first_symbol = next(
             item for item in all_results["stocks"] if item["symbol"] == "نماد۱"
         )
-        self.assertEqual(first_symbol["consecutive_previous_queue_days"], 2)
+        self.assertEqual(first_symbol["consecutive_queue_days"], 3)
 
         previous_day_result = stock_app.build_stock_buy_queue_summary(
             current_rows,
@@ -407,8 +413,16 @@ class StockStrategyTests(unittest.TestCase):
             400,
         )
         self.assertEqual(
-            previous_day_result["stocks"][0]["previous_trade_value"],
-            1_500,
+            previous_day_result["stocks"][0]["trade_value"],
+            4_000,
+        )
+        self.assertEqual(
+            previous_day_result["stocks"][0]["traded_value_percent"],
+            90.9091,
+        )
+        self.assertEqual(
+            previous_day_result["stocks"][0]["consecutive_queue_days"],
+            2,
         )
 
     def test_technical_indicator_calculations(self):

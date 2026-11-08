@@ -7848,29 +7848,83 @@ function formatStockChangePercent(value) {
 }
 
 function getStockPricePowerPresentation(stock) {
-    const pricePower = Number(stock?.price_power);
-    if (!Number.isFinite(pricePower)) {
-        return {
-            label: "—",
-            tone: "neutral",
-            title: "اطلاعات قدرت قیمت در دسترس نیست"
-        };
-    }
-    if (pricePower > 0) {
-        return {
+    const presentations = {
+        buy_queue_neutral: {
+            label: "صف خرید -\nخنثی",
+            tone: "positive",
+            stacked: true,
+            title: "آخرین قیمت، قیمت پایانی و بالاترین قیمت روز برابرند"
+        },
+        buy_queue: {
+            label: "صف\nخرید",
+            tone: "positive",
+            stacked: true,
+            title: "آخرین قیمت با بالاترین قیمت روز برابر است"
+        },
+        positive: {
             label: "صعودی",
             tone: "positive",
             title: "آخرین قیمت بالاتر از قیمت پایانی است"
-        };
-    }
-    if (pricePower < 0) {
-        return {
+        },
+        negative: {
             label: "نزولی",
             tone: "negative",
             title: "آخرین قیمت پایین‌تر از قیمت پایانی است"
-        };
+        },
+        sell_queue_neutral: {
+            label: "صف فروش -\nخنثی",
+            tone: "negative",
+            stacked: true,
+            title: "آخرین قیمت، قیمت پایانی و پایین‌ترین قیمت روز برابرند"
+        },
+        sell_queue: {
+            label: "صف\nفروش",
+            tone: "negative",
+            stacked: true,
+            title: "آخرین قیمت با پایین‌ترین قیمت روز برابر است"
+        },
+        neutral: {
+            label: "خنثی",
+            tone: "neutral",
+            title: "آخرین قیمت و قیمت پایانی برابرند"
+        }
+    };
+    const explicitStatus = String(stock?.price_power_status || "");
+    if (presentations[explicitStatus]) {
+        return presentations[explicitStatus];
     }
 
+    const numberOrNull = value => {
+        if (value === null || value === undefined || value === "") return null;
+        const number = Number(value);
+        return Number.isFinite(number) ? number : null;
+    };
+    const lastPrice = numberOrNull(stock?.last_price);
+    const closingPrice = numberOrNull(stock?.closing_price);
+    const dailyHighPrice = numberOrNull(stock?.daily_high_price);
+    const dailyLowPrice = numberOrNull(stock?.daily_low_price);
+    const upperPrice = (
+        (dailyHighPrice !== null && dailyHighPrice > 0 ? dailyHighPrice : null)
+        ?? numberOrNull(stock?.daily_upper_price)
+    );
+    const lowerPrice = (
+        (dailyLowPrice !== null && dailyLowPrice > 0 ? dailyLowPrice : null)
+        ?? numberOrNull(stock?.daily_lower_price)
+    );
+    if (lastPrice !== null && closingPrice !== null) {
+        if (upperPrice !== null && lastPrice === upperPrice) {
+            return presentations[
+                closingPrice === upperPrice ? "buy_queue_neutral" : "buy_queue"
+            ];
+        }
+        if (lowerPrice !== null && lastPrice === lowerPrice) {
+            return presentations[
+                closingPrice === lowerPrice ? "sell_queue_neutral" : "sell_queue"
+            ];
+        }
+    }
+
+    // Old snapshots did not store the daily upper and lower price limits.
     const hasBuyOrders = [
         stock?.order_book_buy_value,
         stock?.order_book_buy_volume,
@@ -7882,26 +7936,39 @@ function getStockPricePowerPresentation(stock) {
         stock?.order_book_sell_count
     ].some(value => Number(value) > 0);
 
-    if (hasBuyOrders && !hasSellOrders) {
-        return {
-            label: "صف\nخرید",
-            tone: "positive",
-            stacked: true,
-            title: "آخرین قیمت با قیمت پایانی برابر است و سمت فروش سفارشی ندارد"
-        };
+    if (upperPrice === null || lowerPrice === null) {
+        if (hasBuyOrders && !hasSellOrders) {
+            return presentations[
+                lastPrice !== null && lastPrice === closingPrice
+                    ? "buy_queue_neutral"
+                    : "buy_queue"
+            ];
+        }
+        if (hasSellOrders && !hasBuyOrders) {
+            return presentations[
+                lastPrice !== null && lastPrice === closingPrice
+                    ? "sell_queue_neutral"
+                    : "sell_queue"
+            ];
+        }
     }
-    if (hasSellOrders && !hasBuyOrders) {
-        return {
-            label: "صف\nفروش",
-            tone: "negative",
-            stacked: true,
-            title: "آخرین قیمت با قیمت پایانی برابر است و سمت خرید سفارشی ندارد"
-        };
+
+    if (lastPrice !== null && closingPrice !== null) {
+        if (lastPrice > closingPrice) return presentations.positive;
+        if (lastPrice < closingPrice) return presentations.negative;
+        return presentations.neutral;
+    }
+
+    const pricePower = numberOrNull(stock?.price_power);
+    if (pricePower !== null) {
+        if (pricePower > 0) return presentations.positive;
+        if (pricePower < 0) return presentations.negative;
+        return presentations.neutral;
     }
     return {
-        label: "خنثی",
+        label: "—",
         tone: "neutral",
-        title: "آخرین قیمت با قیمت پایانی برابر است و هر دو سمت سفارش دارند"
+        title: "اطلاعات قدرت قیمت در دسترس نیست"
     };
 }
 
@@ -8105,11 +8172,13 @@ function renderPricePowerStatusChart(points, config) {
     if (!canvas || !state || !meta) return;
 
     const statuses = [
+        { key: "buy_queue_neutral", label: "صف خرید - خنثی", color: "#72f5bc" },
         { key: "buy_queue", label: "صف خرید", color: "#43ef9c" },
         { key: "positive", label: "صعودی", color: "#36d9ff" },
         { key: "neutral", label: "خنثی", color: "#91a8b5" },
         { key: "negative", label: "نزولی", color: "#ffad66" },
-        { key: "sell_queue", label: "صف فروش", color: "#ff6678" }
+        { key: "sell_queue", label: "صف فروش", color: "#ff6678" },
+        { key: "sell_queue_neutral", label: "صف فروش - خنثی", color: "#ff91a0" }
     ];
     const statusByKey = new Map(statuses.map(item => [item.key, item]));
     const statusFromPoint = point => {
@@ -10637,9 +10706,9 @@ async function loadStrategyBuyQueueFilter(event) {
                 <tr>
                     <td data-sort-value="${escapeHtml(stock.symbol || "")}">${escapeHtml(stock.symbol || "—")}</td>
                     <td data-sort-value="${stock.buy_queue_value ?? ""}">${formatScaledStockNumber(stock.buy_queue_value, 1_000_000)}</td>
-                    <td data-sort-value="${stock.previous_trade_value ?? ""}">${formatScaledStockNumber(stock.previous_trade_value, 1_000_000)}</td>
-                    <td class="expectation-percent" data-sort-value="${stock.previous_to_queue_percent ?? ""}">${formatExpectationPercent(stock.previous_to_queue_percent)}</td>
-                    <td data-sort-value="${stock.consecutive_previous_queue_days ?? 0}">${formatStockInteger(stock.consecutive_previous_queue_days || 0)}</td>
+                    <td data-sort-value="${stock.trade_value ?? ""}">${formatScaledStockNumber(stock.trade_value, 1_000_000)}</td>
+                    <td class="expectation-percent" data-sort-value="${stock.traded_value_percent ?? ""}">${formatExpectationPercent(stock.traded_value_percent)}</td>
+                    <td data-sort-value="${stock.consecutive_queue_days ?? 0}">${formatStockInteger(stock.consecutive_queue_days || 0)}</td>
                 </tr>`).join("")
             : `<tr><td colspan="5" class="expectations-no-result">در آخرین داده نمادی با صف خرید پیدا نشد.</td></tr>`;
 

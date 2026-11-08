@@ -345,6 +345,11 @@ STOCK_DETAIL_FIELDS = (
     "closing_price",
     "closing_price_change_percent",
     "price_power",
+    "price_power_status",
+    "daily_high_price",
+    "daily_low_price",
+    "daily_upper_price",
+    "daily_lower_price",
     "trade_value",
     "trade_to_float_percent",
     "real_money_flow",
@@ -395,6 +400,11 @@ STOCK_DATABASE_EXTRA_COLUMNS = {
     "closing_price": "INTEGER",
     "closing_price_change_percent": "REAL",
     "price_power": "INTEGER",
+    "price_power_status": "TEXT",
+    "daily_high_price": "INTEGER",
+    "daily_low_price": "INTEGER",
+    "daily_upper_price": "INTEGER",
+    "daily_lower_price": "INTEGER",
     "trade_value": "INTEGER",
     "trade_to_float_percent": "REAL",
     "real_money_flow": "INTEGER",
@@ -553,6 +563,11 @@ def initialize_stock_database():
                     closing_price INTEGER,
                     closing_price_change_percent REAL,
                     price_power INTEGER,
+                    price_power_status TEXT,
+                    daily_high_price INTEGER,
+                    daily_low_price INTEGER,
+                    daily_upper_price INTEGER,
+                    daily_lower_price INTEGER,
                     trade_value INTEGER,
                     trade_to_float_percent REAL,
                     real_money_flow INTEGER,
@@ -683,12 +698,26 @@ def initialize_stock_database():
                     raw_closing_price REAL NOT NULL,
                     adjusted_closing_price REAL NOT NULL,
                     raw_last_price REAL,
+                    daily_high_price REAL,
+                    daily_low_price REAL,
                     captured_at TEXT NOT NULL,
                     source TEXT NOT NULL,
                     PRIMARY KEY (symbol, trade_date)
                 )
                 """
             )
+            price_history_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(stock_price_history)"
+                )
+            }
+            for column_name in ("daily_high_price", "daily_low_price"):
+                if column_name not in price_history_columns:
+                    connection.execute(
+                        "ALTER TABLE stock_price_history "
+                        f"ADD COLUMN {column_name} REAL"
+                    )
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_stock_price_history_symbol_date
@@ -1565,6 +1594,8 @@ def parse_tsetmc_price_history(payload, limit=STOCK_PRICE_HISTORY_TARGET_DAYS):
             "trade_date": trade_date,
             "raw_closing_price": closing_price,
             "raw_last_price": stock_number(item.get("pDrCotVal")),
+            "daily_high_price": stock_number(item.get("priceMax")),
+            "daily_low_price": stock_number(item.get("priceMin")),
             "yesterday_price": stock_number(item.get("priceYesterday")),
             "trade_value": stock_number(item.get("qTotCap")),
             "trade_volume": stock_number(item.get("qTotTran5J")),
@@ -1645,6 +1676,8 @@ def store_stock_price_history(
             raw_price,
             adjusted_price,
             stock_number(point.get("raw_last_price")),
+            stock_number(point.get("daily_high_price")),
+            stock_number(point.get("daily_low_price")),
             captured_at_iso,
             "tsetmc_history",
         ))
@@ -1661,16 +1694,20 @@ def store_stock_price_history(
                 raw_closing_price,
                 adjusted_closing_price,
                 raw_last_price,
+                daily_high_price,
+                daily_low_price,
                 captured_at,
                 source
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(symbol, trade_date) DO UPDATE SET
                 ins_code = excluded.ins_code,
                 trade_date_jalali = excluded.trade_date_jalali,
                 raw_closing_price = excluded.raw_closing_price,
                 adjusted_closing_price = excluded.adjusted_closing_price,
                 raw_last_price = excluded.raw_last_price,
+                daily_high_price = excluded.daily_high_price,
+                daily_low_price = excluded.daily_low_price,
                 captured_at = excluded.captured_at,
                 source = excluded.source
             """,
@@ -1756,6 +1793,41 @@ def pending_stock_price_history_rows(
                 """
             ).fetchall()
         }
+        range_coverage = {
+            normalize_symbol(record["symbol"]): (
+                int(record["total_count"] or 0),
+                int(record["range_count"] or 0),
+            )
+            for record in connection.execute(
+                """
+                SELECT
+                    symbol,
+                    COUNT(*) AS total_count,
+                    SUM(
+                        CASE
+                            WHEN daily_high_price IS NOT NULL
+                             AND daily_low_price IS NOT NULL
+                            THEN 1 ELSE 0
+                        END
+                    ) AS range_count
+                FROM (
+                    SELECT
+                        symbol,
+                        daily_high_price,
+                        daily_low_price,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY symbol
+                            ORDER BY trade_date DESC
+                        ) AS row_number
+                    FROM stock_price_history
+                    WHERE source = 'tsetmc_history'
+                )
+                WHERE row_number <= ?
+                GROUP BY symbol
+                """,
+                (int(target_days),),
+            ).fetchall()
+        }
     pending = []
     seen = set()
     for row in rows or []:
@@ -1788,6 +1860,12 @@ def pending_stock_price_history_rows(
                 needs_refresh = (
                     int(sync["requested_days"] or 0) < int(target_days)
                 )
+                total_count, range_count = range_coverage.get(
+                    normalized_symbol,
+                    (0, 0),
+                )
+                if total_count > 0 and range_count < total_count:
+                    needs_refresh = True
         if needs_refresh:
             pending.append({"symbol": symbol, "ins_code": ins_code})
     return pending
@@ -1915,6 +1993,30 @@ def save_daily_stock_price_points(rows, captured_at=None):
                 (symbol, trade_date),
             ).fetchone()
             if exists:
+                connection.execute(
+                    """
+                    UPDATE stock_price_history
+                    SET ins_code = ?,
+                        raw_closing_price = ?,
+                        adjusted_closing_price = ?,
+                        raw_last_price = COALESCE(?, raw_last_price),
+                        daily_high_price = COALESCE(?, daily_high_price),
+                        daily_low_price = COALESCE(?, daily_low_price),
+                        captured_at = ?
+                    WHERE symbol = ? AND trade_date = ?
+                    """,
+                    (
+                        ins_code,
+                        closing_price,
+                        closing_price,
+                        stock_number(row.get("last_price")),
+                        stock_number(row.get("daily_high_price")),
+                        stock_number(row.get("daily_low_price")),
+                        captured_at_iso,
+                        symbol,
+                        trade_date,
+                    ),
+                )
                 continue
             previous = connection.execute(
                 """
@@ -1944,9 +2046,10 @@ def save_daily_stock_price_points(rows, captured_at=None):
                 INSERT OR IGNORE INTO stock_price_history (
                     symbol, ins_code, trade_date, trade_date_jalali,
                     raw_closing_price, adjusted_closing_price,
-                    raw_last_price, captured_at, source
+                    raw_last_price, daily_high_price, daily_low_price,
+                    captured_at, source
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     symbol,
@@ -1956,6 +2059,8 @@ def save_daily_stock_price_points(rows, captured_at=None):
                     closing_price,
                     closing_price,
                     stock_number(row.get("last_price")),
+                    stock_number(row.get("daily_high_price")),
+                    stock_number(row.get("daily_low_price")),
                     captured_at_iso,
                     "daily_close",
                 ),
@@ -1982,7 +2087,8 @@ def read_stock_price_history(symbols=None):
             records = connection.execute(
                 """
                 SELECT symbol, trade_date, raw_closing_price,
-                       adjusted_closing_price, raw_last_price
+                       adjusted_closing_price, raw_last_price,
+                       daily_high_price, daily_low_price
                 FROM stock_price_history
                 ORDER BY trade_date DESC
                 """
@@ -1995,7 +2101,8 @@ def read_stock_price_history(symbols=None):
                 records.extend(connection.execute(
                     f"""
                     SELECT symbol, trade_date, raw_closing_price,
-                           adjusted_closing_price, raw_last_price
+                           adjusted_closing_price, raw_last_price,
+                           daily_high_price, daily_low_price
                     FROM stock_price_history
                     WHERE symbol IN ({placeholders})
                     ORDER BY trade_date DESC
@@ -2012,6 +2119,8 @@ def read_stock_price_history(symbols=None):
             "closing_price": record["adjusted_closing_price"],
             "raw_closing_price": record["raw_closing_price"],
             "last_price": record["raw_last_price"],
+            "daily_high_price": record["daily_high_price"],
+            "daily_low_price": record["daily_low_price"],
         })
     return history
 
@@ -2890,6 +2999,22 @@ def read_stock_metric_history(symbol, metric, limit=365):
             """,
             (requested_symbol, requested_symbol, safe_limit * 2),
         ).fetchall()
+        price_rows = connection.execute(
+            """
+            SELECT trade_date, raw_closing_price, raw_last_price,
+                   daily_high_price, daily_low_price
+            FROM stock_price_history
+            WHERE symbol = ?
+            ORDER BY trade_date DESC
+            LIMIT ?
+            """,
+            (requested_symbol, safe_limit * 2),
+        ).fetchall()
+
+    price_by_date = {
+        row["trade_date"]: row
+        for row in price_rows
+    }
 
     points = []
     seen_dates = set()
@@ -2912,7 +3037,18 @@ def read_stock_metric_history(symbol, metric, limit=365):
             "value": value,
         }
         if metric == "price_power":
-            point["status"] = stock_price_power_status(data)
+            status_data = dict(data)
+            price_row = price_by_date.get(database_row["trade_date"])
+            if price_row is not None:
+                for target_field, source_field in (
+                    ("last_price", "raw_last_price"),
+                    ("closing_price", "raw_closing_price"),
+                    ("daily_high_price", "daily_high_price"),
+                    ("daily_low_price", "daily_low_price"),
+                ):
+                    if price_row[source_field] is not None:
+                        status_data[target_field] = price_row[source_field]
+            point["status"] = stock_price_power_status(status_data)
         points.append(point)
         seen_dates.add(database_row["trade_date"])
 
@@ -3412,18 +3548,67 @@ def stock_order_book_presence(row):
 
 
 def stock_strategy_buy_queue_state(row):
-    """Return True/False for a known order book, or None when it is missing."""
-    presence = stock_order_book_presence(row)
-    if presence is None:
+    """Return whether the row is one of the two buy-queue states."""
+    status = stock_price_power_status(row)
+    if status is None:
         return None
-    has_buy_orders, has_sell_orders = presence
-    return has_buy_orders and not has_sell_orders
+    return status in {"buy_queue", "buy_queue_neutral"}
 
 
 def stock_price_power_status(row):
-    """Map the saved price-power fields to a human-readable market status."""
+    """Classify price position into the seven requested market states."""
     if not isinstance(row, dict):
         return None
+
+    last_price = stock_number(row.get("last_price"))
+    closing_price = stock_number(row.get("closing_price"))
+    upper_price = stock_number(row.get("daily_high_price"))
+    if upper_price is None or upper_price <= 0:
+        upper_price = stock_number(row.get("daily_upper_price"))
+    lower_price = stock_number(row.get("daily_low_price"))
+    if lower_price is None or lower_price <= 0:
+        lower_price = stock_number(row.get("daily_lower_price"))
+
+    if last_price is not None and closing_price is not None:
+        if upper_price is not None and last_price == upper_price:
+            return (
+                "buy_queue_neutral"
+                if closing_price == upper_price
+                else "buy_queue"
+            )
+        if lower_price is not None and last_price == lower_price:
+            return (
+                "sell_queue_neutral"
+                if closing_price == lower_price
+                else "sell_queue"
+            )
+
+    # Compatibility for snapshots saved before daily price limits were stored.
+    # Current rows have both limits and never need this order-book fallback.
+    if upper_price is None or lower_price is None:
+        presence = stock_order_book_presence(row)
+        if presence is not None:
+            has_buy_orders, has_sell_orders = presence
+            if has_buy_orders and not has_sell_orders:
+                return (
+                    "buy_queue_neutral"
+                    if last_price is not None and last_price == closing_price
+                    else "buy_queue"
+                )
+            if has_sell_orders and not has_buy_orders:
+                return (
+                    "sell_queue_neutral"
+                    if last_price is not None and last_price == closing_price
+                    else "sell_queue"
+                )
+
+    if last_price is not None and closing_price is not None:
+        if last_price > closing_price:
+            return "positive"
+        if last_price < closing_price:
+            return "negative"
+        return "neutral"
+
     price_power = stock_number(row.get("price_power"))
     if price_power is None:
         return None
@@ -3431,14 +3616,6 @@ def stock_price_power_status(row):
         return "positive"
     if price_power < 0:
         return "negative"
-
-    presence = stock_order_book_presence(row)
-    if presence is not None:
-        has_buy_orders, has_sell_orders = presence
-        if has_buy_orders and not has_sell_orders:
-            return "buy_queue"
-        if has_sell_orders and not has_buy_orders:
-            return "sell_queue"
     return "neutral"
 
 
@@ -3856,6 +4033,16 @@ def evaluate_stock_strategy(rows, history, rules):
             "market_value": row.get("market_value"),
             "ins_code": row.get("ins_code"),
             "price_power": row.get("price_power"),
+            "price_power_status": (
+                row.get("price_power_status")
+                or stock_price_power_status(row)
+            ),
+            "last_price": row.get("last_price"),
+            "closing_price": row.get("closing_price"),
+            "daily_high_price": row.get("daily_high_price"),
+            "daily_low_price": row.get("daily_low_price"),
+            "daily_upper_price": row.get("daily_upper_price"),
+            "daily_lower_price": row.get("daily_lower_price"),
             "order_book_buy_value": row.get("order_book_buy_value"),
             "order_book_buy_volume": row.get("order_book_buy_volume"),
             "order_book_buy_count": row.get("order_book_buy_count"),
@@ -4306,39 +4493,31 @@ def build_stock_buy_queue_summary(
             if candidate_date < target_date
         ]
 
-        previous_snapshot = historical_rows[0] if historical_rows else None
-        previous_trade_value = stock_number(
-            previous_snapshot.get("trade_value")
-            if previous_snapshot
-            else None
-        )
-        consecutive_previous_queue_days = 0
+        trade_value = stock_number(target_row.get("trade_value"))
+        consecutive_queue_days = 1
         for snapshot in historical_rows:
             if stock_strategy_buy_queue_state(snapshot) is not True:
                 break
-            consecutive_previous_queue_days += 1
+            consecutive_queue_days += 1
 
-        previous_to_queue_percent = (
-            round(previous_trade_value / buy_queue_value * 100, 4)
-            if previous_trade_value is not None
-            and previous_trade_value >= 0
+        traded_value_percent = (
+            round(
+                trade_value / (trade_value + buy_queue_value) * 100,
+                4,
+            )
+            if trade_value is not None
+            and trade_value >= 0
+            and trade_value + buy_queue_value > 0
             else None
         )
         results.append({
             "symbol": row.get("symbol"),
             "ins_code": row.get("ins_code"),
             "market_date": target_date or None,
-            "previous_trade_date": (
-                previous_snapshot.get("trade_date")
-                if previous_snapshot
-                else None
-            ),
             "buy_queue_value": buy_queue_value,
-            "previous_trade_value": previous_trade_value,
-            "previous_to_queue_percent": previous_to_queue_percent,
-            "consecutive_previous_queue_days": (
-                consecutive_previous_queue_days
-            ),
+            "trade_value": trade_value,
+            "traded_value_percent": traded_value_percent,
+            "consecutive_queue_days": consecutive_queue_days,
         })
         if target_date:
             target_dates.add(target_date)
@@ -4346,8 +4525,8 @@ def build_stock_buy_queue_summary(
     results.sort(
         key=lambda item: (
             item["buy_queue_value"],
-            item["previous_trade_value"] is not None,
-            item["previous_trade_value"] or 0,
+            item["trade_value"] is not None,
+            item["trade_value"] or 0,
         ),
         reverse=True,
     )
@@ -5432,12 +5611,15 @@ def fetch_closing_data(ins_code):
     if not price or price <= 0:
         price = yesterday_price if yesterday_price and yesterday_price > 0 else None
     return {
+        "market_date": normalize_stock_market_date(info.get("dEven")),
         "price": price,
         "closing_price": (
             stock_integer(closing_price)
             if closing_price and closing_price > 0
             else None
         ),
+        "daily_high_price": stock_integer(info.get("priceMax")),
+        "daily_low_price": stock_integer(info.get("priceMin")),
         "last_price": (
             stock_integer(last_price)
             if last_price and last_price > 0
@@ -5584,8 +5766,14 @@ def calculate_stock_indicators(row):
         else None
     )
 
+    price_power_status = stock_price_power_status({
+        **row,
+        "price_power": price_power,
+    })
+
     return {
         "price_power": price_power,
+        "price_power_status": price_power_status,
         "trade_to_float_percent": trade_to_float_percent,
         "real_money_flow": real_money_flow,
         "money_flow_quality": money_flow_quality,
@@ -5721,36 +5909,121 @@ def find_stock_instrument(symbol):
     return fallback
 
 
-def fetch_stock_row(symbol, market_map):
-    info = find_stock_instrument(symbol)
+def fetch_stock_row(symbol, market_map, fallback_row=None):
+    """Fetch one row without discarding fresh prices when an optional feed fails."""
+    fallback_row = fallback_row if isinstance(fallback_row, dict) else {}
+    target_symbol = normalize_symbol(symbol)
+    fallback_ins_code = str(fallback_row.get("ins_code") or "").strip()
+    warnings = []
+    info = {}
+    instrument_error = None
+
+    # Existing catalogue symbols already have a verified TSETMC identifier.
+    # Using it directly is both faster and less vulnerable to search throttling.
+    if fallback_ins_code:
+        try:
+            payload = fetch_tsetmc_json(
+                "https://cdn.tsetmc.com/api/Instrument/"
+                f"GetInstrumentInfo/{fallback_ins_code}"
+            )
+            candidate = payload.get("instrumentInfo") or {}
+            if normalize_symbol(candidate.get("lVal18AFC")) == target_symbol:
+                info = candidate
+        except (requests.RequestException, ValueError, TypeError) as error:
+            instrument_error = error
+
     if not info:
+        try:
+            info = find_stock_instrument(symbol) or {}
+        except (requests.RequestException, ValueError, TypeError) as error:
+            warnings.append(f"instrument-search: {error}")
+
+    if not info:
+        warnings.append(
+            "instrument-info: "
+            + (
+                str(instrument_error)
+                if instrument_error is not None
+                else "اطلاعات ایستای نماد در دسترس نبود."
+            )
+        )
+
+    ins_code = str(info.get("insCode") or fallback_ins_code).strip()
+    if not ins_code:
         raise ValueError(f"نماد {symbol} در TSETMC پیدا نشد.")
 
     sector = info.get("sector") or {}
+    static_threshold = info.get("staticThreshold") or {}
     issued_units = stock_number(info.get("etfIssuedUnit"))
     listed_shares = stock_number(info.get("zTitad"))
-    units = issued_units if issued_units and issued_units > 0 else listed_shares
-    ins_code = str(info.get("insCode") or "").strip()
+    fallback_shares = stock_number(fallback_row.get("share_count"))
+    units = next(
+        (
+            value
+            for value in (issued_units, listed_shares, fallback_shares)
+            if value is not None and value > 0
+        ),
+        None,
+    )
     market_data = dict(market_map.get(normalize_symbol(symbol)) or {})
-    if (
-        market_data.get("price") is None
-        or market_data.get("closing_price") is None
-        or market_data.get("last_price") is None
-        or market_data.get("yesterday_price") is None
-        or market_data.get("trade_volume") is None
-        or market_data.get("trade_value") is None
-    ):
+
+    # ClosingPrice is the authoritative final quote. Prefer every valid field
+    # from it, while retaining the bulk market-watch value if this request fails.
+    closing_market_date = None
+    try:
         closing_data = fetch_closing_data(ins_code)
-        for field, value in closing_data.items():
-            if market_data.get(field) is None:
+        closing_market_date = closing_data.get("market_date")
+        for field in (
+            "price",
+            "closing_price",
+            "last_price",
+            "yesterday_price",
+            "daily_high_price",
+            "daily_low_price",
+            "trade_volume",
+            "trade_value",
+        ):
+            value = closing_data.get(field)
+            if value is not None:
                 market_data[field] = value
+    except (requests.RequestException, ValueError, TypeError) as error:
+        warnings.append(f"closing-price: {error}")
 
     price = market_data.get("price")
     closing_price = market_data.get("closing_price")
     last_price = market_data.get("last_price")
     yesterday_price = market_data.get("yesterday_price")
-    client_type = fetch_stock_client_type(ins_code)
-    order_book_totals = fetch_stock_order_book_totals(ins_code)
+
+    client_type = {
+        "real_buy_volume": None,
+        "real_buy_count": None,
+        "legal_buy_volume": None,
+        "legal_buy_count": None,
+        "real_sell_volume": None,
+        "real_sell_count": None,
+        "legal_sell_volume": None,
+        "legal_sell_count": None,
+    }
+    try:
+        client_type.update(fetch_stock_client_type(ins_code))
+    except (requests.RequestException, ValueError, TypeError) as error:
+        warnings.append(f"client-type: {error}")
+
+    order_book_totals = {
+        "order_book_value": None,
+        "order_book_volume": None,
+        "order_book_count": None,
+        "order_book_buy_value": None,
+        "order_book_buy_volume": None,
+        "order_book_buy_count": None,
+        "order_book_sell_value": None,
+        "order_book_sell_volume": None,
+        "order_book_sell_count": None,
+    }
+    try:
+        order_book_totals.update(fetch_stock_order_book_totals(ins_code))
+    except (requests.RequestException, ValueError, TypeError) as error:
+        warnings.append(f"best-limits: {error}")
 
     market_value = None
     if units and units > 0 and price and price > 0:
@@ -5759,10 +6032,20 @@ def fetch_stock_row(symbol, market_map):
     row = {
         "symbol": symbol,
         "ins_code": ins_code,
-        "market_date": normalize_stock_market_date(info.get("dEven")),
-        "company": clean_stock_text(info.get("lVal30")),
-        "industry": clean_stock_text(sector.get("lSecVal")),
-        "market_value": market_value,
+        "market_date": (
+            closing_market_date
+            or normalize_stock_market_date(info.get("dEven"))
+            or fallback_row.get("market_date")
+        ),
+        "company": (
+            clean_stock_text(info.get("lVal30"))
+            or fallback_row.get("company")
+        ),
+        "industry": (
+            clean_stock_text(sector.get("lSecVal"))
+            or fallback_row.get("industry")
+        ),
+        "market_value": market_value or fallback_row.get("market_value"),
         "last_price": last_price,
         "yesterday_price": yesterday_price,
         "last_price_change_percent": calculate_stock_change_percent(
@@ -5774,16 +6057,42 @@ def fetch_stock_row(symbol, market_map):
             closing_price,
             yesterday_price,
         ),
+        "daily_high_price": stock_integer(
+            market_data.get("daily_high_price")
+        ),
+        "daily_low_price": stock_integer(
+            market_data.get("daily_low_price")
+        ),
+        "daily_upper_price": stock_integer(
+            static_threshold.get("psGelStaMax")
+            if static_threshold.get("psGelStaMax") is not None
+            else fallback_row.get("daily_upper_price")
+        ),
+        "daily_lower_price": stock_integer(
+            static_threshold.get("psGelStaMin")
+            if static_threshold.get("psGelStaMin") is not None
+            else fallback_row.get("daily_lower_price")
+        ),
         "trade_value": market_data.get("trade_value"),
         "trade_volume": market_data.get("trade_volume"),
         "share_count": stock_integer(units),
-        "floating_share_percent": stock_number(info.get("kAjCapValCpsIdx")),
+        "floating_share_percent": stock_number(
+            info.get("kAjCapValCpsIdx")
+            if info.get("kAjCapValCpsIdx") is not None
+            else fallback_row.get("floating_share_percent")
+        ),
         **client_type,
-        "monthly_average_volume": stock_integer(info.get("qTotTran5JAvg")),
+        "monthly_average_volume": stock_integer(
+            info.get("qTotTran5JAvg")
+            if info.get("qTotTran5JAvg") is not None
+            else fallback_row.get("monthly_average_volume")
+        ),
         **order_book_totals,
     }
     apply_stock_floating_share_override(row)
     row.update(calculate_stock_indicators(row))
+    if warnings:
+        row["_fetch_warning"] = f"{symbol}: " + "; ".join(warnings)
     return row
 
 
@@ -5798,7 +6107,7 @@ def fetch_all_stock_row(instrument):
     try:
         info_payload = fetch_tsetmc_json(
             f"https://cdn.tsetmc.com/api/Instrument/GetInstrumentInfo/{ins_code}",
-            attempts=2,
+            attempts=3,
         )
         info = info_payload.get("instrumentInfo") or {}
     except (requests.RequestException, ValueError, TypeError) as error:
@@ -5806,6 +6115,7 @@ def fetch_all_stock_row(instrument):
         warnings.append(f"{symbol}: instrument-info: {error}")
 
     sector = info.get("sector") or {}
+    static_threshold = info.get("staticThreshold") or {}
     issued_units = stock_number(info.get("etfIssuedUnit"))
     listed_shares = stock_number(info.get("zTitad"))
     market_watch_shares = stock_number(instrument.get("share_count"))
@@ -5849,10 +6159,20 @@ def fetch_all_stock_row(instrument):
     except (requests.RequestException, ValueError, TypeError) as error:
         warnings.append(f"{symbol}: best-limits: {error}")
 
-    price = stock_number(instrument.get("price"))
-    closing_price = stock_integer(instrument.get("closing_price"))
-    last_price = stock_integer(instrument.get("last_price"))
-    yesterday_price = stock_integer(instrument.get("yesterday_price"))
+    closing_data = {}
+    try:
+        closing_data = fetch_closing_data(ins_code)
+    except (requests.RequestException, ValueError, TypeError) as error:
+        warnings.append(f"{symbol}: closing-price: {error}")
+
+    def current_value(field):
+        value = closing_data.get(field)
+        return value if value is not None else instrument.get(field)
+
+    price = stock_number(current_value("price"))
+    closing_price = stock_integer(current_value("closing_price"))
+    last_price = stock_integer(current_value("last_price"))
+    yesterday_price = stock_integer(current_value("yesterday_price"))
     market_value = (
         int(round(units * price))
         if units is not None and units > 0 and price is not None and price > 0
@@ -5864,7 +6184,11 @@ def fetch_all_stock_row(instrument):
         "category": clean_stock_text(instrument.get("category")).upper(),
         "session_type": instrument.get("session_type") or "standard",
         "ins_code": ins_code,
-        "market_date": normalize_stock_market_date(info.get("dEven")),
+        "market_date": (
+            closing_data.get("market_date")
+            or normalize_stock_market_date(info.get("dEven"))
+            or normalize_stock_market_date(instrument.get("market_date"))
+        ),
         "company": (
             clean_stock_text(info.get("lVal30"))
             or clean_stock_text(instrument.get("company"))
@@ -5882,8 +6206,20 @@ def fetch_all_stock_row(instrument):
             closing_price,
             yesterday_price,
         ),
-        "trade_value": stock_integer(instrument.get("trade_value")),
-        "trade_volume": stock_integer(instrument.get("trade_volume")),
+        "daily_high_price": stock_integer(
+            current_value("daily_high_price")
+        ),
+        "daily_low_price": stock_integer(
+            current_value("daily_low_price")
+        ),
+        "daily_upper_price": stock_integer(
+            static_threshold.get("psGelStaMax")
+        ),
+        "daily_lower_price": stock_integer(
+            static_threshold.get("psGelStaMin")
+        ),
+        "trade_value": stock_integer(current_value("trade_value")),
+        "trade_volume": stock_integer(current_value("trade_volume")),
         "share_count": stock_integer(units),
         "floating_share_percent": stock_number(info.get("kAjCapValCpsIdx")),
         **client_type,
@@ -5907,8 +6243,9 @@ def fetch_all_stock_phase(phase):
     if not instruments:
         raise RuntimeError("فهرست کامل نمادهای بازار از TSETMC دریافت نشد.")
 
-    rows = []
-    errors = []
+    rows_by_symbol = {}
+    warnings_by_symbol = {}
+    retry_instruments = []
     with ThreadPoolExecutor(max_workers=12) as executor:
         futures = {
             executor.submit(fetch_all_stock_row, instrument): instrument
@@ -5918,11 +6255,44 @@ def fetch_all_stock_phase(phase):
             instrument = futures[future]
             try:
                 row, row_warnings = future.result()
-                rows.append(row)
-                errors.extend(row_warnings)
+                key = normalize_symbol(row.get("symbol"))
+                rows_by_symbol[key] = row
+                warnings_by_symbol[key] = row_warnings
+                if row_warnings:
+                    retry_instruments.append(instrument)
             except (requests.RequestException, ValueError, TypeError) as error:
-                errors.append(f"{instrument.get('symbol')}: {error}")
+                key = normalize_symbol(instrument.get("symbol"))
+                warnings_by_symbol[key] = [
+                    f"{instrument.get('symbol')}: {error}"
+                ]
+                retry_instruments.append(instrument)
 
+    # Retry only partial rows with lower concurrency. This prevents a single
+    # throttled instrument-info request from leaving a row incomplete all day.
+    if retry_instruments:
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            retry_futures = {
+                executor.submit(fetch_all_stock_row, instrument): instrument
+                for instrument in retry_instruments
+            }
+            for future in as_completed(retry_futures):
+                instrument = retry_futures[future]
+                key = normalize_symbol(instrument.get("symbol"))
+                try:
+                    row, row_warnings = future.result()
+                    rows_by_symbol[key] = row
+                    warnings_by_symbol[key] = row_warnings
+                except (requests.RequestException, ValueError, TypeError) as error:
+                    warnings_by_symbol[key] = [
+                        f"{instrument.get('symbol')}: {error}"
+                    ]
+
+    rows = list(rows_by_symbol.values())
+    errors = [
+        warning
+        for row_warnings in warnings_by_symbol.values()
+        for warning in row_warnings
+    ]
     rows.sort(key=lambda row: stock_integer(row.get("position")) or 0)
     return rows, errors
 
@@ -5976,7 +6346,12 @@ def merge_stock_rows(symbols, fresh_rows, fallback_rows):
     return merged
 
 
-def fetch_live_stock_catalog(symbols):
+def fetch_live_stock_catalog(symbols, fallback_rows=None):
+    fallback_by_symbol = {
+        normalize_symbol(row.get("symbol")): row
+        for row in (fallback_rows or [])
+        if isinstance(row, dict) and row.get("symbol")
+    }
     try:
         market_map = fetch_stock_market_map()
     except requests.RequestException as error:
@@ -5985,30 +6360,48 @@ def fetch_live_stock_catalog(symbols):
 
     rows = []
     failed_symbols = []
+    errors = []
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {
-            executor.submit(fetch_stock_row, symbol, market_map): symbol
+            executor.submit(
+                fetch_stock_row,
+                symbol,
+                market_map,
+                fallback_by_symbol.get(normalize_symbol(symbol)),
+            ): symbol
             for symbol in symbols
         }
         for future in as_completed(futures):
             symbol = futures[future]
             try:
-                rows.append(future.result())
+                row = future.result()
+                warning = row.pop("_fetch_warning", None)
+                if warning:
+                    errors.append(warning)
+                rows.append(row)
             except (requests.RequestException, ValueError, TypeError) as error:
                 failed_symbols.append(symbol)
 
     # A quieter second pass avoids losing rows during brief CDN throttling.
-    errors = []
     if failed_symbols:
         with ThreadPoolExecutor(max_workers=3) as executor:
             retry_futures = {
-                executor.submit(fetch_stock_row, symbol, market_map): symbol
+                executor.submit(
+                    fetch_stock_row,
+                    symbol,
+                    market_map,
+                    fallback_by_symbol.get(normalize_symbol(symbol)),
+                ): symbol
                 for symbol in failed_symbols
             }
             for future in as_completed(retry_futures):
                 symbol = retry_futures[future]
                 try:
-                    rows.append(future.result())
+                    row = future.result()
+                    warning = row.pop("_fetch_warning", None)
+                    if warning:
+                        errors.append(warning)
+                    rows.append(row)
                 except (requests.RequestException, ValueError, TypeError) as error:
                     errors.append(f"{symbol}: {error}")
 
@@ -6022,7 +6415,7 @@ def refresh_stock_watchlist():
     if not symbols:
         return [], []
 
-    fresh_rows, errors = fetch_live_stock_catalog(symbols)
+    fresh_rows, errors = fetch_live_stock_catalog(symbols, current_rows)
     merged_rows = merge_stock_rows(symbols, fresh_rows, current_rows)
     for row in merged_rows:
         save_stock_watchlist_row(row)
@@ -6072,7 +6465,7 @@ def refresh_stock_database():
     try:
         symbols = load_stock_symbols()
         database_rows, _ = read_stock_database()
-        fresh_rows, errors = fetch_live_stock_catalog(symbols)
+        fresh_rows, errors = fetch_live_stock_catalog(symbols, database_rows)
         if not fresh_rows:
             raise RuntimeError("دریافت آنلاین اطلاعات سهام از TSETMC ناموفق بود.")
 
@@ -6080,7 +6473,12 @@ def refresh_stock_database():
         captured_at = datetime.now(IRAN_TIMEZONE)
         updated_at = captured_at.isoformat()
         replace_stock_database(merged_rows, updated_at, len(fresh_rows))
-        save_daily_stock_snapshots(merged_rows, captured_at)
+        # Archive the exact rows that were committed and will be shown in the
+        # stock table.  Using the pre-commit merge objects here could leave the
+        # chart history one response behind the visible table when concurrent
+        # TSETMC feeds finish at slightly different times.
+        committed_rows, _ = read_stock_database()
+        save_daily_stock_snapshots(committed_rows, captured_at)
 
         if errors:
             error_message = (

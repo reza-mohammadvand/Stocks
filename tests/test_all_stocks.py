@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 import app as stock_app
 
@@ -146,6 +147,107 @@ class AllStockDailyTests(unittest.TestCase):
         self.assertEqual(merged[0]["last_price"], 1300)
         self.assertEqual(merged[0]["industry"], "محصولات آزمون")
         self.assertEqual(merged[0]["real_buy_volume"], 5000)
+
+    def test_complete_market_row_prefers_authoritative_closing_quote(self):
+        instrument = {
+            "position": 0,
+            "symbol": "TEST",
+            "company": "Company",
+            "category": "N1",
+            "session_type": "standard",
+            "ins_code": "123",
+            "market_date": "2026-11-07",
+            "price": 100,
+            "last_price": 100,
+            "closing_price": 100,
+            "yesterday_price": 95,
+            "trade_value": 100,
+            "trade_volume": 1,
+            "share_count": 1_000,
+        }
+        instrument_info = {
+            "instrumentInfo": {
+                "insCode": "123",
+                "lVal18AFC": "TEST",
+                "lVal30": "Company",
+                "dEven": 20261108,
+                "zTitad": 1_000,
+                "qTotTran5JAvg": 500,
+                "kAjCapValCpsIdx": 20,
+                "sector": {"lSecVal": "Industry"},
+                "staticThreshold": {
+                    "psGelStaMax": 220,
+                    "psGelStaMin": 180,
+                },
+            },
+        }
+        zero_client_type = {
+            key: 0
+            for key in (
+                "real_buy_volume",
+                "real_buy_count",
+                "legal_buy_volume",
+                "legal_buy_count",
+                "real_sell_volume",
+                "real_sell_count",
+                "legal_sell_volume",
+                "legal_sell_count",
+            )
+        }
+        zero_order_book = {
+            key: 0
+            for key in (
+                "order_book_value",
+                "order_book_volume",
+                "order_book_count",
+                "order_book_buy_value",
+                "order_book_buy_volume",
+                "order_book_buy_count",
+                "order_book_sell_value",
+                "order_book_sell_volume",
+                "order_book_sell_count",
+            )
+        }
+
+        with (
+            patch.object(
+                stock_app,
+                "fetch_tsetmc_json",
+                return_value=instrument_info,
+            ),
+            patch.object(
+                stock_app,
+                "fetch_closing_data",
+                return_value={
+                    "market_date": "2026-11-08",
+                    "price": 205,
+                    "last_price": 200,
+                    "closing_price": 195,
+                    "yesterday_price": 190,
+                    "trade_value": 9_000,
+                    "trade_volume": 45,
+                },
+            ),
+            patch.object(
+                stock_app,
+                "fetch_stock_client_type",
+                return_value=zero_client_type,
+            ),
+            patch.object(
+                stock_app,
+                "fetch_stock_order_book_totals",
+                return_value=zero_order_book,
+            ),
+        ):
+            row, warnings = stock_app.fetch_all_stock_row(instrument)
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(row["market_date"], "2026-11-08")
+        self.assertEqual(row["last_price"], 200)
+        self.assertEqual(row["closing_price"], 195)
+        self.assertEqual(row["trade_value"], 9_000)
+        self.assertEqual(row["daily_upper_price"], 220)
+        self.assertEqual(row["price_power_status"], "positive")
 
     def test_stale_market_day_is_checked_without_replacing_finalized_rows(self):
         current_row = {

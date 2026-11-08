@@ -183,6 +183,7 @@ class StockSnapshotTests(unittest.TestCase):
         first_row["trade_value"] = 10_000_000_000
         first_row.update({
             "price_power": 0,
+            "last_price": 100,
             "order_book_buy_value": 1_000,
             "order_book_sell_value": 0,
         })
@@ -204,10 +205,33 @@ class StockSnapshotTests(unittest.TestCase):
         second_row["trade_value"] = 20_000_000_000
         second_row.update({
             "price_power": 0,
+            "last_price": 90,
             "order_book_buy_value": 0,
             "order_book_sell_value": 1_000,
         })
         stock_app.save_daily_stock_snapshots([second_row], second_time)
+        stock_app.store_stock_price_history(
+            "فولاد",
+            "123",
+            [
+                {
+                    "trade_date": "2026-10-19",
+                    "raw_closing_price": 100,
+                    "adjusted_closing_price": 100,
+                    "raw_last_price": 100,
+                    "daily_high_price": 100,
+                    "daily_low_price": 90,
+                },
+                {
+                    "trade_date": "2026-10-20",
+                    "raw_closing_price": 110,
+                    "adjusted_closing_price": 110,
+                    "raw_last_price": 90,
+                    "daily_high_price": 120,
+                    "daily_low_price": 90,
+                },
+            ],
+        )
 
         with stock_app.app.test_client() as client:
             response = client.get(
@@ -236,9 +260,64 @@ class StockSnapshotTests(unittest.TestCase):
                 point["status"]
                 for point in price_power_response.get_json()["points"]
             ],
-            ["buy_queue", "sell_queue"],
+            ["buy_queue_neutral", "sell_queue"],
         )
         self.assertEqual(invalid.status_code, 400)
+
+    def test_price_power_status_uses_all_seven_market_states(self):
+        cases = (
+            (100, 100, 100, 90, "buy_queue_neutral"),
+            (100, 95, 100, 90, "buy_queue"),
+            (98, 95, 100, 90, "positive"),
+            (92, 95, 100, 90, "negative"),
+            (90, 90, 100, 90, "sell_queue_neutral"),
+            (90, 95, 100, 90, "sell_queue"),
+            (95, 95, 100, 90, "neutral"),
+        )
+
+        for last_price, closing_price, upper, lower, expected in cases:
+            with self.subTest(expected=expected):
+                row = {
+                    "last_price": last_price,
+                    "closing_price": closing_price,
+                    "daily_upper_price": upper,
+                    "daily_lower_price": lower,
+                }
+                self.assertEqual(
+                    stock_app.stock_price_power_status(row),
+                    expected,
+                )
+                self.assertEqual(
+                    stock_app.stock_strategy_buy_queue_state(row),
+                    expected in {"buy_queue", "buy_queue_neutral"},
+                )
+
+        # Conditions are evaluated top-to-bottom: equality with the daily high
+        # wins before the generic last-price-equals-closing-price condition.
+        self.assertEqual(
+            stock_app.stock_price_power_status({
+                "last_price": 28_330,
+                "closing_price": 28_330,
+                "daily_high_price": 28_330,
+                "daily_low_price": 28_200,
+            }),
+            "buy_queue_neutral",
+        )
+
+        # TSETMC reports zero daily highs/lows for instruments without a
+        # completed trade. Zero is not a price boundary, so use the static
+        # daily range instead.
+        self.assertEqual(
+            stock_app.stock_price_power_status({
+                "last_price": 100,
+                "closing_price": 100,
+                "daily_high_price": 0,
+                "daily_low_price": 0,
+                "daily_upper_price": 100,
+                "daily_lower_price": 90,
+            }),
+            "buy_queue_neutral",
+        )
 
     def test_calculate_stock_indicators(self):
         indicators = stock_app.calculate_stock_indicators({
@@ -263,6 +342,7 @@ class StockSnapshotTests(unittest.TestCase):
         self.assertEqual(indicators["real_sell_per_capita"], 100_000_000)
         self.assertEqual(indicators["real_buy_power"], 2)
         self.assertEqual(indicators["price_power"], 1)
+        self.assertEqual(indicators["price_power_status"], "positive")
 
         self.assertEqual(
             stock_app.calculate_stock_indicators({
@@ -320,12 +400,16 @@ class StockSnapshotTests(unittest.TestCase):
                 "raw_closing_price": 100,
                 "adjusted_closing_price": 100,
                 "raw_last_price": 101,
+                "daily_high_price": 102,
+                "daily_low_price": 98,
             },
             {
                 "trade_date": "2026-10-19",
                 "raw_closing_price": 90,
                 "adjusted_closing_price": 90,
                 "raw_last_price": 91,
+                "daily_high_price": 92,
+                "daily_low_price": 88,
             },
         ]
         stored = stock_app.store_stock_price_history(
@@ -341,6 +425,8 @@ class StockSnapshotTests(unittest.TestCase):
                 "closing_price": 55,
                 "last_price": 56,
                 "yesterday_price": 50,
+                "daily_high_price": 57,
+                "daily_low_price": 52,
             }],
             datetime(
                 2026,
@@ -348,6 +434,26 @@ class StockSnapshotTests(unittest.TestCase):
                 21,
                 12,
                 30,
+                tzinfo=stock_app.IRAN_TIMEZONE,
+            ),
+        )
+        stock_app.save_daily_stock_price_points(
+            [{
+                "symbol": "فولاد",
+                "ins_code": "123",
+                "market_date": "2026-10-21",
+                "closing_price": 57,
+                "last_price": 58,
+                "yesterday_price": 50,
+                "daily_high_price": 59,
+                "daily_low_price": 53,
+            }],
+            datetime(
+                2026,
+                10,
+                21,
+                13,
+                0,
                 tzinfo=stock_app.IRAN_TIMEZONE,
             ),
         )
@@ -362,11 +468,11 @@ class StockSnapshotTests(unittest.TestCase):
         self.assertEqual(stored, 2)
         self.assertEqual(
             [point["closing_price"] for point in history],
-            [55, 50, 45],
+            [57, 50, 45],
         )
         self.assertEqual(
             [point["closing_price"] for point in strategy_history],
-            [55, 50, 45],
+            [57, 50, 45],
         )
         self.assertEqual(
             stock_app.pending_stock_price_history_rows([
