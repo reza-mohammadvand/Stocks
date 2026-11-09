@@ -2291,11 +2291,35 @@
 
 .dashboard-shell .strategy-toolbar-actions {
     display: flex;
-    flex-wrap: wrap;
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
     align-items: center;
     justify-content: flex-start;
-    gap: 10px;
+    gap: 7px;
+    min-width: 0;
+    overflow-x: auto;
+    padding-block: 2px;
     direction: rtl;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(43, 184, 236, 0.5) transparent;
+}
+
+.dashboard-shell .strategy-toolbar-actions > * {
+    flex: 0 0 auto;
+}
+
+.dashboard-shell .strategy-action-buttons {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.dashboard-shell .strategy-toolbar .strategy-action-buttons button {
+    min-width: 104px;
+    min-height: 32px;
+    margin: 0;
+    padding: 6px 11px;
+    font-size: 10px;
 }
 
 .dashboard-shell .strategy-source-selector {
@@ -2951,7 +2975,19 @@
     .dashboard-shell .strategy-toolbar-actions {
         align-items: stretch;
         flex-direction: column;
+        overflow-x: visible;
         width: 100%;
+    }
+
+    .dashboard-shell .strategy-action-buttons {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+    }
+
+    .dashboard-shell .strategy-toolbar .strategy-action-buttons button {
+        width: 100%;
+        min-width: 0;
     }
 
     .dashboard-shell .strategy-source-selector {

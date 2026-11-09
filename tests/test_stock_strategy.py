@@ -1,5 +1,8 @@
 import unittest
+from io import BytesIO
 from unittest.mock import patch
+
+from openpyxl import load_workbook
 
 import app as stock_app
 
@@ -783,6 +786,86 @@ class StockStrategyTests(unittest.TestCase):
         self.assertEqual(
             result["technical_coverage"]["ema"]["required_points"],
             5,
+        )
+
+    def test_strategy_excel_export_contains_active_inputs_and_columns(self):
+        export_result = {
+            "source": "featured",
+            "active_filter_count": 2,
+            "rules": {
+                "trade_value": {
+                    "enabled": True,
+                    "operator": "gte",
+                    "days": 5,
+                    "fixed": 0,
+                    "consecutive_days": 0,
+                },
+                "rsi": {
+                    "enabled": True,
+                    "operator": "between",
+                    "fixed": 50,
+                    "maximum": 70,
+                    "period": 14,
+                },
+            },
+            "stocks": [{
+                "symbol": "نماد۱",
+                "company": "شرکت یک",
+                "industry": "صنعت آزمایشی",
+                "trade_value": 25_000_000_000,
+                "trade_value_average": 20_000_000_000,
+                "rsi": 61.5,
+                "macd": 2.5,
+            }],
+        }
+        client = stock_app.app.test_client()
+
+        with patch.object(
+            stock_app,
+            "get_stock_strategy",
+            return_value=export_result,
+        ):
+            response = client.post(
+                "/stock-strategy/export",
+                json={
+                    "rules": export_result["rules"],
+                    "source": "featured",
+                    "use_saved_data": False,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.mimetype,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertIn(
+            "strategy-export-",
+            response.headers.get("Content-Disposition", ""),
+        )
+
+        workbook = load_workbook(BytesIO(response.data), data_only=True)
+        self.assertEqual(workbook.sheetnames, ["تنظیمات فعال", "نتایج"])
+        settings = list(
+            workbook["تنظیمات فعال"].iter_rows(
+                min_row=8,
+                values_only=True,
+            )
+        )
+        self.assertIn(("ارزش معاملات", "میانگین چند روزه", 5), settings)
+        self.assertIn(("RSI", "حد پایین", 50), settings)
+        self.assertIn(("RSI", "حد بالا", 70), settings)
+
+        result_sheet = workbook["نتایج"]
+        headers = [cell.value for cell in result_sheet[5]]
+        self.assertIn("ارزش معاملات (میلیارد تومان)", headers)
+        self.assertIn("میانگین ارزش معاملات (میلیارد تومان)", headers)
+        self.assertIn("RSI 14", headers)
+        self.assertNotIn("MACD", headers)
+        self.assertEqual(result_sheet["A6"].value, "نماد۱")
+        self.assertEqual(
+            result_sheet.cell(6, headers.index("RSI 14") + 1).value,
+            61.5,
         )
 
 

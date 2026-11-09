@@ -10,7 +10,7 @@
     >
     <title>دیدبان بازار سهام</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='symbol-industry-compare-v1') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='strategy-toolbar-single-row-v1') }}">
     <link rel="icon" href="{{ url_for('static', filename='logo.png', v='market-logo-v2') }}" type="image/png">
 </head>
 <body class="dashboard-shell">
@@ -744,9 +744,19 @@
                                 نمایش صف خرید
                             </button>
                         </form>
-                        <button id="strategy-run-button" class="button-primary" type="button">
-                            اجرای فیلتر
-                        </button>
+                        <div class="strategy-action-buttons">
+                            <button id="strategy-run-button" class="button-primary" type="button">
+                                اجرای فیلتر
+                            </button>
+                            <button
+                                id="strategy-export-button"
+                                class="button-secondary"
+                                type="button"
+                                disabled
+                            >
+                                خروجی اکسل
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -1507,6 +1517,6 @@
         </section>
     </div>
 
-    <script src="{{ url_for('static', filename='scripttest.js', v='price-power-seven-states-v3') }}"></script>
+    <script src="{{ url_for('static', filename='scripttest.js', v='strategy-excel-export-v1') }}"></script>
 </body>
 </html>

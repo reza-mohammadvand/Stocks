@@ -2,11 +2,15 @@ import os
 import sqlite3
 import subprocess
 import threading
+from io import BytesIO
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from functools import lru_cache
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.table import Table, TableStyleInfo
 import requests
 import re
 import jdatetime
@@ -4416,6 +4420,419 @@ def get_stock_strategy(payload, use_saved_data=False, source="featured"):
     result["source_updated_at"] = metadata.get("last_successful_update")
     result.update(snapshot_metadata)
     return result
+
+
+def stock_strategy_export_settings(rules):
+    """Return active strategy inputs as readable spreadsheet rows."""
+    operator_labels = {
+        "gte": "بزرگ‌تر یا مساوی",
+        "lte": "کوچک‌تر یا مساوی",
+        "eq": "مساوی",
+        "between": "بین دو مقدار",
+    }
+    settings = []
+
+    def add(strategy, field, value):
+        settings.append((strategy, field, value))
+
+    for metric, strategy_name in (
+        ("trade_value", "ارزش معاملات"),
+        ("trade_to_float_percent", "نسبت معامله به شناوری"),
+        ("real_buy_power", "قدرت خرید حقیقی"),
+        ("real_money_flow", "ورود پول حقیقی"),
+        ("money_flow_quality", "کیفیت ورود پول"),
+        ("symbol_industry_compare", "مقایسه نماد با صنعت"),
+        ("industry_growth", "میانگین رشد صنعت"),
+        ("rsi", "RSI"),
+        ("ema", "EMA"),
+        ("macd", "MACD"),
+    ):
+        rule = rules.get(metric) or {}
+        if not stock_strategy_rule_is_active(metric, rule):
+            continue
+
+        if metric == "trade_value":
+            add(strategy_name, "نوع مقایسه", operator_labels[rule["operator"]])
+            add(strategy_name, "میانگین چند روزه", rule["days"])
+        elif metric in {"trade_to_float_percent", "real_buy_power"}:
+            add(strategy_name, "نوع مقایسه", operator_labels[rule["operator"]])
+            add(
+                strategy_name,
+                "عدد ثابت (درصد)"
+                if metric == "trade_to_float_percent"
+                else "عدد ثابت (برابر)",
+                rule["fixed"],
+            )
+            add(strategy_name, "میانگین چند روزه", rule["days"])
+        elif metric == "real_money_flow":
+            add(
+                strategy_name,
+                "حداقل روزهای مثبت پیاپی",
+                rule["consecutive_days"],
+            )
+            add(
+                strategy_name,
+                "بزرگ‌تر از میانگین چندروزه",
+                rule["days"],
+            )
+        elif metric == "money_flow_quality":
+            add(strategy_name, "نوع مقایسه", operator_labels[rule["operator"]])
+            add(strategy_name, "درصد کیفیت ورود پول", rule["fixed"])
+        elif metric == "symbol_industry_compare":
+            add(strategy_name, "نماد مبنا", rule.get("symbol") or "—")
+            add(strategy_name, "بازه بازدهی (روز)", rule["days"])
+            add(
+                strategy_name,
+                "نمایش هم‌صنعتی‌ها",
+                "بله" if rule.get("include_industry") else "خیر",
+            )
+        elif metric == "industry_growth":
+            add(
+                strategy_name,
+                "بازه رشد قیمت پایانی (روز)",
+                rule["days"],
+            )
+        elif metric == "rsi":
+            add(strategy_name, "نوع مقایسه", operator_labels[rule["operator"]])
+            add(strategy_name, "حد پایین", rule["fixed"])
+            add(strategy_name, "حد بالا", rule["maximum"])
+            add(strategy_name, "دوره", rule["period"])
+        elif metric == "ema":
+            add(
+                strategy_name,
+                "حالت بررسی",
+                "تقاطع EMA کوتاه و بلند"
+                if rule.get("mode") == "crossover"
+                else "قیمت پایانی نسبت به EMA",
+            )
+            add(strategy_name, "جهت مقایسه", operator_labels[rule["operator"]])
+            add(strategy_name, "دوره EMA کوتاه", rule["period"])
+            add(strategy_name, "دوره EMA بلند", rule["long_period"])
+        elif metric == "macd":
+            add(
+                strategy_name,
+                "مقایسه با",
+                "خط صفر" if rule.get("compare_to") == "zero" else "خط Signal",
+            )
+            add(strategy_name, "نوع مقایسه", operator_labels[rule["operator"]])
+            add(strategy_name, "دوره سریع", rule["fast_period"])
+            add(strategy_name, "دوره کند", rule["slow_period"])
+            add(strategy_name, "دوره Signal", rule["signal_period"])
+
+    return settings
+
+
+def stock_strategy_export_columns(rules):
+    """Build result columns only for strategies enabled in the export."""
+    columns = [
+        {"key": "symbol", "label": "نماد", "format": "@"},
+        {"key": "company", "label": "نام شرکت", "format": "@"},
+        {"key": "industry", "label": "صنعت", "format": "@"},
+    ]
+    added_keys = {column["key"] for column in columns}
+
+    def add(key, label, number_format="0.00", scale=1, value_map=None):
+        if key in added_keys:
+            return
+        columns.append({
+            "key": key,
+            "label": label,
+            "format": number_format,
+            "scale": scale,
+            "value_map": value_map,
+        })
+        added_keys.add(key)
+
+    rule = rules.get("trade_value") or {}
+    if stock_strategy_rule_is_active("trade_value", rule):
+        add(
+            "trade_value",
+            "ارزش معاملات (میلیارد تومان)",
+            "#,##0.00",
+            10_000_000_000,
+        )
+        if rule.get("days", 0) > 0:
+            add(
+                "trade_value_average",
+                "میانگین ارزش معاملات (میلیارد تومان)",
+                "#,##0.00",
+                10_000_000_000,
+            )
+
+    rule = rules.get("trade_to_float_percent") or {}
+    if stock_strategy_rule_is_active("trade_to_float_percent", rule):
+        add("trade_to_float_percent", "نسبت معامله به شناوری (درصد)")
+        if rule.get("days", 0) > 0:
+            add(
+                "trade_to_float_percent_average",
+                "میانگین نسبت معامله به شناوری (درصد)",
+            )
+
+    rule = rules.get("real_buy_power") or {}
+    if stock_strategy_rule_is_active("real_buy_power", rule):
+        add("real_buy_power", "قدرت خرید حقیقی (برابر)")
+        if rule.get("days", 0) > 0:
+            add("real_buy_power_average", "میانگین قدرت خرید حقیقی (برابر)")
+
+    rule = rules.get("real_money_flow") or {}
+    if stock_strategy_rule_is_active("real_money_flow", rule):
+        add(
+            "real_money_flow",
+            "ورود پول حقیقی (میلیارد تومان)",
+            "#,##0.00",
+            10_000_000_000,
+        )
+        if rule.get("consecutive_days", 0) > 0:
+            add(
+                "real_money_flow_positive_streak",
+                "ورود پول مثبت پیاپی (روز)",
+                "#,##0",
+            )
+        if rule.get("days", 0) > 0:
+            add(
+                "real_money_flow_average",
+                "میانگین ورود پول (میلیارد تومان)",
+                "#,##0.00",
+                10_000_000_000,
+            )
+
+    rule = rules.get("money_flow_quality") or {}
+    if stock_strategy_rule_is_active("money_flow_quality", rule):
+        add("money_flow_quality", "کیفیت ورود پول (درصد)")
+
+    rule = rules.get("industry_growth") or {}
+    if stock_strategy_rule_is_active("industry_growth", rule):
+        add("industry_growth_percent", "بازدهی نماد (درصد)")
+        add(
+            "industry_average_growth_percent",
+            "میانگین بازدهی صنعت (درصد)",
+        )
+        add(
+            "below_industry_average_percent",
+            "فاصله از میانگین صنعت (درصد)",
+        )
+        add("industry_growth_days_used", "روزهای محاسبه", "#,##0")
+
+    rule = rules.get("symbol_industry_compare") or {}
+    if stock_strategy_rule_is_active("symbol_industry_compare", rule):
+        add("symbol_industry_return_percent", "بازدهی نماد (درصد)")
+        add(
+            "symbol_industry_average_return_percent",
+            "میانگین بازدهی صنعت (درصد)",
+        )
+        add("symbol_industry_days_used", "روزهای محاسبه", "#,##0")
+
+    rule = rules.get("rsi") or {}
+    if stock_strategy_rule_is_active("rsi", rule):
+        add("rsi", f"RSI {rule['period']}")
+
+    rule = rules.get("ema") or {}
+    if stock_strategy_rule_is_active("ema", rule):
+        add("closing_price", "قیمت پایانی (ریال)", "#,##0")
+        add("ema", f"EMA {rule['period']} (ریال)", "#,##0.00")
+        if rule.get("mode") == "crossover":
+            add(
+                "ema_slow",
+                f"EMA {rule['long_period']} (ریال)",
+                "#,##0.00",
+            )
+            add(
+                "ema_cross_direction",
+                "جهت تقاطع EMA",
+                "@",
+                value_map={
+                    -1: "شکست رو به پایین",
+                    0: "بدون تقاطع",
+                    1: "شکست رو به بالا",
+                },
+            )
+
+    rule = rules.get("macd") or {}
+    if stock_strategy_rule_is_active("macd", rule):
+        add("macd", "MACD")
+        add("macd_signal", "Signal")
+        add("macd_histogram", "Histogram")
+
+    return columns
+
+
+def build_stock_strategy_excel(result, use_saved_data=False):
+    """Create a two-sheet XLSX for active strategy inputs and results."""
+    rules = result.get("rules") or {}
+    settings = stock_strategy_export_settings(rules)
+    if not settings:
+        raise ValueError("حداقل یک استراتژی معتبر را فعال کنید.")
+
+    columns = stock_strategy_export_columns(rules)
+    stocks = result.get("stocks") or []
+    workbook = Workbook()
+    settings_sheet = workbook.active
+    settings_sheet.title = "تنظیمات فعال"
+    results_sheet = workbook.create_sheet("نتایج")
+    workbook.properties.title = "خروجی استراتژی سهام"
+    workbook.properties.creator = "دیدبان بازار سهام"
+
+    dark_fill = PatternFill("solid", fgColor="0B3558")
+    accent_fill = PatternFill("solid", fgColor="DDF5FF")
+    white_font = Font(name="Arial", color="FFFFFF", bold=True)
+    title_font = Font(name="Arial", color="0B3558", bold=True, size=15)
+    body_font = Font(name="Arial", color="172033", size=10)
+    thin_border = Border(
+        bottom=Side(style="thin", color="B8D8E8"),
+    )
+    generated_at = datetime.now(IRAN_TIMEZONE)
+    jalali_date = jdatetime.date.fromgregorian(
+        date=generated_at.date()
+    ).strftime("%Y/%m/%d")
+    generated_label = f"{jalali_date} - {generated_at.strftime('%H:%M')}"
+    source_label = (
+        "تمام سهام‌ها"
+        if result.get("source") == "all"
+        else "سهام برتر"
+    )
+    data_label = (
+        "آخرین داده ذخیره‌شده"
+        if use_saved_data
+        else "آخرین داده موجود"
+    )
+
+    for worksheet in (settings_sheet, results_sheet):
+        worksheet.sheet_view.rightToLeft = True
+        worksheet.sheet_view.showGridLines = False
+        worksheet.freeze_panes = "A1"
+
+    settings_sheet["A1"] = "تنظیمات فعال استراتژی"
+    settings_sheet["A1"].font = title_font
+    settings_sheet["A2"] = "دامنه اجرا"
+    settings_sheet["B2"] = source_label
+    settings_sheet["A3"] = "مبنای داده"
+    settings_sheet["B3"] = data_label
+    settings_sheet["A4"] = "زمان تولید"
+    settings_sheet["B4"] = generated_label
+    settings_sheet["A5"] = "تعداد نمادهای نتیجه"
+    settings_sheet["B5"] = len(stocks)
+    settings_header_row = 7
+    settings_sheet.append([])
+    settings_sheet.append(["استراتژی", "ورودی", "مقدار"])
+    for strategy, field, value in settings:
+        settings_sheet.append([strategy, field, value])
+    settings_end_row = settings_header_row + len(settings)
+    settings_table = Table(
+        displayName="ActiveStrategySettings",
+        ref=f"A{settings_header_row}:C{settings_end_row}",
+    )
+    settings_table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium2",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    settings_sheet.add_table(settings_table)
+    settings_sheet.freeze_panes = f"A{settings_header_row + 1}"
+
+    results_sheet["A1"] = "نمادهای عبورکرده از استراتژی‌های فعال"
+    results_sheet["A1"].font = title_font
+    results_sheet["A2"] = "دامنه و مبنای داده"
+    results_sheet["B2"] = f"{source_label} - {data_label}"
+    results_sheet["A3"] = "تعداد نتیجه"
+    results_sheet["B3"] = len(stocks)
+    results_header_row = 5
+    for column_index, column in enumerate(columns, start=1):
+        results_sheet.cell(results_header_row, column_index, column["label"])
+
+    for row_index, stock in enumerate(stocks, start=results_header_row + 1):
+        for column_index, column in enumerate(columns, start=1):
+            value = stock.get(column["key"])
+            value_map = column.get("value_map")
+            if value_map is not None:
+                value = value_map.get(value, value_map.get(stock_number(value), "—"))
+            elif value is not None and column.get("scale", 1) != 1:
+                numeric_value = stock_number(value)
+                value = (
+                    numeric_value / column["scale"]
+                    if numeric_value is not None
+                    else None
+                )
+            cell = results_sheet.cell(row_index, column_index, value)
+            cell.number_format = column.get("format", "General")
+
+    if stocks:
+        results_end_row = results_header_row + len(stocks)
+        results_table = Table(
+            displayName="StrategyResults",
+            ref=(
+                f"A{results_header_row}:"
+                f"{results_sheet.cell(results_header_row, len(columns)).column_letter}"
+                f"{results_end_row}"
+            ),
+        )
+        results_table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        results_sheet.add_table(results_table)
+
+    for worksheet in (settings_sheet, results_sheet):
+        for row in worksheet.iter_rows():
+            for cell in row:
+                if cell.row != 1:
+                    cell.font = body_font
+                cell.alignment = Alignment(
+                    horizontal="right",
+                    vertical="center",
+                )
+        worksheet.row_dimensions[1].height = 27
+
+    for row in range(2, 6):
+        settings_sheet.cell(row, 1).font = Font(
+            name="Arial", color="36546B", bold=True, size=10
+        )
+        settings_sheet.cell(row, 1).fill = accent_fill
+        settings_sheet.cell(row, 2).fill = accent_fill
+    for cell in settings_sheet[settings_header_row]:
+        cell.fill = dark_fill
+        cell.font = white_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+    for cell in results_sheet[results_header_row]:
+        cell.fill = dark_fill
+        cell.font = white_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+    for row in range(2, 4):
+        results_sheet.cell(row, 1).font = Font(
+            name="Arial", color="36546B", bold=True, size=10
+        )
+        results_sheet.cell(row, 1).fill = accent_fill
+        results_sheet.cell(row, 2).fill = accent_fill
+
+    settings_sheet.column_dimensions["A"].width = 25
+    settings_sheet.column_dimensions["B"].width = 34
+    settings_sheet.column_dimensions["C"].width = 24
+    settings_sheet.auto_filter.ref = (
+        f"A{settings_header_row}:C{settings_end_row}"
+    )
+    for column_index, column in enumerate(columns, start=1):
+        letter = results_sheet.cell(results_header_row, column_index).column_letter
+        results_sheet.column_dimensions[letter].width = min(
+            36,
+            max(13, len(column["label"]) * 1.15),
+        )
+    results_sheet.freeze_panes = "D6"
+    results_sheet.auto_filter.ref = (
+        f"A{results_header_row}:"
+        f"{results_sheet.cell(results_header_row, len(columns)).column_letter}"
+        f"{results_header_row + max(len(stocks), 1)}"
+    )
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return output
 
 
 def build_stock_buy_queue_summary(
@@ -9476,6 +9893,42 @@ def stock_strategy_filter():
         return Response(
             json.dumps({"error": str(error)}, ensure_ascii=False),
             status=500,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
+@app.route("/stock-strategy/export", methods=["POST"])
+def stock_strategy_export():
+    try:
+        payload = request.get_json(silent=True) or {}
+        use_saved_data = bool(payload.get("use_saved_data"))
+        result = get_stock_strategy(
+            payload.get("rules") or {},
+            use_saved_data=use_saved_data,
+            source=payload.get("source") or "featured",
+        )
+        output = build_stock_strategy_excel(
+            result,
+            use_saved_data=use_saved_data,
+        )
+        filename = datetime.now(IRAN_TIMEZONE).strftime(
+            "strategy-export-%Y%m%d-%H%M.xlsx"
+        )
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name=filename,
+            mimetype=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+            max_age=0,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=400,
             content_type="application/json; charset=utf-8",
             headers={"Cache-Control": "no-store"},
         )

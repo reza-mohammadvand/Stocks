@@ -190,6 +190,7 @@ let stockStrategySort = { key: null, direction: null };
 let stockStrategyTableColumns = [];
 let stockStrategyLastPayload = null;
 let stockStrategyAutoRefreshTimer = null;
+let stockStrategyExporting = false;
 
 let stockNotesActiveSymbol = "";
 let stockNotesEditingId = null;
@@ -10369,6 +10370,26 @@ function readStockStrategyRules() {
     return rules;
 }
 
+function hasActiveStockStrategyRule(rules = readStockStrategyRules()) {
+    return Object.entries(rules || {}).some(([metric, rule]) => {
+        if (!rule?.enabled) return false;
+        if (metric === "real_money_flow") {
+            return Number(rule.consecutive_days) > 0 || Number(rule.days) > 0;
+        }
+        return true;
+    });
+}
+
+function updateStockStrategyExportButton() {
+    const button = document.getElementById("strategy-export-button");
+    if (!button) return;
+    button.disabled = (
+        stockStrategyLoading
+        || stockStrategyExporting
+        || !hasActiveStockStrategyRule()
+    );
+}
+
 function updateStockStrategyRuleStyles() {
     Object.entries(stockStrategyControlMap).forEach(([metric, controls]) => {
         const enabled = Boolean(document.getElementById(controls.enabled)?.checked);
@@ -10597,6 +10618,10 @@ function initializeStockStrategyControls() {
         "click",
         () => requestStockStrategy({ showLoading: true })
     );
+    document.getElementById("strategy-export-button")?.addEventListener(
+        "click",
+        exportStockStrategyExcel
+    );
     document.getElementById("strategy-buy-queue-form")?.addEventListener(
         "submit",
         loadStrategyBuyQueueFilter
@@ -10643,6 +10668,7 @@ function initializeStockStrategyControls() {
             const persistControl = () => {
                 updateStockStrategyRuleStyles();
                 saveStockStrategyRules();
+                updateStockStrategyExportButton();
             };
             control.addEventListener("input", persistControl);
             control.addEventListener("change", persistControl);
@@ -10653,6 +10679,7 @@ function initializeStockStrategyControls() {
                 requestStockStrategy({ showLoading: true });
             });
         });
+    updateStockStrategyExportButton();
 }
 
 async function loadStrategyBuyQueueFilter(event) {
@@ -10836,6 +10863,7 @@ function renderStockStrategyTable(payload) {
     if (!table || !wrapper || !empty) return;
 
     stockStrategyLastPayload = payload;
+    updateStockStrategyExportButton();
     const rows = Array.isArray(payload?.stocks) ? payload.stocks : [];
     const strategyRules = payload?.rules || {};
     const formatter = new Intl.NumberFormat("fa-IR");
@@ -11187,6 +11215,75 @@ function renderStockStrategyTable(payload) {
     initializeFrozenStockTable(wrapper, table);
 }
 
+async function exportStockStrategyExcel() {
+    if (stockStrategyExporting || stockStrategyLoading) return;
+    const button = document.getElementById("strategy-export-button");
+    const status = document.getElementById("strategy-status");
+    const rules = readStockStrategyRules();
+    if (!hasActiveStockStrategyRule(rules)) {
+        if (status) {
+            status.textContent = "برای خروجی اکسل حداقل یک استراتژی را فعال کنید.";
+            status.classList.add("is-error");
+        }
+        return;
+    }
+
+    stockStrategyExporting = true;
+    const originalText = button?.textContent || "خروجی اکسل";
+    if (button) {
+        button.textContent = "در حال ساخت...";
+        button.setAttribute("aria-busy", "true");
+    }
+    updateStockStrategyExportButton();
+
+    try {
+        const response = await fetch("/stock-strategy/export", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                rules,
+                use_saved_data: stockStrategyUseSavedData,
+                source: stockStrategySource
+            }),
+            cache: "no-store"
+        });
+        if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(payload.error || "ساخت خروجی اکسل ناموفق بود.");
+        }
+
+        const blob = await response.blob();
+        const disposition = response.headers.get("Content-Disposition") || "";
+        const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+        const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+        const filename = encodedName
+            ? decodeURIComponent(encodedName)
+            : (plainName || "strategy-export.xlsx");
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+    } catch (error) {
+        console.error("Stock strategy export error:", error);
+        if (status) {
+            status.textContent = error.message || "ساخت خروجی اکسل ناموفق بود.";
+            status.classList.add("is-error");
+            status.setAttribute("role", "alert");
+        }
+    } finally {
+        stockStrategyExporting = false;
+        if (button) {
+            button.textContent = originalText;
+            button.removeAttribute("aria-busy");
+        }
+        updateStockStrategyExportButton();
+    }
+}
+
 async function requestStockStrategy({ showLoading = false } = {}) {
     if (stockStrategyLoading) {
         stockStrategyReloadPending = true;
@@ -11198,6 +11295,7 @@ async function requestStockStrategy({ showLoading = false } = {}) {
     const requestedSavedData = stockStrategyUseSavedData;
     const requestedSource = stockStrategySource;
     stockStrategyLoading = true;
+    updateStockStrategyExportButton();
     if (loading) loading.hidden = !(showLoading && !stockStrategyLoaded);
     if (button) {
         button.disabled = true;
@@ -11241,6 +11339,7 @@ async function requestStockStrategy({ showLoading = false } = {}) {
             button.disabled = false;
             button.removeAttribute("aria-busy");
         }
+        updateStockStrategyExportButton();
         if (stockStrategyReloadPending) {
             stockStrategyReloadPending = false;
             window.setTimeout(() => requestStockStrategy(), 0);
