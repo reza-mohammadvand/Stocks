@@ -61,6 +61,12 @@ STOCK_SYMBOLS_FILE = os.path.join(
     "stock_symbols.json"
 )
 
+STOCK_FLOATING_SHARE_OVERRIDES_FILE = os.path.join(
+    app.root_path,
+    "data",
+    "floating_share_overrides.json",
+)
+
 STOCK_DATABASE_FILE = os.path.join(
     app.root_path,
     "data",
@@ -296,6 +302,32 @@ ALL_STOCK_EQUITY_INSTRUMENT_PREFIXES = (
     "IRR7",
 )
 
+def load_stock_floating_share_overrides():
+    """Load authoritative free-float percentages imported from Excel."""
+    with open(
+        STOCK_FLOATING_SHARE_OVERRIDES_FILE,
+        "r",
+        encoding="utf-8",
+    ) as file:
+        source = json.load(file)
+
+    if not isinstance(source, dict):
+        raise ValueError("ساختار فایل درصد شناوری معتبر نیست.")
+
+    overrides = {}
+    for symbol, value in source.items():
+        clean_symbol = str(symbol or "").strip()
+        if not clean_symbol or isinstance(value, bool):
+            continue
+        try:
+            percentage = float(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= percentage <= 100:
+            overrides[clean_symbol] = percentage
+    return overrides
+
+
 # TSETMC does not currently publish a usable free-float value for these
 # instruments. These user-supplied percentages are authoritative and are
 # reapplied after every online refresh.
@@ -336,6 +368,9 @@ STOCK_FLOATING_SHARE_OVERRIDES = {
     "بپاس": 23,
     "کزغال": 18,
 }
+STOCK_FLOATING_SHARE_OVERRIDES.update(
+    load_stock_floating_share_overrides()
+)
 
 STOCK_DETAIL_FIELDS = (
     "ins_code",
@@ -456,7 +491,11 @@ def load_stock_symbols():
     for value in values:
         symbol = str(value or "").strip()
         normalized = normalize_symbol(symbol)
-        if not normalized or normalized in seen:
+        if (
+            not normalized
+            or normalized in seen
+            or is_stock_rights_symbol(normalized)
+        ):
             continue
         seen.add(normalized)
         symbols.append(symbol)
@@ -496,6 +535,11 @@ def clean_stock_text(value):
     return re.sub(r"\s+", " ", text)
 
 
+def is_stock_rights_symbol(value):
+    """Return True for every stock symbol ending with the rights suffix ح."""
+    return normalize_symbol(value).endswith("ح")
+
+
 def is_all_stock_equity_instrument(
     symbol,
     instrument_id=None,
@@ -505,7 +549,11 @@ def is_all_stock_equity_instrument(
 ):
     """Keep ordinary equity rows; reject funds and numbered side instruments."""
     clean_symbol = clean_stock_text(symbol)
-    if not clean_symbol or re.search(r"[0-9۰-۹]+$", clean_symbol):
+    if (
+        not clean_symbol
+        or is_stock_rights_symbol(clean_symbol)
+        or re.search(r"[0-9۰-۹]+$", clean_symbol)
+    ):
         return False
 
     clean_company = clean_stock_text(company)
@@ -798,6 +846,15 @@ def initialize_stock_database():
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS market_latest_overview (
+                    cache_key TEXT PRIMARY KEY,
+                    updated_at TEXT NOT NULL,
+                    data_json TEXT NOT NULL
+                )
+                """
+            )
             market_snapshot_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -827,6 +884,19 @@ def initialize_stock_database():
                 ON stock_notes (symbol, updated_at DESC)
                 """
             )
+
+            for table_name in ("stocks", "all_stocks", "stock_watchlist"):
+                rights_symbols = [
+                    row["symbol"]
+                    for row in connection.execute(
+                        f"SELECT symbol FROM {table_name}"
+                    ).fetchall()
+                    if is_stock_rights_symbol(row["symbol"])
+                ]
+                connection.executemany(
+                    f"DELETE FROM {table_name} WHERE symbol = ?",
+                    ((symbol,) for symbol in rights_symbols),
+                )
 
             existing_count = connection.execute(
                 "SELECT COUNT(*) FROM stocks"
@@ -884,6 +954,8 @@ def read_stock_database():
             ORDER BY position
             """
         ).fetchall():
+            if is_stock_rights_symbol(database_row["symbol"]):
+                continue
             row = {
                 "symbol": database_row["symbol"],
                 **{
@@ -1258,6 +1330,8 @@ def read_all_stock_daily_snapshots(trade_date=None, symbol=None):
 
     snapshots = []
     for record in records:
+        if is_stock_rights_symbol(record["symbol"]):
+            continue
         if requested_symbol and normalize_symbol(record["symbol"]) != requested_symbol:
             continue
         try:
@@ -1289,6 +1363,8 @@ def read_stock_watchlist():
 
     rows = []
     for record in records:
+        if is_stock_rights_symbol(record["symbol"]):
+            continue
         try:
             row = json.loads(record["data_json"] or "{}")
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -1307,6 +1383,8 @@ def normalize_stock_note_input(symbol, note_text, importance):
     normalized_symbol = normalize_symbol(symbol)
     if not normalized_symbol:
         raise ValueError("نام نماد الزامی است.")
+    if is_stock_rights_symbol(normalized_symbol):
+        raise ValueError("نمادهای حق‌تقدم در سامانه نمایش داده نمی‌شوند.")
 
     normalized_text = str(note_text or "").strip()
     if not normalized_text:
@@ -1353,7 +1431,15 @@ def read_stock_notes(symbol=None):
         rows = [
             row
             for row in rows
-            if normalize_symbol(row["symbol"]) == normalized_symbol
+            if (
+                not is_stock_rights_symbol(row["symbol"])
+                and normalize_symbol(row["symbol"]) == normalized_symbol
+            )
+        ]
+    else:
+        rows = [
+            row for row in rows
+            if not is_stock_rights_symbol(row["symbol"])
         ]
     return [serialize_stock_note(row) for row in rows]
 
@@ -1450,6 +1536,8 @@ def save_stock_watchlist_row(row):
     symbol = str(row.get("symbol") or "").strip()
     if not symbol:
         raise ValueError("نماد معتبر نیست.")
+    if is_stock_rights_symbol(symbol):
+        raise ValueError("نمادهای حق‌تقدم به دیده‌بان اضافه نمی‌شوند.")
 
     apply_stock_floating_share_override(row)
     now = datetime.now(IRAN_TIMEZONE).isoformat()
@@ -3137,15 +3225,15 @@ def save_market_daily_snapshot(payload, captured_at=None):
         overview = {}
     prices = [
         item for item in overview.get("prices", [])
-        if isinstance(item, dict)
+        if isinstance(item, dict) and not item.get("is_stale")
     ]
     money_flows = [
         item for item in overview.get("flows", [])
-        if isinstance(item, dict)
+        if isinstance(item, dict) and not item.get("is_stale")
     ]
     industry_flows = [
         item for item in overview.get("industry_flows", [])
-        if isinstance(item, dict)
+        if isinstance(item, dict) and not item.get("is_stale")
     ]
     free_dollar = next(
         (
@@ -3278,6 +3366,255 @@ def read_market_daily_snapshots(limit=30):
             "industry_flows": industry_flows,
         })
     return snapshots
+
+
+def merge_watch_market_collection(
+    previous,
+    incoming,
+    value_key,
+    positive_only=False,
+):
+    """Merge keyed market cards without replacing valid values with gaps."""
+    def valid_value(item):
+        number = watch_market_number(item.get(value_key))
+        return number is not None and (not positive_only or number > 0)
+
+    previous_by_key = {}
+    for item in previous or []:
+        if (
+            not isinstance(item, dict)
+            or item.get("key") is None
+            or not valid_value(item)
+        ):
+            continue
+        saved_item = dict(item)
+        saved_item["is_stale"] = True
+        previous_by_key[str(item["key"])] = saved_item
+
+    merged = {}
+    ordered_keys = []
+    for item in incoming or []:
+        if (
+            not isinstance(item, dict)
+            or item.get("key") is None
+            or not valid_value(item)
+        ):
+            continue
+        key = str(item["key"])
+        current_item = dict(item)
+        current_item.setdefault("is_stale", False)
+        if key not in merged:
+            ordered_keys.append(key)
+        merged[key] = current_item
+
+    for key, item in previous_by_key.items():
+        if key in merged:
+            continue
+        ordered_keys.append(key)
+        merged[key] = item
+
+    return [merged[key] for key in ordered_keys]
+
+
+def market_overview_from_daily_snapshots():
+    """Build a persistent fallback from the newest saved daily values."""
+    snapshots = read_market_daily_snapshots(limit=30)
+    if not snapshots:
+        return {}
+
+    prices = []
+    dollar_config = next(
+        (
+            config
+            for config in WATCH_MARKET_ASSETS
+            if config.get("key") == "dollar"
+        ),
+        None,
+    )
+    dollar_snapshot = next(
+        (
+            snapshot
+            for snapshot in snapshots
+            if watch_market_number(snapshot.get("free_dollar_price"))
+            is not None
+        ),
+        None,
+    )
+    if dollar_config and dollar_snapshot:
+        prices.append({
+            "key": "dollar",
+            "name": dollar_config["name"],
+            "price": dollar_snapshot["free_dollar_price"],
+            "unit": dollar_config["unit"],
+            "change": None,
+            "change_percent": None,
+            "market_time": dollar_snapshot.get("captured_at"),
+            "tone": dollar_config.get("tone", "currency"),
+            "source": "market-daily-snapshot",
+            "source_url": dollar_config["source_url"],
+            "is_stale": True,
+        })
+    market_trade_snapshot = next(
+        (
+            snapshot
+            for snapshot in snapshots
+            if (
+                watch_market_number(
+                    snapshot.get("total_market_trade_value")
+                )
+                or 0
+            ) > 0
+        ),
+        None,
+    )
+    if market_trade_snapshot:
+        prices.append({
+            "key": "market_trade_value",
+            "name": "ارزش معاملات کل روز بورس",
+            "price": market_trade_snapshot["total_market_trade_value"],
+            "unit": "میلیارد تومان",
+            "change": None,
+            "change_percent": None,
+            "market_time": market_trade_snapshot.get("captured_at"),
+            "tone": "market",
+            "source": "market-daily-snapshot",
+            "source_url": "https://tradersarena.ir/",
+            "is_stale": True,
+        })
+
+    flows_by_key = {}
+    industry_flows_by_key = {}
+    for snapshot in snapshots:
+        for item in snapshot.get("money_flows") or []:
+            if (
+                isinstance(item, dict)
+                and item.get("key") is not None
+                and watch_market_number(item.get("value")) is not None
+            ):
+                saved_item = dict(item)
+                saved_item["is_stale"] = True
+                flows_by_key.setdefault(str(item["key"]), saved_item)
+        for item in snapshot.get("industry_flows") or []:
+            if (
+                isinstance(item, dict)
+                and item.get("key") is not None
+                and watch_market_number(item.get("value")) is not None
+            ):
+                saved_item = dict(item)
+                saved_item["is_stale"] = True
+                industry_flows_by_key.setdefault(
+                    str(item["key"]),
+                    saved_item,
+                )
+
+    return {
+        "prices": prices,
+        "flows": list(flows_by_key.values()),
+        "industry_flows": list(industry_flows_by_key.values()),
+        "fetched_at": None,
+        "errors": ["using-saved-market-overview"],
+    }
+
+
+def read_watch_market_latest_overview():
+    """Read the last valid market cards, surviving application restarts."""
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT data_json
+            FROM market_latest_overview
+            WHERE cache_key = 'watch-market'
+            """
+        ).fetchone()
+
+    daily_fallback = market_overview_from_daily_snapshots()
+    if row is not None:
+        try:
+            payload = json.loads(row["data_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        if isinstance(payload, dict):
+            merged = dict(daily_fallback)
+            merged.update({
+                key: value
+                for key, value in payload.items()
+                if key not in {"prices", "flows", "industry_flows"}
+            })
+            merged["prices"] = merge_watch_market_collection(
+                daily_fallback.get("prices"),
+                payload.get("prices"),
+                "price",
+                positive_only=True,
+            )
+            merged["flows"] = merge_watch_market_collection(
+                daily_fallback.get("flows"),
+                payload.get("flows"),
+                "value",
+            )
+            merged["industry_flows"] = merge_watch_market_collection(
+                daily_fallback.get("industry_flows"),
+                payload.get("industry_flows"),
+                "value",
+            )
+            return merged
+    return daily_fallback
+
+
+def save_watch_market_latest_overview(overview, updated_at=None):
+    """Persist valid cards and preserve previous values for failed feeds."""
+    if not isinstance(overview, dict):
+        return {}
+
+    previous = read_watch_market_latest_overview()
+    merged = dict(previous)
+    merged.update({
+        key: value
+        for key, value in overview.items()
+        if key not in {"prices", "flows", "industry_flows"}
+    })
+    merged["prices"] = merge_watch_market_collection(
+        previous.get("prices"),
+        overview.get("prices"),
+        "price",
+        positive_only=True,
+    )
+    merged["flows"] = merge_watch_market_collection(
+        previous.get("flows"),
+        overview.get("flows"),
+        "value",
+    )
+    merged["industry_flows"] = merge_watch_market_collection(
+        previous.get("industry_flows"),
+        overview.get("industry_flows"),
+        "value",
+    )
+
+    current_time = updated_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    serialized = json.dumps(
+        merged,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO market_latest_overview (
+                cache_key,
+                updated_at,
+                data_json
+            )
+            VALUES ('watch-market', ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                updated_at = excluded.updated_at,
+                data_json = excluded.data_json
+            """,
+            (current_time.isoformat(), serialized),
+        )
+    return merged
 
 
 STOCK_STRATEGY_METRICS = (
@@ -3791,7 +4128,11 @@ def build_stock_industry_growth_comparisons(rows, history, requested_days):
     }
 
     for row in rows or []:
-        if not isinstance(row, dict) or not row.get("symbol"):
+        if (
+            not isinstance(row, dict)
+            or not row.get("symbol")
+            or is_stock_rights_symbol(row.get("symbol"))
+        ):
             continue
         symbol_key = normalize_symbol(row["symbol"])
         industry_label = clean_stock_text(row.get("industry"))
@@ -3873,6 +4214,8 @@ def read_stock_strategy_history(source="featured", symbols=None):
     history = {}
     for record in records:
         normalized_symbol = normalize_symbol(record["symbol"])
+        if is_stock_rights_symbol(normalized_symbol):
+            continue
         if (
             requested_symbols is not None
             and normalized_symbol not in requested_symbols
@@ -3945,12 +4288,29 @@ def stock_strategy_technical_required_points(metric, rule):
 
 
 def evaluate_stock_strategy(rows, history, rules):
+    rows = [
+        row
+        for row in rows or []
+        if (
+            isinstance(row, dict)
+            and not is_stock_rights_symbol(row.get("symbol"))
+        )
+    ]
+    history = {
+        symbol: points
+        for symbol, points in (history or {}).items()
+        if not is_stock_rights_symbol(symbol)
+    }
     normalized_rules = normalize_stock_strategy_rules(rules)
     active_metrics = [
         metric
         for metric, rule in normalized_rules.items()
         if stock_strategy_rule_is_active(metric, rule)
     ]
+    primary_metrics_active = any(
+        metric in STOCK_STRATEGY_METRICS
+        for metric in active_metrics
+    )
     results = []
     partial_history_count = 0
     missing_history_count = 0
@@ -4116,6 +4476,45 @@ def evaluate_stock_strategy(rows, history, rules):
             "symbol_industry_member_count": 0,
         })
 
+        if primary_metrics_active:
+            current_real_buy_per_capita = stock_number(
+                row.get("real_buy_per_capita")
+            )
+            real_buy_per_capita_values = []
+            if (
+                current_real_buy_per_capita is not None
+                and current_real_buy_per_capita > 0
+            ):
+                real_buy_per_capita_values.append(
+                    current_real_buy_per_capita
+                )
+            for snapshot in symbol_history:
+                if (
+                    current_market_date
+                    and snapshot.get("trade_date") == current_market_date
+                ):
+                    continue
+                value = stock_number(
+                    snapshot.get("real_buy_per_capita")
+                )
+                if value is None or value <= 0:
+                    continue
+                real_buy_per_capita_values.append(value)
+                if len(real_buy_per_capita_values) >= 30:
+                    break
+            result.update({
+                "real_buy_per_capita": current_real_buy_per_capita,
+                "real_buy_per_capita_30d_average": (
+                    sum(real_buy_per_capita_values)
+                    / len(real_buy_per_capita_values)
+                    if real_buy_per_capita_values
+                    else None
+                ),
+                "real_buy_per_capita_30d_history_count": len(
+                    real_buy_per_capita_values
+                ),
+            })
+
         if industry_growth_active:
             industry_growth = industry_growth_comparisons.get(normalized_symbol)
             if industry_growth is None:
@@ -4193,7 +4592,32 @@ def evaluate_stock_strategy(rows, history, rules):
             result[f"{metric}_history_count"] = 0
             if metric == "real_money_flow":
                 result["real_money_flow_positive_streak"] = 0
-            if not stock_strategy_rule_is_active(metric, rule):
+            metric_is_active = stock_strategy_rule_is_active(metric, rule)
+            if not metric_is_active:
+                if metric == "trade_value" and primary_metrics_active:
+                    display_days = rule["days"] or 5
+                    historical_values = []
+                    for snapshot in symbol_history:
+                        if (
+                            current_market_date
+                            and snapshot.get("trade_date")
+                            == current_market_date
+                        ):
+                            continue
+                        value = stock_number(snapshot.get(metric))
+                        if value is None or value <= 0:
+                            continue
+                        historical_values.append(value)
+                        if len(historical_values) >= display_days:
+                            break
+                    result[f"{metric}_history_count"] = len(
+                        historical_values
+                    )
+                    if historical_values:
+                        result[f"{metric}_average"] = (
+                            sum(historical_values)
+                            / len(historical_values)
+                        )
                 continue
 
             accepts_negative = metric == "money_flow_quality"
@@ -4543,65 +4967,108 @@ def stock_strategy_export_columns(rules):
         })
         added_keys.add(key)
 
-    rule = rules.get("trade_value") or {}
-    if stock_strategy_rule_is_active("trade_value", rule):
+    def active(metric):
+        return stock_strategy_rule_is_active(metric, rules.get(metric) or {})
+
+    primary_metrics_active = any(
+        active(metric) for metric in STOCK_STRATEGY_METRICS
+    )
+
+    if primary_metrics_active:
         add(
             "trade_value",
             "ارزش معاملات (میلیارد تومان)",
             "#,##0.00",
             10_000_000_000,
         )
-        if rule.get("days", 0) > 0:
-            add(
-                "trade_value_average",
-                "میانگین ارزش معاملات (میلیارد تومان)",
-                "#,##0.00",
-                10_000_000_000,
-            )
+        add(
+            "trade_value_average",
+            "میانگین ارزش معاملات (میلیارد تومان)",
+            "#,##0.00",
+            10_000_000_000,
+        )
 
-    rule = rules.get("trade_to_float_percent") or {}
-    if stock_strategy_rule_is_active("trade_to_float_percent", rule):
+    trade_to_float_rule = rules.get("trade_to_float_percent") or {}
+    if primary_metrics_active:
         add("trade_to_float_percent", "نسبت معامله به شناوری (درصد)")
-        if rule.get("days", 0) > 0:
+        if (
+            active("trade_to_float_percent")
+            and trade_to_float_rule.get("days", 0) > 0
+        ):
             add(
                 "trade_to_float_percent_average",
                 "میانگین نسبت معامله به شناوری (درصد)",
             )
 
-    rule = rules.get("real_buy_power") or {}
-    if stock_strategy_rule_is_active("real_buy_power", rule):
-        add("real_buy_power", "قدرت خرید حقیقی (برابر)")
-        if rule.get("days", 0) > 0:
-            add("real_buy_power_average", "میانگین قدرت خرید حقیقی (برابر)")
-
-    rule = rules.get("real_money_flow") or {}
-    if stock_strategy_rule_is_active("real_money_flow", rule):
+    real_money_flow_rule = rules.get("real_money_flow") or {}
+    if primary_metrics_active:
         add(
             "real_money_flow",
             "ورود پول حقیقی (میلیارد تومان)",
             "#,##0.00",
             10_000_000_000,
         )
-        if rule.get("consecutive_days", 0) > 0:
-            add(
-                "real_money_flow_positive_streak",
-                "ورود پول مثبت پیاپی (روز)",
-                "#,##0",
-            )
-        if rule.get("days", 0) > 0:
+        if (
+            active("real_money_flow")
+            and real_money_flow_rule.get("days", 0) > 0
+        ):
             add(
                 "real_money_flow_average",
                 "میانگین ورود پول (میلیارد تومان)",
                 "#,##0.00",
                 10_000_000_000,
             )
+        if (
+            active("real_money_flow")
+            and real_money_flow_rule.get("consecutive_days", 0) > 0
+        ):
+            add(
+                "real_money_flow_positive_streak",
+                "ورود پول مثبت پیاپی (روز)",
+                "#,##0",
+            )
 
-    rule = rules.get("money_flow_quality") or {}
-    if stock_strategy_rule_is_active("money_flow_quality", rule):
+    if primary_metrics_active:
         add("money_flow_quality", "کیفیت ورود پول (درصد)")
 
-    rule = rules.get("industry_growth") or {}
-    if stock_strategy_rule_is_active("industry_growth", rule):
+    if primary_metrics_active:
+        add(
+            "price_power_status",
+            "قدرت قیمت",
+            "@",
+            value_map={
+                "buy_queue_neutral": "صف خرید - خنثی",
+                "buy_queue": "صف خرید",
+                "bullish": "صعودی",
+                "neutral": "خنثی",
+                "bearish": "نزولی",
+                "sell_queue": "صف فروش",
+                "sell_queue_neutral": "صف فروش - خنثی",
+            },
+        )
+        add(
+            "real_buy_per_capita",
+            "سرانه خرید حقیقی (میلیون تومان)",
+            "#,##0.00",
+            10_000_000,
+        )
+        add(
+            "real_buy_per_capita_30d_average",
+            "میانگین ۳۰روزه سرانه خرید حقیقی (میلیون تومان)",
+            "#,##0.00",
+            10_000_000,
+        )
+
+    real_buy_power_rule = rules.get("real_buy_power") or {}
+    if primary_metrics_active:
+        add("real_buy_power", "قدرت خرید حقیقی (برابر)")
+        if (
+            active("real_buy_power")
+            and real_buy_power_rule.get("days", 0) > 0
+        ):
+            add("real_buy_power_average", "میانگین قدرت خرید حقیقی (برابر)")
+
+    if active("industry_growth"):
         add("industry_growth_percent", "بازدهی نماد (درصد)")
         add(
             "industry_average_growth_percent",
@@ -4611,64 +5078,58 @@ def stock_strategy_export_columns(rules):
             "below_industry_average_percent",
             "فاصله از میانگین صنعت (درصد)",
         )
-        add("industry_growth_days_used", "روزهای محاسبه", "#,##0")
 
-    rule = rules.get("symbol_industry_compare") or {}
-    if stock_strategy_rule_is_active("symbol_industry_compare", rule):
+    if active("symbol_industry_compare"):
         add("symbol_industry_return_percent", "بازدهی نماد (درصد)")
         add(
             "symbol_industry_average_return_percent",
             "میانگین بازدهی صنعت (درصد)",
         )
-        add("symbol_industry_days_used", "روزهای محاسبه", "#,##0")
 
-    rule = rules.get("rsi") or {}
-    if stock_strategy_rule_is_active("rsi", rule):
-        add("rsi", f"RSI {rule['period']}")
-
-    rule = rules.get("ema") or {}
-    if stock_strategy_rule_is_active("ema", rule):
-        add("closing_price", "قیمت پایانی (ریال)", "#,##0")
-        add("ema", f"EMA {rule['period']} (ریال)", "#,##0.00")
-        if rule.get("mode") == "crossover":
-            add(
-                "ema_slow",
-                f"EMA {rule['long_period']} (ریال)",
-                "#,##0.00",
-            )
-            add(
-                "ema_cross_direction",
-                "جهت تقاطع EMA",
-                "@",
-                value_map={
-                    -1: "شکست رو به پایین",
-                    0: "بدون تقاطع",
-                    1: "شکست رو به بالا",
-                },
-            )
-
-    rule = rules.get("macd") or {}
-    if stock_strategy_rule_is_active("macd", rule):
-        add("macd", "MACD")
-        add("macd_signal", "Signal")
-        add("macd_histogram", "Histogram")
+    technical_metrics_active = any(
+        active(metric) for metric in ("rsi", "ema", "macd")
+    )
+    if technical_metrics_active:
+        rsi_rule = rules.get("rsi") or {}
+        add("rsi", f"RSI {rsi_rule.get('period', 14)}")
+        add(
+            "ema_cross_direction",
+            "تقاطع EMA",
+            "@",
+            value_map={
+                -1: "شکست رو به پایین",
+                0: "بدون تقاطع",
+                1: "شکست رو به بالا",
+            },
+        )
 
     return columns
 
 
+def filter_stock_strategy_export_rights(stocks):
+    """Drop every rights symbol whose normalized name ends with ح."""
+    return [
+        stock
+        for stock in stocks or []
+        if (
+            isinstance(stock, dict)
+            and not normalize_symbol(stock.get("symbol")).endswith("ح")
+        )
+    ]
+
+
 def build_stock_strategy_excel(result, use_saved_data=False):
-    """Create a two-sheet XLSX for active strategy inputs and results."""
+    """Create a one-sheet XLSX for active strategy inputs and results."""
     rules = result.get("rules") or {}
     settings = stock_strategy_export_settings(rules)
     if not settings:
         raise ValueError("حداقل یک استراتژی معتبر را فعال کنید.")
 
     columns = stock_strategy_export_columns(rules)
-    stocks = result.get("stocks") or []
+    stocks = filter_stock_strategy_export_rights(result.get("stocks"))
     workbook = Workbook()
-    settings_sheet = workbook.active
-    settings_sheet.title = "تنظیمات فعال"
-    results_sheet = workbook.create_sheet("نتایج")
+    worksheet = workbook.active
+    worksheet.title = "خروجی استراتژی"
     workbook.properties.title = "خروجی استراتژی سهام"
     workbook.properties.creator = "دیدبان بازار سهام"
 
@@ -4696,57 +5157,32 @@ def build_stock_strategy_excel(result, use_saved_data=False):
         else "آخرین داده موجود"
     )
 
-    for worksheet in (settings_sheet, results_sheet):
-        worksheet.sheet_view.rightToLeft = True
-        worksheet.sheet_view.showGridLines = False
-        worksheet.freeze_panes = "A1"
+    worksheet.sheet_view.rightToLeft = True
+    worksheet.sheet_view.showGridLines = False
+    worksheet["A1"] = "خروجی استراتژی سهام"
+    worksheet["A1"].font = title_font
+    worksheet["A2"] = "دامنه و مبنای داده"
+    worksheet["B2"] = f"{source_label} - {data_label}"
+    worksheet["A3"] = "زمان تولید"
+    worksheet["B3"] = generated_label
+    worksheet["A4"] = "تعداد نمادهای نتیجه"
+    worksheet["B4"] = len(stocks)
+    worksheet["A5"] = "نمادهای عبورکرده از استراتژی‌های فعال"
+    worksheet["A5"].font = title_font
 
-    settings_sheet["A1"] = "تنظیمات فعال استراتژی"
-    settings_sheet["A1"].font = title_font
-    settings_sheet["A2"] = "دامنه اجرا"
-    settings_sheet["B2"] = source_label
-    settings_sheet["A3"] = "مبنای داده"
-    settings_sheet["B3"] = data_label
-    settings_sheet["A4"] = "زمان تولید"
-    settings_sheet["B4"] = generated_label
-    settings_sheet["A5"] = "تعداد نمادهای نتیجه"
-    settings_sheet["B5"] = len(stocks)
-    settings_header_row = 7
-    settings_sheet.append([])
-    settings_sheet.append(["استراتژی", "ورودی", "مقدار"])
-    for strategy, field, value in settings:
-        settings_sheet.append([strategy, field, value])
-    settings_end_row = settings_header_row + len(settings)
-    settings_table = Table(
-        displayName="ActiveStrategySettings",
-        ref=f"A{settings_header_row}:C{settings_end_row}",
-    )
-    settings_table.tableStyleInfo = TableStyleInfo(
-        name="TableStyleMedium2",
-        showFirstColumn=False,
-        showLastColumn=False,
-        showRowStripes=True,
-        showColumnStripes=False,
-    )
-    settings_sheet.add_table(settings_table)
-    settings_sheet.freeze_panes = f"A{settings_header_row + 1}"
-
-    results_sheet["A1"] = "نمادهای عبورکرده از استراتژی‌های فعال"
-    results_sheet["A1"].font = title_font
-    results_sheet["A2"] = "دامنه و مبنای داده"
-    results_sheet["B2"] = f"{source_label} - {data_label}"
-    results_sheet["A3"] = "تعداد نتیجه"
-    results_sheet["B3"] = len(stocks)
-    results_header_row = 5
+    results_header_row = 6
     for column_index, column in enumerate(columns, start=1):
-        results_sheet.cell(results_header_row, column_index, column["label"])
+        worksheet.cell(results_header_row, column_index, column["label"])
 
     for row_index, stock in enumerate(stocks, start=results_header_row + 1):
         for column_index, column in enumerate(columns, start=1):
             value = stock.get(column["key"])
             value_map = column.get("value_map")
             if value_map is not None:
-                value = value_map.get(value, value_map.get(stock_number(value), "—"))
+                value = value_map.get(
+                    value,
+                    value_map.get(stock_number(value), "—"),
+                )
             elif value is not None and column.get("scale", 1) != 1:
                 numeric_value = stock_number(value)
                 value = (
@@ -4754,7 +5190,7 @@ def build_stock_strategy_excel(result, use_saved_data=False):
                     if numeric_value is not None
                     else None
                 )
-            cell = results_sheet.cell(row_index, column_index, value)
+            cell = worksheet.cell(row_index, column_index, value)
             cell.number_format = column.get("format", "General")
 
     if stocks:
@@ -4763,7 +5199,7 @@ def build_stock_strategy_excel(result, use_saved_data=False):
             displayName="StrategyResults",
             ref=(
                 f"A{results_header_row}:"
-                f"{results_sheet.cell(results_header_row, len(columns)).column_letter}"
+                f"{worksheet.cell(results_header_row, len(columns)).column_letter}"
                 f"{results_end_row}"
             ),
         )
@@ -4774,60 +5210,95 @@ def build_stock_strategy_excel(result, use_saved_data=False):
             showRowStripes=True,
             showColumnStripes=False,
         )
-        results_sheet.add_table(results_table)
+        worksheet.add_table(results_table)
 
-    for worksheet in (settings_sheet, results_sheet):
-        for row in worksheet.iter_rows():
-            for cell in row:
-                if cell.row != 1:
-                    cell.font = body_font
-                cell.alignment = Alignment(
-                    horizontal="right",
-                    vertical="center",
-                )
-        worksheet.row_dimensions[1].height = 27
-
-    for row in range(2, 6):
-        settings_sheet.cell(row, 1).font = Font(
-            name="Arial", color="36546B", bold=True, size=10
-        )
-        settings_sheet.cell(row, 1).fill = accent_fill
-        settings_sheet.cell(row, 2).fill = accent_fill
-    for cell in settings_sheet[settings_header_row]:
-        cell.fill = dark_fill
-        cell.font = white_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = thin_border
-    for cell in results_sheet[results_header_row]:
-        cell.fill = dark_fill
-        cell.font = white_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = thin_border
-    for row in range(2, 4):
-        results_sheet.cell(row, 1).font = Font(
-            name="Arial", color="36546B", bold=True, size=10
-        )
-        results_sheet.cell(row, 1).fill = accent_fill
-        results_sheet.cell(row, 2).fill = accent_fill
-
-    settings_sheet.column_dimensions["A"].width = 25
-    settings_sheet.column_dimensions["B"].width = 34
-    settings_sheet.column_dimensions["C"].width = 24
-    settings_sheet.auto_filter.ref = (
-        f"A{settings_header_row}:C{settings_end_row}"
+    settings_start_column = len(columns) + 2
+    settings_title_cell = worksheet.cell(1, settings_start_column)
+    settings_title_cell.value = "تنظیمات فعال استراتژی"
+    settings_title_cell.font = title_font
+    settings_header_row = 2
+    for offset, label in enumerate(
+        ("استراتژی", "ورودی", "مقدار"),
+        start=settings_start_column,
+    ):
+        worksheet.cell(settings_header_row, offset, label)
+    for row_index, (strategy, field, value) in enumerate(settings, start=3):
+        worksheet.cell(row_index, settings_start_column, strategy)
+        worksheet.cell(row_index, settings_start_column + 1, field)
+        worksheet.cell(row_index, settings_start_column + 2, value)
+    settings_end_row = settings_header_row + len(settings)
+    settings_start_letter = worksheet.cell(
+        settings_header_row,
+        settings_start_column,
+    ).column_letter
+    settings_end_letter = worksheet.cell(
+        settings_header_row,
+        settings_start_column + 2,
+    ).column_letter
+    settings_table = Table(
+        displayName="ActiveStrategySettings",
+        ref=(
+            f"{settings_start_letter}{settings_header_row}:"
+            f"{settings_end_letter}{settings_end_row}"
+        ),
     )
+    settings_table.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium2",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    worksheet.add_table(settings_table)
+
+    title_coordinates = {
+        "A1",
+        "A5",
+        settings_title_cell.coordinate,
+    }
+    for row in worksheet.iter_rows():
+        for cell in row:
+            if cell.coordinate not in title_coordinates:
+                cell.font = body_font
+            cell.alignment = Alignment(
+                horizontal="right",
+                vertical="center",
+            )
+    worksheet.row_dimensions[1].height = 27
+
+    for row in range(2, 5):
+        worksheet.cell(row, 1).font = Font(
+            name="Arial", color="36546B", bold=True, size=10
+        )
+        worksheet.cell(row, 1).fill = accent_fill
+        worksheet.cell(row, 2).fill = accent_fill
+    for cell in worksheet[results_header_row]:
+        if cell.column > len(columns):
+            continue
+        cell.fill = dark_fill
+        cell.font = white_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+    for column_index in range(settings_start_column, settings_start_column + 3):
+        cell = worksheet.cell(settings_header_row, column_index)
+        cell.fill = dark_fill
+        cell.font = white_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+
     for column_index, column in enumerate(columns, start=1):
-        letter = results_sheet.cell(results_header_row, column_index).column_letter
-        results_sheet.column_dimensions[letter].width = min(
+        letter = worksheet.cell(results_header_row, column_index).column_letter
+        worksheet.column_dimensions[letter].width = min(
             36,
             max(13, len(column["label"]) * 1.15),
         )
-    results_sheet.freeze_panes = "D6"
-    results_sheet.auto_filter.ref = (
-        f"A{results_header_row}:"
-        f"{results_sheet.cell(results_header_row, len(columns)).column_letter}"
-        f"{results_header_row + max(len(stocks), 1)}"
-    )
+    for column_index, width in zip(
+        range(settings_start_column, settings_start_column + 3),
+        (25, 34, 24),
+    ):
+        letter = worksheet.cell(1, column_index).column_letter
+        worksheet.column_dimensions[letter].width = width
+    worksheet.freeze_panes = "D7"
 
     output = BytesIO()
     workbook.save(output)
@@ -4854,7 +5325,11 @@ def build_stock_buy_queue_summary(
     results = []
     target_dates = set()
     for row in rows:
-        if not isinstance(row, dict) or not row.get("symbol"):
+        if (
+            not isinstance(row, dict)
+            or not row.get("symbol")
+            or is_stock_rights_symbol(row.get("symbol"))
+        ):
             continue
 
         normalized_symbol = normalize_symbol(row["symbol"])
@@ -5095,6 +5570,7 @@ def normalize_rahavard_live_quote(quote, config):
     divisor = float(config.get("divisor") or 1)
     raw_change = watch_market_number(quote.get("price_change"))
     raw_percent = watch_market_number(quote.get("change_percent"))
+    received_at = watch_market_number(quote.get("fetched_at"))
     if raw_percent is not None and abs(raw_percent) <= 1:
         raw_percent *= 100
     return {
@@ -5108,6 +5584,12 @@ def normalize_rahavard_live_quote(quote, config):
         "tone": config.get("tone", "currency"),
         "source": "rahavard365-live",
         "source_url": config["source_url"],
+        "received_at": received_at,
+        "is_stale": (
+            received_at is not None
+            and time.time() - received_at
+            > WATCH_MARKET_OVERVIEW_TTL_SECONDS * 2
+        ),
     }
 
 
@@ -5197,17 +5679,22 @@ def fetch_rahavard_watch_asset(config, live_quotes=None):
             return normalized_live_quote
         raise ValueError("قیمت زنده آخرین معامله هنوز دریافت نشده است.")
 
-    response = requests.get(
-        f"https://rahavard365.com/api/v2/asset/{config['asset_id']}",
-        headers=RAHAVARD_HEADERS,
-        timeout=15,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    asset_data = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(asset_data, dict):
-        raise ValueError("پاسخ دارایی ره‌آورد معتبر نیست.")
-    api_quote = parse_rahavard_quote(asset_data, config)
+    try:
+        response = requests.get(
+            f"https://rahavard365.com/api/v2/asset/{config['asset_id']}",
+            headers=RAHAVARD_HEADERS,
+            timeout=15,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        asset_data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(asset_data, dict):
+            raise ValueError("پاسخ دارایی ره‌آورد معتبر نیست.")
+        api_quote = parse_rahavard_quote(asset_data, config)
+    except (requests.RequestException, ValueError, TypeError, KeyError):
+        if normalized_live_quote:
+            return normalized_live_quote
+        raise
     if normalized_live_quote:
         live_time = watch_market_timestamp(
             normalized_live_quote.get("market_time")
@@ -5440,7 +5927,14 @@ def fetch_commodity_fund_money_totals():
     return totals, errors
 
 
-def watch_market_flow_item(key, name, value, count=None, market_date=None):
+def watch_market_flow_item(
+    key,
+    name,
+    value,
+    count=None,
+    market_date=None,
+    is_stale=False,
+):
     return {
         "key": key,
         "name": name,
@@ -5448,6 +5942,24 @@ def watch_market_flow_item(key, name, value, count=None, market_date=None):
         "unit": "میلیارد تومان",
         "count": count,
         "market_date": market_date,
+        "is_stale": bool(is_stale),
+    }
+
+
+def watch_market_price_placeholder(config, unit=None):
+    """Return a compact warning card until the first valid quote arrives."""
+    return {
+        "key": config["key"],
+        "name": config["name"],
+        "price": None,
+        "unit": unit or config.get("unit") or "تومان/کیلوگرم",
+        "change": None,
+        "change_percent": None,
+        "market_time": None,
+        "tone": config.get("tone", "market"),
+        "source": None,
+        "source_url": config.get("source_url"),
+        "is_stale": True,
     }
 
 
@@ -5464,14 +5976,19 @@ def get_watch_market_overview(force=False):
         ):
             return dict(cached_data)
 
+    try:
+        saved_data = read_watch_market_latest_overview()
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        saved_data = {}
+    previous_data = cached_data or saved_data
     previous_prices = {
-        item.get("key"): item
-        for item in (cached_data or {}).get("prices", [])
+        item.get("key"): {**item, "is_stale": True}
+        for item in (previous_data or {}).get("prices", [])
         if item.get("key")
     }
     previous_flows = {
-        item.get("key"): item
-        for item in (cached_data or {}).get("flows", [])
+        item.get("key"): {**item, "is_stale": True}
+        for item in (previous_data or {}).get("flows", [])
         if item.get("key")
     }
     prices = dict(previous_prices)
@@ -5501,19 +6018,26 @@ def get_watch_market_overview(force=False):
         for future in as_completed(asset_futures):
             key = asset_futures[future]
             try:
-                prices[key] = future.result()
+                quote = future.result()
+                prices[key] = {
+                    **quote,
+                    "is_stale": bool(quote.get("is_stale")),
+                }
             except (requests.RequestException, ValueError, TypeError, KeyError):
                 errors.append(key)
 
         try:
             copper = copper_future.result()
-            prices[copper["key"]] = copper
+            prices[copper["key"]] = {**copper, "is_stale": False}
         except (requests.RequestException, ValueError, TypeError, KeyError):
             errors.append("global_copper")
 
         try:
             ime_quotes = ime_commodities_future.result()
-            prices.update(ime_quotes)
+            prices.update({
+                key: {**quote, "is_stale": False}
+                for key, quote in ime_quotes.items()
+            })
             errors.extend(
                 config["key"]
                 for config in WATCH_IME_COMMODITIES
@@ -5536,6 +6060,7 @@ def get_watch_market_overview(force=False):
                     total.get("value"),
                     count=total.get("count"),
                     market_date=total.get("market_date"),
+                    is_stale=False,
                 )
         except (requests.RequestException, ValueError, TypeError, KeyError):
             errors.append("fund-money")
@@ -5543,7 +6068,13 @@ def get_watch_market_overview(force=False):
     price_order = [config["key"] for config in WATCH_MARKET_ASSETS]
     price_order.insert(5, "global_copper")
     price_order.extend(config["key"] for config in WATCH_IME_COMMODITIES)
-    flow_order = ("gold_funds", "silver_funds")
+    price_order.append("market_trade_value")
+    flow_order = (
+        "gold_funds",
+        "silver_funds",
+        "stock_market",
+        "fixed_income",
+    )
     result = {
         "prices": [prices[key] for key in price_order if key in prices],
         "flows": [flows[key] for key in flow_order if key in flows],
@@ -5551,8 +6082,59 @@ def get_watch_market_overview(force=False):
         "errors": sorted(set(errors)),
     }
     if result["prices"] or result["flows"]:
-        with watch_market_overview_cache_lock:
-            watch_market_overview_cache.update(data=result, fetched_at=now)
+        try:
+            result = save_watch_market_latest_overview(result)
+        except (OSError, sqlite3.Error, TypeError, ValueError) as error:
+            print("Market latest overview save error:", error)
+
+    price_configs = {
+        config["key"]: config
+        for config in (*WATCH_MARKET_ASSETS, *WATCH_IME_COMMODITIES)
+    }
+    price_configs["global_copper"] = {
+        "key": "global_copper",
+        "name": "مس جهانی",
+        "unit": "دلار/تن",
+        "tone": "copper",
+        "source_url": "https://finance.yahoo.com/quote/HG=F/",
+    }
+    saved_prices = {
+        item.get("key"): item
+        for item in result.get("prices", [])
+        if isinstance(item, dict) and item.get("key")
+    }
+    result["prices"] = [
+        saved_prices.get(key)
+        or watch_market_price_placeholder(price_configs[key])
+        for key in price_order
+        if key in saved_prices or key in price_configs
+    ]
+
+    saved_flows = {
+        item.get("key"): item
+        for item in result.get("flows", [])
+        if isinstance(item, dict) and item.get("key")
+    }
+    for key, name in (
+        ("gold_funds", "خالص پول صندوق‌های طلا"),
+        ("silver_funds", "خالص پول صندوق‌های نقره"),
+    ):
+        saved_flows.setdefault(
+            key,
+            watch_market_flow_item(
+                key,
+                name,
+                None,
+                is_stale=True,
+            ),
+        )
+    result["flows"] = [
+        saved_flows[key]
+        for key in flow_order
+        if key in saved_flows
+    ]
+    with watch_market_overview_cache_lock:
+        watch_market_overview_cache.update(data=result, fetched_at=now)
     return result
 
 
@@ -5690,14 +6272,22 @@ def get_watch_market(force=False):
             summary = summary_future.result()
             totals = totals_future.result()
             try:
-                industry_flows = industry_flows_future.result()
+                industry_flows = [
+                    {**item, "is_stale": False}
+                    for item in industry_flows_future.result()
+                ]
             except (requests.RequestException, ValueError, TypeError):
-                industry_flows = list(
+                fallback_industry_flows = (
                     ((cached_data or {}).get("overview") or {}).get(
-                        "industry_flows",
-                        [],
+                        "industry_flows"
                     )
+                    or overview.get("industry_flows")
+                    or []
                 )
+                industry_flows = [
+                    {**item, "is_stale": True}
+                    for item in fallback_industry_flows
+                ]
                 overview.setdefault("errors", []).append("industry-money-flow")
 
         industry_flows, dedicated_industry_flows = (
@@ -5706,16 +6296,12 @@ def get_watch_market(force=False):
         fixed_income_flow = watch_market_number(
             dedicated_industry_flows.get("fixed_income", {}).get("value")
         )
+        fixed_income_is_stale = fixed_income_flow is None
         if fixed_income_flow is None:
             fixed_income_flow = next(
                 (
                     watch_market_number(item.get("value"))
-                    for item in (
-                        ((cached_data or {}).get("overview") or {}).get(
-                            "flows",
-                            [],
-                        )
-                    )
+                    for item in overview.get("flows", [])
                     if item.get("key") == "fixed_income"
                 ),
                 None,
@@ -5830,12 +6416,23 @@ def get_watch_market(force=False):
             "errors": [],
         }
         overview = dict(overview)
+        previous_market_trade_value = next(
+            (
+                item
+                for item in overview.get("prices", [])
+                if item.get("key") == "market_trade_value"
+            ),
+            None,
+        )
         overview_prices = [
             item
             for item in overview.get("prices", [])
             if item.get("key") != "market_trade_value"
         ]
-        if total_market_trade_value is not None:
+        if (
+            total_market_trade_value is not None
+            and total_market_trade_value > 0
+        ):
             overview_prices.append({
                 "key": "market_trade_value",
                 "name": "ارزش معاملات کل روز بورس",
@@ -5846,6 +6443,12 @@ def get_watch_market(force=False):
                 "tone": "market",
                 "source": "tradersarena.ir",
                 "source_url": "https://tradersarena.ir/",
+                "is_stale": False,
+            })
+        elif previous_market_trade_value:
+            overview_prices.append({
+                **previous_market_trade_value,
+                "is_stale": True,
             })
         overview["prices"] = overview_prices
         overview_flows = [
@@ -5861,6 +6464,7 @@ def get_watch_market(force=False):
                     result["charts"]["money_flow"]["values"]
                 ),
                 market_date=result.get("market_date"),
+                is_stale=False,
             )
         )
         overview_flows.append(
@@ -5869,10 +6473,59 @@ def get_watch_market(force=False):
                 "خالص پول صندوق‌های درآمد ثابت",
                 fixed_income_flow,
                 market_date=result.get("market_date"),
+                is_stale=fixed_income_is_stale,
             )
         )
         overview["flows"] = overview_flows
         overview["industry_flows"] = industry_flows
+        display_only_prices = list(overview.get("prices", []))
+        display_only_flows = list(overview.get("flows", []))
+        try:
+            overview = save_watch_market_latest_overview(overview)
+            stored_price_keys = {
+                item.get("key") for item in overview.get("prices", [])
+            }
+            overview["prices"].extend(
+                item
+                for item in display_only_prices
+                if item.get("key") not in stored_price_keys
+            )
+            price_order = [
+                item.get("key") for item in display_only_prices
+                if item.get("key")
+            ]
+            price_by_key = {
+                item.get("key"): item for item in overview["prices"]
+                if item.get("key")
+            }
+            overview["prices"] = [
+                price_by_key[key]
+                for key in price_order
+                if key in price_by_key
+            ]
+            stored_flow_keys = {
+                item.get("key") for item in overview.get("flows", [])
+            }
+            overview["flows"].extend(
+                item
+                for item in display_only_flows
+                if item.get("key") not in stored_flow_keys
+            )
+            flow_order = [
+                item.get("key") for item in display_only_flows
+                if item.get("key")
+            ]
+            flow_by_key = {
+                item.get("key"): item for item in overview["flows"]
+                if item.get("key")
+            }
+            overview["flows"] = [
+                flow_by_key[key]
+                for key in flow_order
+                if key in flow_by_key
+            ]
+        except (OSError, sqlite3.Error, TypeError, ValueError) as error:
+            print("Market latest overview save error:", error)
         result["overview"] = overview
         result["total_market_trade_value"] = total_market_trade_value
         try:
@@ -6064,13 +6717,24 @@ def calculate_stock_change_percent(price, yesterday_price):
     return round(((price_value - yesterday_value) / yesterday_value) * 100, 2)
 
 
+@lru_cache(maxsize=1)
+def normalized_stock_floating_share_overrides():
+    """Index configured percentages by the same normalized symbol key."""
+    return {
+        normalize_symbol(symbol): percentage
+        for symbol, percentage in STOCK_FLOATING_SHARE_OVERRIDES.items()
+        if normalize_symbol(symbol)
+    }
+
+
 def apply_stock_floating_share_override(row):
     """Apply the configured manual free-float percentage to a stock row."""
     if not isinstance(row, dict):
         return row
-    symbol = str(row.get("symbol") or "").strip()
-    if symbol in STOCK_FLOATING_SHARE_OVERRIDES:
-        row["floating_share_percent"] = STOCK_FLOATING_SHARE_OVERRIDES[symbol]
+    symbol = normalize_symbol(row.get("symbol"))
+    overrides = normalized_stock_floating_share_overrides()
+    if symbol in overrides:
+        row["floating_share_percent"] = overrides[symbol]
     return row
 
 
@@ -6845,6 +7509,8 @@ def add_stock_watchlist_symbol(symbol):
     requested_symbol = normalize_symbol(symbol)
     if not requested_symbol:
         raise ValueError("نام نماد را وارد کنید.")
+    if is_stock_rights_symbol(requested_symbol):
+        raise ValueError("نمادهای حق‌تقدم به دیده‌بان اضافه نمی‌شوند.")
 
     current_rows = read_stock_watchlist()
     if any(

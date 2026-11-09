@@ -189,6 +189,39 @@ class WatchMarketOverviewTests(unittest.TestCase):
         self.assertEqual(result["price"], 187_500)
         self.assertEqual(result["source"], "rahavard365-live")
 
+    def test_rahavard_asset_uses_live_quote_when_api_fails(self):
+        config = {
+            "key": "gold_18",
+            "asset_id": 1560,
+            "name": "gold 18",
+            "unit": "toman",
+            "divisor": 10,
+            "source_url": "https://rahavard365.com/asset/1560",
+        }
+
+        with patch.object(
+            stock_app.requests,
+            "get",
+            side_effect=stock_app.requests.Timeout("upstream timeout"),
+        ):
+            result = stock_app.fetch_rahavard_watch_asset(
+                config,
+                live_quotes={
+                    1560: {
+                        "price": 250_000_000,
+                        "market_time": "2026-11-08T18:00:00+03:30",
+                        "fetched_at": (
+                            int(stock_app.time.time())
+                            - stock_app.WATCH_MARKET_OVERVIEW_TTL_SECONDS * 3
+                        ),
+                    },
+                },
+            )
+
+        self.assertEqual(result["price"], 25_000_000)
+        self.assertEqual(result["source"], "rahavard365-live")
+        self.assertTrue(result["is_stale"])
+
     def test_global_copper_is_converted_from_pounds_to_metric_tons(self):
         response = Mock()
         response.raise_for_status.return_value = None
@@ -376,6 +409,55 @@ class WatchMarketDailySnapshotTests(unittest.TestCase):
             response = client.get("/watch-market/history?limit=1")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["count"], 1)
+
+    def test_latest_overview_preserves_missing_values_and_updates_new_ones(self):
+        first = {
+            "prices": [
+                {"key": "dollar", "price": 100_000},
+                {"key": "gold_18", "price": 20_000_000},
+            ],
+            "flows": [
+                {"key": "gold_funds", "value": 15},
+                {"key": "silver_funds", "value": -3},
+            ],
+            "industry_flows": [
+                {"key": "13", "name": "فلزات", "value": 5},
+            ],
+            "fetched_at": 1,
+        }
+        stock_app.save_watch_market_latest_overview(first)
+
+        second = {
+            "prices": [
+                {"key": "dollar", "price": 101_500},
+                {"key": "gold_18", "price": None},
+            ],
+            "flows": [
+                {"key": "gold_funds", "value": None},
+            ],
+            "industry_flows": [],
+            "fetched_at": 2,
+        }
+        stock_app.save_watch_market_latest_overview(second)
+        stock_app.save_watch_market_latest_overview({
+            "prices": [{"key": "dollar", "price": 0}],
+            "flows": [],
+            "industry_flows": [],
+            "fetched_at": 3,
+        })
+        saved = stock_app.read_watch_market_latest_overview()
+
+        prices = {item["key"]: item for item in saved["prices"]}
+        flows = {item["key"]: item for item in saved["flows"]}
+        industries = {
+            item["key"]: item for item in saved["industry_flows"]
+        }
+        self.assertEqual(prices["dollar"]["price"], 101_500)
+        self.assertEqual(prices["gold_18"]["price"], 20_000_000)
+        self.assertTrue(prices["gold_18"]["is_stale"])
+        self.assertEqual(flows["gold_funds"]["value"], 15)
+        self.assertEqual(flows["silver_funds"]["value"], -3)
+        self.assertEqual(industries["13"]["value"], 5)
 
 
 if __name__ == "__main__":

@@ -72,6 +72,9 @@ class AllStockDailyTests(unittest.TestCase):
             self.market_row(
                 "10000000000000006", "IRO1TEST0002", "آزمون12", "نماد فرعی", "N1"
             ),
+            self.market_row(
+                "10000000000000007", "IRO1TEST0003", "آزمونح", "حق تقدم آزمون", "N1"
+            ),
         ])
 
         rows = stock_app.parse_all_stock_market_watch(response_text)
@@ -79,6 +82,7 @@ class AllStockDailyTests(unittest.TestCase):
         self.assertEqual([row["symbol"] for row in rows], ["آزمون"])
         self.assertEqual(rows[0]["session_type"], "standard")
         self.assertEqual(rows[0]["share_count"], 5_000_000_000)
+        self.assertTrue(stock_app.is_stock_rights_symbol("آزمونح"))
 
     def test_due_phases_are_completed_only_once_per_tehran_day(self):
         self.assertEqual(stock_app.all_stock_due_phases(self.at(12, 29), {}), [])

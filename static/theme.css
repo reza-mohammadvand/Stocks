@@ -3844,6 +3844,35 @@
     white-space: nowrap;
 }
 
+.dashboard-shell .watch-market-stale-warning {
+    display: inline-grid;
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    place-items: center;
+    border: 1px solid rgba(251, 191, 36, 0.7);
+    border-radius: 50%;
+    background: rgba(251, 191, 36, 0.13);
+    box-shadow: 0 0 8px rgba(251, 191, 36, 0.16);
+    color: #fbbf24;
+    font-size: 9px;
+    font-style: normal;
+    font-weight: 850;
+    line-height: 1;
+}
+
+.dashboard-shell .watch-market-industry-name {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.dashboard-shell .watch-market-industry-name > span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .dashboard-shell .watch-market-industry-flow-row {
     grid-template-columns: minmax(170px, 1fr) minmax(80px, auto) 82px 28px;
 }

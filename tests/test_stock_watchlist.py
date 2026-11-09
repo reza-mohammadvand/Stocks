@@ -46,6 +46,14 @@ class StockWatchlistTests(unittest.TestCase):
         self.assertEqual(stock_app.read_stock_watchlist(), [])
         self.assertFalse(stock_app.delete_stock_watchlist_symbol("فولاد"))
 
+    def test_watchlist_rejects_rights_symbols(self):
+        with self.assertRaisesRegex(ValueError, "حق‌تقدم"):
+            stock_app.save_stock_watchlist_row({
+                "symbol": "پکویرح",
+                "company": "حق تقدم پکویر",
+            })
+        self.assertEqual(stock_app.read_stock_watchlist(), [])
+
     def test_watchlist_api_add_get_and_delete(self):
         resolved_row = {
             "symbol": "آزمایشی",

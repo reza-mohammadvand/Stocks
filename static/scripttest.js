@@ -76,6 +76,11 @@ const stockTableColumns = [
     { key: "order_book_sell_count", label: "مجموع تعداد سفارش‌ها", side: "فروش", sideKey: "sell", type: "number", format: "integer", width: 150 }
 ];
 
+const stockSummaryTableColumns = stockTableColumns.filter((column, index) => (
+    column.key !== "share_count"
+    && index < stockTableColumns.findIndex(item => item.key === "real_buy_volume")
+));
+
 const dollarConvertibleStockColumns = new Set([
     "trade_value",
     "real_money_flow"
@@ -5882,6 +5887,7 @@ function createWatchMarketChartCard(title, subtitle, legend, body, latest) {
 }
 
 function formatWatchMarketPrice(value) {
+    if (value === null || value === undefined || value === "") return "—";
     const number = Number(value);
     if (!Number.isFinite(number)) return "—";
     const maximumFractionDigits = Math.abs(number) < 100
@@ -5916,8 +5922,24 @@ function renderWatchMarketOverview() {
         return;
     }
 
+    const staleWarningMarkup = item => item?.is_stale
+        ? `
+            <span
+                class="watch-market-stale-warning"
+                title="مقدار جدید دریافت نشد"
+                aria-label="مقدار جدید دریافت نشد"
+            >!</span>
+        `
+        : "";
+
     const priceCards = prices.map(item => {
-        const percent = Number(item.change_percent);
+        const percent = (
+            item.change_percent === null
+            || item.change_percent === undefined
+            || item.change_percent === ""
+        )
+            ? Number.NaN
+            : Number(item.change_percent);
         const direction = getWatchMarketDirection(percent);
         const percentMarkup = item.key === "market_trade_value"
             ? '<span class="watch-market-metric-change neutral">تجمعی امروز</span>'
@@ -5950,6 +5972,7 @@ function renderWatchMarketOverview() {
                 <header>
                     <span>${escapeHtml(item.name || "")}</span>
                     <span class="watch-market-card-actions">
+                        ${staleWarningMarkup(item)}
                         ${historyButton}
                         ${sourceLink}
                     </span>
@@ -5965,7 +5988,12 @@ function renderWatchMarketOverview() {
 
     const flowCards = flows.map(item => {
         const value = Number(item.value);
-        const hasValue = Number.isFinite(value);
+        const hasValue = (
+            item.value !== null
+            && item.value !== undefined
+            && item.value !== ""
+            && Number.isFinite(value)
+        );
         const direction = getWatchMarketDirection(value);
         const flowLabel = !hasValue || value === 0
             ? "خنثی"
@@ -5988,6 +6016,7 @@ function renderWatchMarketOverview() {
                 <header>
                     <span>${escapeHtml(item.name || "")}</span>
                     <span class="watch-market-card-actions">
+                        ${staleWarningMarkup(item)}
                         ${historyButton}
                         <em>${flowLabel}</em>
                     </span>
@@ -6003,11 +6032,19 @@ function renderWatchMarketOverview() {
 
     const industryFlowRows = industryFlows.map(item => {
         const value = Number(item.value);
-        const hasValue = Number.isFinite(value);
+        const hasValue = (
+            item.value !== null
+            && item.value !== undefined
+            && item.value !== ""
+            && Number.isFinite(value)
+        );
         const direction = getWatchMarketDirection(value);
         return `
             <article class="watch-market-industry-flow-row ${direction}">
-                <span>${escapeHtml(item.name || "")}</span>
+                <span class="watch-market-industry-name">
+                    ${staleWarningMarkup(item)}
+                    <span>${escapeHtml(item.name || "")}</span>
+                </span>
                 <strong>${hasValue ? watchMarketSignedFormatter.format(value) : "—"}</strong>
                 <small>میلیارد تومان</small>
                 ${historyChartButtonMarkup({
@@ -6591,7 +6628,7 @@ function loadStockColumnPreferences() {
         const saved = JSON.parse(
             localStorage.getItem("stock-dashboard-hidden-columns") || "[]"
         );
-        const validKeys = new Set(stockTableColumns.map(column => column.key));
+        const validKeys = new Set(stockSummaryTableColumns.map(column => column.key));
 
         if (Array.isArray(saved)) {
             saved.forEach(key => {
@@ -6631,7 +6668,7 @@ function renderStockColumnControls() {
 
     const fragment = document.createDocumentFragment();
 
-    stockTableColumns.forEach(column => {
+    stockSummaryTableColumns.forEach(column => {
         const label = document.createElement("label");
         label.className = "stock-column-option";
 
@@ -6703,7 +6740,7 @@ function loadAllStockColumnPreferences() {
         const saved = JSON.parse(
             localStorage.getItem("all-stock-dashboard-hidden-columns") || "[]"
         );
-        const validKeys = new Set(stockTableColumns.map(column => column.key));
+        const validKeys = new Set(stockSummaryTableColumns.map(column => column.key));
         if (Array.isArray(saved)) {
             saved.forEach(key => {
                 if (validKeys.has(key)) hiddenAllStockColumns.add(key);
@@ -6739,7 +6776,7 @@ function renderAllStockColumnControls() {
     const container = document.getElementById("all-stock-column-options");
     if (!container) return;
     const fragment = document.createDocumentFragment();
-    stockTableColumns.forEach(column => {
+    stockSummaryTableColumns.forEach(column => {
         const label = document.createElement("label");
         label.className = "stock-column-option";
         const checkbox = document.createElement("input");
@@ -6800,7 +6837,7 @@ function loadStockWatchlistColumnPreferences() {
         const saved = JSON.parse(
             localStorage.getItem("stock-watchlist-hidden-columns") || "[]"
         );
-        const validKeys = new Set(stockTableColumns.map(column => column.key));
+        const validKeys = new Set(stockSummaryTableColumns.map(column => column.key));
         if (Array.isArray(saved)) {
             saved.forEach(key => {
                 if (validKeys.has(key)) hiddenStockWatchlistColumns.add(key);
@@ -6838,7 +6875,7 @@ function renderStockWatchlistColumnControls() {
     if (!container) return;
 
     const fragment = document.createDocumentFragment();
-    stockTableColumns.forEach(column => {
+    stockSummaryTableColumns.forEach(column => {
         const label = document.createElement("label");
         label.className = "stock-column-option";
 
@@ -8564,7 +8601,7 @@ function getSortedStockRows(rows) {
         return [...rows];
     }
 
-    const column = stockTableColumns.find(
+    const column = stockSummaryTableColumns.find(
         item => item.key === stockTableSort.key
     );
     if (!column) return [...rows];
@@ -8594,7 +8631,7 @@ function getSortedStockRows(rows) {
 }
 
 function sortStockTable(columnKey) {
-    const column = stockTableColumns.find(item => item.key === columnKey);
+    const column = stockSummaryTableColumns.find(item => item.key === columnKey);
     if (!column) return;
 
     if (!stockSortInteractionStarted || stockTableSort.key !== columnKey) {
@@ -8624,7 +8661,7 @@ function renderStockTable() {
     );
     const tableHead = table.querySelector("thead");
     const tableBody = table.querySelector("tbody");
-    const visibleColumns = stockTableColumns.filter(
+    const visibleColumns = stockSummaryTableColumns.filter(
         column => !hiddenStockColumns.has(column.key)
     );
     const filteredRows = getFilteredStockRows();
@@ -8963,7 +9000,7 @@ function getFilteredAllStockRows() {
 function getSortedAllStockRows(rows) {
     const { key, direction } = allStockSort;
     if (!key || !direction) return [...rows];
-    const column = stockTableColumns.find(item => item.key === key);
+    const column = stockSummaryTableColumns.find(item => item.key === key);
     if (!column) return [...rows];
     const order = direction === "asc" ? 1 : -1;
     return [...rows].sort((left, right) => {
@@ -8986,7 +9023,7 @@ function getSortedAllStockRows(rows) {
 }
 
 function sortAllStockTable(columnKey) {
-    if (!stockTableColumns.some(column => column.key === columnKey)) return;
+    if (!stockSummaryTableColumns.some(column => column.key === columnKey)) return;
     if (!allStockSortInteractionStarted || allStockSort.key !== columnKey) {
         allStockSort = { key: columnKey, direction: "asc" };
         allStockSortInteractionStarted = true;
@@ -9012,7 +9049,7 @@ function renderAllStockTable() {
     const table = document.getElementById("all-stocks-table");
     const wrapper = document.getElementById("all-stocks-table-wrap");
     if (!table || !wrapper) return;
-    const visibleColumns = stockTableColumns.filter(
+    const visibleColumns = stockSummaryTableColumns.filter(
         column => column.key === "symbol" || !hiddenAllStockColumns.has(column.key)
     );
     const filteredRows = getFilteredAllStockRows();
@@ -9205,7 +9242,7 @@ function getFilteredStockWatchlistRows() {
 function getSortedStockWatchlistRows(rows) {
     const { key, direction } = stockWatchlistSort;
     if (!key || !direction) return [...rows];
-    const column = stockTableColumns.find(item => item.key === key);
+    const column = stockSummaryTableColumns.find(item => item.key === key);
     if (!column) return [...rows];
     const order = direction === "asc" ? 1 : -1;
 
@@ -9229,7 +9266,7 @@ function getSortedStockWatchlistRows(rows) {
 }
 
 function sortStockWatchlistTable(columnKey) {
-    if (!stockTableColumns.some(column => column.key === columnKey)) return;
+    if (!stockSummaryTableColumns.some(column => column.key === columnKey)) return;
     if (!stockWatchlistSortInteractionStarted || stockWatchlistSort.key !== columnKey) {
         stockWatchlistSort = { key: columnKey, direction: "asc" };
         stockWatchlistSortInteractionStarted = true;
@@ -9418,7 +9455,7 @@ function renderStockWatchlistTable() {
     const wrapper = document.getElementById("watchlist-table-wrap");
     const tableHead = table.querySelector("thead");
     const tableBody = table.querySelector("tbody");
-    const visibleColumns = stockTableColumns.filter(
+    const visibleColumns = stockSummaryTableColumns.filter(
         column => column.key === "symbol" || !hiddenStockWatchlistColumns.has(column.key)
     );
     const filteredRows = getFilteredStockWatchlistRows();
@@ -10781,6 +10818,7 @@ function formatStockStrategyValue(metric, value) {
     if (value === null || value === undefined || value === "") return "—";
     if (metric === "trade_value") return formatTradeValue(value);
     if (metric === "real_money_flow") return formatTradeValue(value);
+    if (metric === "per_capita") return formatStockPerCapita(value);
     if (metric === "trade_volume") {
         return formatStockCell({ key: metric, format: "million" }, value, false);
     }
@@ -10958,30 +10996,166 @@ function renderStockStrategyTable(payload) {
         }
     }
 
+    const strategyRuleIsActive = metric => {
+        const rule = strategyRules?.[metric];
+        if (!rule?.enabled) return false;
+        if (metric === "real_money_flow") {
+            return Number(rule.consecutive_days) > 0 || Number(rule.days) > 0;
+        }
+        return true;
+    };
+    const primaryMetrics = [
+        "trade_value",
+        "trade_to_float_percent",
+        "real_buy_power",
+        "real_money_flow",
+        "money_flow_quality"
+    ];
+    const hasPrimaryMetric = primaryMetrics.some(strategyRuleIsActive);
+    const hasTechnicalMetric = ["rsi", "ema", "macd"].some(
+        strategyRuleIsActive
+    );
     const rsiPeriod = Number(strategyRules?.rsi?.period) || 14;
-    const emaPeriod = Number(strategyRules?.ema?.period) || 20;
-    const emaLongPeriod = Number(strategyRules?.ema?.long_period) || 50;
-    const macdFastPeriod = Number(strategyRules?.macd?.fast_period) || 12;
-    const macdSlowPeriod = Number(strategyRules?.macd?.slow_period) || 26;
-    const macdSignalPeriod = Number(strategyRules?.macd?.signal_period) || 9;
     const columns = [
         { key: "symbol", label: "نماد", width: 190 },
         { key: "company", label: "نام شرکت", width: 210 },
-        { key: "industry", label: "صنعت", width: 190 },
-        { key: "trade_value", label: "ارزش معاملات", unit: "میلیارد تومان", metric: "trade_value", width: 150 },
-        { key: "trade_value_average", label: "میانگین ارزش معاملات", unit: "میلیارد تومان", metric: "trade_value", historyKey: "trade_value_history_count", width: 160 },
-        { key: "price_power", label: "قدرت قیمت", metric: "price_power", width: 115 },
-        { key: "trade_to_float_percent", label: "معامله به شناوری", unit: "درصد", metric: "trade_to_float_percent", width: 155 },
-        { key: "trade_to_float_percent_average", label: "میانگین معامله به شناوری", unit: "درصد", metric: "trade_to_float_percent", historyKey: "trade_to_float_percent_history_count", width: 175 },
-        { key: "real_buy_power", label: "قدرت خرید حقیقی", unit: "برابر", metric: "real_buy_power", width: 155 },
-        { key: "real_buy_power_average", label: "میانگین قدرت خرید حقیقی", unit: "برابر", metric: "real_buy_power", historyKey: "real_buy_power_history_count", width: 170 },
-        { key: "real_money_flow", label: "ورود پول حقیقی", unit: "میلیارد تومان", metric: "real_money_flow", width: 155 },
-        { key: "real_money_flow_average", label: "میانگین ورود پول", unit: "میلیارد تومان", metric: "real_money_flow", historyKey: "real_money_flow_history_count", width: 165 },
-        { key: "real_money_flow_positive_streak", label: "ورود پول مثبت پیاپی", unit: "روز", metric: "integer", width: 155 },
-        { key: "money_flow_quality", label: "کیفیت ورود پول", unit: "درصد", metric: "money_flow_quality", width: 150 }
+        { key: "industry", label: "صنعت", width: 190 }
     ];
 
-    if (strategyRules?.industry_growth?.enabled) {
+    if (hasPrimaryMetric) {
+        columns.push(
+            { key: "trade_value", label: "ارزش معاملات", unit: "میلیارد تومان", metric: "trade_value", width: 150 },
+            {
+                key: "trade_value_average",
+                label: "میانگین ارزش معاملات",
+                unit: "میلیارد تومان",
+                metric: "trade_value",
+                historyKey: Number(strategyRules.trade_value.days) > 0
+                    ? "trade_value_history_count"
+                    : null,
+                width: 160
+            }
+        );
+    }
+
+    if (hasPrimaryMetric) {
+        columns.push({
+            key: "trade_to_float_percent",
+            label: "معامله به شناوری",
+            unit: "درصد",
+            metric: "trade_to_float_percent",
+            width: 155
+        });
+        if (
+            strategyRuleIsActive("trade_to_float_percent")
+            && Number(strategyRules.trade_to_float_percent.days) > 0
+        ) {
+            columns.push({
+                key: "trade_to_float_percent_average",
+                label: "میانگین معامله به شناوری",
+                unit: "درصد",
+                metric: "trade_to_float_percent",
+                historyKey: "trade_to_float_percent_history_count",
+                width: 175
+            });
+        }
+    }
+
+    if (hasPrimaryMetric) {
+        columns.push({
+            key: "real_money_flow",
+            label: "ورود پول حقیقی",
+            unit: "میلیارد تومان",
+            metric: "real_money_flow",
+            width: 155
+        });
+        if (
+            strategyRuleIsActive("real_money_flow")
+            && Number(strategyRules.real_money_flow.days) > 0
+        ) {
+            columns.push({
+                key: "real_money_flow_average",
+                label: "میانگین ورود پول",
+                unit: "میلیارد تومان",
+                metric: "real_money_flow",
+                historyKey: "real_money_flow_history_count",
+                width: 165
+            });
+        }
+        if (
+            strategyRuleIsActive("real_money_flow")
+            && Number(strategyRules.real_money_flow.consecutive_days) > 0
+        ) {
+            columns.push({
+                key: "real_money_flow_positive_streak",
+                label: "ورود پول مثبت پیاپی",
+                unit: "روز",
+                metric: "integer",
+                width: 155
+            });
+        }
+    }
+
+    if (hasPrimaryMetric) {
+        columns.push({
+            key: "money_flow_quality",
+            label: "کیفیت ورود پول",
+            unit: "درصد",
+            metric: "money_flow_quality",
+            width: 150
+        });
+    }
+
+    if (hasPrimaryMetric) {
+        columns.push({
+            key: "price_power",
+            label: "قدرت قیمت",
+            metric: "price_power",
+            width: 115
+        });
+        columns.push(
+            {
+                key: "real_buy_per_capita",
+                label: "سرانه خرید حقیقی",
+                unit: "میلیون تومان",
+                metric: "per_capita",
+                width: 150
+            },
+            {
+                key: "real_buy_per_capita_30d_average",
+                label: "میانگین ۳۰روزه سرانه خرید حقیقی",
+                unit: "میلیون تومان",
+                metric: "per_capita",
+                historyKey: "real_buy_per_capita_30d_history_count",
+                width: 190
+            }
+        );
+    }
+
+    if (hasPrimaryMetric) {
+        columns.push({
+            key: "real_buy_power",
+            label: "قدرت خرید حقیقی",
+            unit: "برابر",
+            metric: "real_buy_power",
+            width: 155
+        });
+        if (
+            strategyRuleIsActive("real_buy_power")
+            && Number(strategyRules.real_buy_power.days) > 0
+        ) {
+            columns.push({
+                key: "real_buy_power_average",
+                label: "میانگین قدرت خرید حقیقی",
+                unit: "برابر",
+                metric: "real_buy_power",
+                historyKey: "real_buy_power_history_count",
+                width: 170
+            });
+        }
+    }
+
+    if (strategyRuleIsActive("industry_growth")) {
         columns.push(
             {
                 key: "industry_growth_percent",
@@ -11008,7 +11182,7 @@ function renderStockStrategyTable(payload) {
         );
     }
 
-    if (strategyRules?.symbol_industry_compare?.enabled) {
+    if (strategyRuleIsActive("symbol_industry_compare")) {
         columns.push(
             {
                 key: "symbol_industry_return_percent",
@@ -11028,19 +11202,20 @@ function renderStockStrategyTable(payload) {
         );
     }
 
-    const pricePowerColumnIndex = columns.findIndex(
-        column => column.key === "price_power"
-    );
-    columns.splice(pricePowerColumnIndex + 1, 0,
-        { key: "closing_price", label: "قیمت پایانی", unit: "ریال", metric: "closing_price", width: 125 },
-        { key: "ema", label: `EMA ${formatter.format(emaPeriod)}`, unit: "ریال", metric: "ema", width: 125 },
-        { key: "ema_slow", label: `EMA ${formatter.format(emaLongPeriod)}`, unit: "ریال", metric: "ema_slow", width: 125 },
-        { key: "ema_cross_direction", label: "تقاطع EMA", metric: "ema_cross", width: 145 },
-        { key: "rsi", label: `RSI ${formatter.format(rsiPeriod)}`, metric: "rsi", width: 110 },
-        { key: "macd", label: `MACD ${formatter.format(macdFastPeriod)}،${formatter.format(macdSlowPeriod)}`, metric: "macd", width: 135 },
-        { key: "macd_signal", label: `Signal ${formatter.format(macdSignalPeriod)}`, metric: "macd", width: 115 },
-        { key: "macd_histogram", label: "Histogram", metric: "macd", width: 115 }
-    );
+    if (hasTechnicalMetric) {
+        columns.push({
+            key: "rsi",
+            label: `RSI ${formatter.format(rsiPeriod)}`,
+            metric: "rsi",
+            width: 110
+        });
+        columns.push({
+            key: "ema_cross_direction",
+            label: "تقاطع EMA",
+            metric: "ema_cross",
+            width: 145
+        });
+    }
     const strategyTextColumns = new Set(["symbol", "company", "industry"]);
     columns.forEach(column => {
         column.type = strategyTextColumns.has(column.key) ? "text" : "number";

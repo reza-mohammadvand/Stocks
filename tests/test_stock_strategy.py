@@ -12,6 +12,45 @@ class StockStrategyTests(unittest.TestCase):
     def history(*rows):
         return {stock_app.normalize_symbol("نماد۱"): list(rows)}
 
+    def test_strategy_excludes_every_rights_symbol(self):
+        rows = [
+            {
+                "symbol": "پکویر",
+                "market_date": "2026-10-25",
+                "trade_value": 100,
+            },
+            {
+                "symbol": "پکویرح",
+                "market_date": "2026-10-25",
+                "trade_value": 200,
+            },
+        ]
+        history = {
+            stock_app.normalize_symbol("پکویر"): [{
+                "trade_date": "2026-10-24",
+                "trade_value": 80,
+            }],
+            stock_app.normalize_symbol("پکویرح"): [{
+                "trade_date": "2026-10-24",
+                "trade_value": 90,
+            }],
+        }
+        result = stock_app.evaluate_stock_strategy(
+            rows,
+            history,
+            {
+                "trade_value": {
+                    "enabled": True,
+                    "operator": "gte",
+                    "days": 1,
+                },
+            },
+        )
+
+        self.assertEqual(result["evaluated_count"], 1)
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["stocks"][0]["symbol"], "پکویر")
+
     def test_all_enabled_strategy_rows_are_combined_with_and(self):
         current_rows = [{
             "symbol": "نماد۱",
@@ -788,6 +827,189 @@ class StockStrategyTests(unittest.TestCase):
             5,
         )
 
+    def test_strategy_export_columns_follow_active_rules_and_order(self):
+        rules = {
+            "trade_value": {
+                "enabled": True,
+                "days": 0,
+            },
+            "trade_to_float_percent": {
+                "enabled": True,
+                "days": 0,
+            },
+            "real_buy_power": {
+                "enabled": True,
+                "days": 2,
+            },
+            "real_money_flow": {
+                "enabled": True,
+                "days": 0,
+                "consecutive_days": 3,
+            },
+            "money_flow_quality": {
+                "enabled": True,
+            },
+            "symbol_industry_compare": {
+                "enabled": True,
+            },
+            "rsi": {
+                "enabled": True,
+                "period": 14,
+            },
+            "ema": {
+                "enabled": True,
+            },
+            "macd": {
+                "enabled": True,
+            },
+        }
+
+        keys = [
+            column["key"]
+            for column in stock_app.stock_strategy_export_columns(rules)
+        ]
+
+        self.assertEqual(keys, [
+            "symbol",
+            "company",
+            "industry",
+            "trade_value",
+            "trade_value_average",
+            "trade_to_float_percent",
+            "real_money_flow",
+            "real_money_flow_positive_streak",
+            "money_flow_quality",
+            "price_power_status",
+            "real_buy_per_capita",
+            "real_buy_per_capita_30d_average",
+            "real_buy_power",
+            "real_buy_power_average",
+            "symbol_industry_return_percent",
+            "symbol_industry_average_return_percent",
+            "rsi",
+            "ema_cross_direction",
+        ])
+        for hidden_key in (
+            "closing_price",
+            "ema",
+            "ema_slow",
+            "macd",
+            "macd_signal",
+            "macd_histogram",
+            "trade_to_float_percent_average",
+            "real_money_flow_average",
+            "symbol_industry_days_used",
+        ):
+            self.assertNotIn(hidden_key, keys)
+
+    def test_one_primary_strategy_shows_all_base_columns(self):
+        keys = [
+            column["key"]
+            for column in stock_app.stock_strategy_export_columns({
+                "money_flow_quality": {"enabled": True},
+            })
+        ]
+
+        self.assertEqual(keys, [
+            "symbol",
+            "company",
+            "industry",
+            "trade_value",
+            "trade_value_average",
+            "trade_to_float_percent",
+            "real_money_flow",
+            "money_flow_quality",
+            "price_power_status",
+            "real_buy_per_capita",
+            "real_buy_per_capita_30d_average",
+            "real_buy_power",
+        ])
+
+    def test_trade_value_average_is_calculated_for_primary_display(self):
+        result = stock_app.evaluate_stock_strategy(
+            [{
+                "symbol": "نماد۱",
+                "market_date": "2026-10-06",
+                "trade_value": 30,
+                "money_flow_quality": 5,
+                "real_buy_per_capita": 30_000_000,
+            }],
+            self.history(
+                {
+                    "trade_date": "2026-10-05",
+                    "trade_value": 10,
+                    "real_buy_per_capita": 10_000_000,
+                },
+                {
+                    "trade_date": "2026-10-04",
+                    "trade_value": 20,
+                    "real_buy_per_capita": 20_000_000,
+                },
+            ),
+            {
+                "money_flow_quality": {
+                    "enabled": True,
+                    "operator": "gte",
+                    "fixed": 0,
+                },
+            },
+        )
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(
+            result["stocks"][0]["trade_value_average"],
+            15,
+        )
+        self.assertEqual(
+            result["stocks"][0][
+                "real_buy_per_capita_30d_average"
+            ],
+            20_000_000,
+        )
+        self.assertEqual(
+            result["stocks"][0][
+                "real_buy_per_capita_30d_history_count"
+            ],
+            3,
+        )
+
+    def test_symbol_industry_export_uses_only_requested_columns(self):
+        keys = [
+            column["key"]
+            for column in stock_app.stock_strategy_export_columns({
+                "symbol_industry_compare": {"enabled": True},
+            })
+        ]
+
+        self.assertEqual(keys, [
+            "symbol",
+            "company",
+            "industry",
+            "symbol_industry_return_percent",
+            "symbol_industry_average_return_percent",
+        ])
+
+    def test_each_technical_strategy_shows_only_rsi_and_ema_cross(self):
+        for metric in ("rsi", "ema", "macd"):
+            with self.subTest(metric=metric):
+                rules = {
+                    metric: {"enabled": True},
+                }
+                keys = [
+                    column["key"]
+                    for column in stock_app.stock_strategy_export_columns(
+                        rules
+                    )
+                ]
+
+                self.assertEqual(keys, [
+                    "symbol",
+                    "company",
+                    "industry",
+                    "rsi",
+                    "ema_cross_direction",
+                ])
+
     def test_strategy_excel_export_contains_active_inputs_and_columns(self):
         export_result = {
             "source": "featured",
@@ -808,15 +1030,33 @@ class StockStrategyTests(unittest.TestCase):
                     "period": 14,
                 },
             },
-            "stocks": [{
-                "symbol": "نماد۱",
-                "company": "شرکت یک",
-                "industry": "صنعت آزمایشی",
-                "trade_value": 25_000_000_000,
-                "trade_value_average": 20_000_000_000,
-                "rsi": 61.5,
-                "macd": 2.5,
-            }],
+            "stocks": [
+                {
+                    "symbol": "نماد۱",
+                    "company": "شرکت یک",
+                    "industry": "صنعت آزمایشی",
+                    "trade_value": 25_000_000_000,
+                    "trade_value_average": 20_000_000_000,
+                    "rsi": 61.5,
+                    "macd": 2.5,
+                },
+                {
+                    "symbol": "نماد۱ح",
+                    "company": "حق تقدم شرکت یک",
+                    "industry": "صنعت آزمایشی",
+                    "trade_value": 10_000_000_000,
+                    "trade_value_average": 9_000_000_000,
+                    "rsi": 58,
+                },
+                {
+                    "symbol": "تنهاح",
+                    "company": "حق تقدم بدون سهم پایه در نتیجه",
+                    "industry": "صنعت آزمایشی",
+                    "trade_value": 8_000_000_000,
+                    "trade_value_average": 7_000_000_000,
+                    "rsi": 55,
+                },
+            ],
         }
         client = stock_app.app.test_client()
 
@@ -845,10 +1085,22 @@ class StockStrategyTests(unittest.TestCase):
         )
 
         workbook = load_workbook(BytesIO(response.data), data_only=True)
-        self.assertEqual(workbook.sheetnames, ["تنظیمات فعال", "نتایج"])
+        self.assertEqual(workbook.sheetnames, ["خروجی استراتژی"])
+        result_sheet = workbook["خروجی استراتژی"]
+        settings_start_column = next(
+            column_index
+            for column_index in range(1, result_sheet.max_column + 1)
+            if result_sheet.cell(2, column_index).value == "استراتژی"
+        )
+        settings_count = len(
+            stock_app.stock_strategy_export_settings(export_result["rules"])
+        )
         settings = list(
-            workbook["تنظیمات فعال"].iter_rows(
-                min_row=8,
+            result_sheet.iter_rows(
+                min_row=3,
+                max_row=2 + settings_count,
+                min_col=settings_start_column,
+                max_col=settings_start_column + 2,
                 values_only=True,
             )
         )
@@ -856,15 +1108,21 @@ class StockStrategyTests(unittest.TestCase):
         self.assertIn(("RSI", "حد پایین", 50), settings)
         self.assertIn(("RSI", "حد بالا", 70), settings)
 
-        result_sheet = workbook["نتایج"]
-        headers = [cell.value for cell in result_sheet[5]]
+        headers = [cell.value for cell in result_sheet[6]]
         self.assertIn("ارزش معاملات (میلیارد تومان)", headers)
         self.assertIn("میانگین ارزش معاملات (میلیارد تومان)", headers)
         self.assertIn("RSI 14", headers)
         self.assertNotIn("MACD", headers)
-        self.assertEqual(result_sheet["A6"].value, "نماد۱")
+        self.assertEqual(result_sheet["B4"].value, 1)
+        result_symbols = [
+            result_sheet.cell(row, 1).value
+            for row in range(7, 8)
+        ]
+        self.assertEqual(result_symbols, ["نماد۱"])
+        self.assertNotIn("نماد۱ح", result_symbols)
+        self.assertNotIn("تنهاح", result_symbols)
         self.assertEqual(
-            result_sheet.cell(6, headers.index("RSI 14") + 1).value,
+            result_sheet.cell(7, headers.index("RSI 14") + 1).value,
             61.5,
         )
 

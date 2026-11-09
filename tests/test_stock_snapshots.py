@@ -597,6 +597,24 @@ class StockSnapshotTests(unittest.TestCase):
         self.assertIsNone(by_symbol["پالایش"]["floating_share_percent"])
         self.assertIsNone(by_symbol["دارا یکم"]["floating_share_percent"])
 
+    def test_excel_floating_share_overrides_are_loaded_and_normalized(self):
+        imported = stock_app.load_stock_floating_share_overrides()
+
+        self.assertEqual(len(imported), 362)
+        self.assertAlmostEqual(imported["آ س پ"], 26.446)
+        self.assertEqual(imported["سمایه"], 0)
+        self.assertNotIn("پکویرح", imported)
+
+        compact_symbol_row = {
+            "symbol": "آسپ",
+            "floating_share_percent": None,
+        }
+        stock_app.apply_stock_floating_share_override(compact_symbol_row)
+        self.assertAlmostEqual(
+            compact_symbol_row["floating_share_percent"],
+            26.446,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
