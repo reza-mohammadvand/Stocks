@@ -80,12 +80,18 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 - Shows a compact cross-market overview above the charts: US dollar, NIMA negotiated-market dollar, 18-karat gold, global gold and silver ounces, global copper per metric ton, silver-bullion and copper-cathode certificates, plus IME rebar, zinc-ingot, and iron-ore-pellet certificate prices.
 - Prefers Rahavard365's live last-trade WebSocket feed for listed prices. The US-dollar card never falls back to Rahavard's stale historical trade row; other assets may use their current `last_trade` response when no broadcast quote is available.
 - Shows the latest net real-money flow for all gold funds, all silver funds, exchange-listed fixed-income funds, and the stock market. Fixed-income flow uses its direct TSETMC group row; dedicated fund groups are omitted from the scrollable industry panel to avoid duplication.
-- Adds the full-day Tehran-market share and rights trading value as an
-  overview card, excluding fixed-income, gold, silver, and all other funds.
+- Shows a dedicated market-value panel with aggregate TSE/IFB/base-market
+  capitalization in billions of US dollars from Chartix/TSETMC and the retail
+  trading value reported by TradersArena.
 - Reads Rahavard365 asset and commodity-fund data through the Flask backend, and uses Yahoo Finance for the global copper futures quote.
 - Retrieves public intraday market series from TradersArena through the Flask backend.
 - Shows six responsive SVG charts covering buy/sell order value, last-trade price distribution, stock money flow, positive/negative breadth, current order and queue value, and market excitement. The order chart includes the buy-to-sell percentage, while price-distribution bars show both count and share plus aggregate positive/negative percentages.
-- Stores one updatable SQLite snapshot per Tehran day containing the latest free-dollar quote, share-only market trading value, all overview money flows, and every non-gold/non-silver industry money flow.
+- Stores one updatable SQLite snapshot per Tehran day containing the latest
+  free-dollar quote, share-only market trading value, aggregate dollar market
+  capitalization,
+  combined retail trading value, all overview money flows, and every
+  non-gold/non-silver industry money flow. Each of the three market-value cards
+  can open its saved daily history chart.
 - Limits line charts to the regular 09:00–12:30 Tehran stock-market session.
 - Supports on-demand refresh while preserving the previous in-memory dataset if a live refresh fails.
 - Automatically checks the Stocks, All Stocks, Watchlist, Strategy, Options, and Markets datasets every two minutes in the background, regardless of the active tab. All Stocks checks are database-only after that day's eligible close phase has been finalized.

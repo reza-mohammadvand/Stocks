@@ -342,6 +342,24 @@ class WatchMarketOverviewTests(unittest.TestCase):
 
         self.assertEqual(value, 32)
 
+    def test_retail_trade_value_uses_tradersarena_retail_total(self):
+        summary = {
+            "m": [0, 900_000_000_000],
+            "afl": [0, 442_431_933_462_428],
+        }
+
+        value = stock_app.extract_tradersarena_retail_trade_value(summary)
+
+        self.assertAlmostEqual(value, 44_243.1933462428)
+
+    def test_chartix_market_cap_is_parsed_as_billions_of_dollars(self):
+        value = stock_app.parse_chartix_total_market_cap_usd(
+            '<meta name="description" content="قیمت ارزش دلاری کل بورس امروز '
+            '112,680,076,657.46 است؛ اطلاعات بازار.">'
+        )
+
+        self.assertAlmostEqual(value, 112.68007665746)
+
     def test_fixed_income_flow_is_moved_to_its_dedicated_card(self):
         visible, dedicated = stock_app.split_dedicated_industry_money_flows([
             {"key": "13", "name": "فلزات", "value": -10},
@@ -385,6 +403,8 @@ class WatchMarketDailySnapshotTests(unittest.TestCase):
         payload = {
             "market_date": "1405/08/04",
             "total_market_trade_value": 12_345,
+            "total_market_cap_usd": 111.6,
+            "retail_market_trade_value": 20_000,
             "overview": {
                 "prices": [{"key": "dollar", "price": 100_000}],
                 "flows": [{"key": "stock_market", "value": 10}],
@@ -394,6 +414,8 @@ class WatchMarketDailySnapshotTests(unittest.TestCase):
         stock_app.save_market_daily_snapshot(payload, captured_at)
 
         payload["total_market_trade_value"] = 13_000
+        payload["total_market_cap_usd"] = 112.3
+        payload["retail_market_trade_value"] = 25_000
         payload["overview"]["prices"][0]["price"] = 101_500
         payload["overview"]["flows"][0]["value"] = 12
         stock_app.save_market_daily_snapshot(payload, captured_at.replace(hour=18))
@@ -402,6 +424,8 @@ class WatchMarketDailySnapshotTests(unittest.TestCase):
         self.assertEqual(len(snapshots), 1)
         self.assertEqual(snapshots[0]["free_dollar_price"], 101_500)
         self.assertEqual(snapshots[0]["total_market_trade_value"], 13_000)
+        self.assertEqual(snapshots[0]["total_market_cap_usd"], 112.3)
+        self.assertEqual(snapshots[0]["retail_market_trade_value"], 25_000)
         self.assertEqual(snapshots[0]["money_flows"][0]["value"], 12)
         self.assertEqual(snapshots[0]["industry_flows"][0]["name"], "فلزات")
 
@@ -415,6 +439,11 @@ class WatchMarketDailySnapshotTests(unittest.TestCase):
             "prices": [
                 {"key": "dollar", "price": 100_000},
                 {"key": "gold_18", "price": 20_000_000},
+            ],
+            "market_values": [
+                {"key": "total_market_trade_value", "price": 12_000},
+                {"key": "total_market_cap_usd", "price": 111.6},
+                {"key": "retail_market_trade_value", "price": 20_000},
             ],
             "flows": [
                 {"key": "gold_funds", "value": 15},
@@ -432,6 +461,10 @@ class WatchMarketDailySnapshotTests(unittest.TestCase):
                 {"key": "dollar", "price": 101_500},
                 {"key": "gold_18", "price": None},
             ],
+            "market_values": [
+                {"key": "total_market_trade_value", "price": 13_500},
+                {"key": "total_market_cap_usd", "price": 112.3},
+            ],
             "flows": [
                 {"key": "gold_funds", "value": None},
             ],
@@ -441,6 +474,7 @@ class WatchMarketDailySnapshotTests(unittest.TestCase):
         stock_app.save_watch_market_latest_overview(second)
         stock_app.save_watch_market_latest_overview({
             "prices": [{"key": "dollar", "price": 0}],
+            "market_values": [],
             "flows": [],
             "industry_flows": [],
             "fetched_at": 3,
@@ -448,6 +482,9 @@ class WatchMarketDailySnapshotTests(unittest.TestCase):
         saved = stock_app.read_watch_market_latest_overview()
 
         prices = {item["key"]: item for item in saved["prices"]}
+        market_values = {
+            item["key"]: item for item in saved["market_values"]
+        }
         flows = {item["key"]: item for item in saved["flows"]}
         industries = {
             item["key"]: item for item in saved["industry_flows"]
@@ -458,6 +495,15 @@ class WatchMarketDailySnapshotTests(unittest.TestCase):
         self.assertEqual(flows["gold_funds"]["value"], 15)
         self.assertEqual(flows["silver_funds"]["value"], -3)
         self.assertEqual(industries["13"]["value"], 5)
+        self.assertNotIn("total_market_trade_value", market_values)
+        self.assertEqual(market_values["total_market_cap_usd"]["price"], 112.3)
+        self.assertEqual(
+            market_values["retail_market_trade_value"]["price"],
+            20_000,
+        )
+        self.assertTrue(
+            market_values["retail_market_trade_value"]["is_stale"]
+        )
 
 
 if __name__ == "__main__":

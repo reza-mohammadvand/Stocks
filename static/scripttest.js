@@ -5912,11 +5912,19 @@ function renderWatchMarketOverview() {
 
     const overview = watchMarketData?.overview || {};
     const prices = Array.isArray(overview.prices) ? overview.prices : [];
+    const marketValues = Array.isArray(overview.market_values)
+        ? overview.market_values
+        : [];
     const flows = Array.isArray(overview.flows) ? overview.flows : [];
     const industryFlows = Array.isArray(overview.industry_flows)
         ? overview.industry_flows
         : [];
-    if (!prices.length && !flows.length && !industryFlows.length) {
+    if (
+        !prices.length
+        && !marketValues.length
+        && !flows.length
+        && !industryFlows.length
+    ) {
         container.hidden = true;
         container.replaceChildren();
         return;
@@ -5932,7 +5940,10 @@ function renderWatchMarketOverview() {
         `
         : "";
 
-    const priceCards = prices.map(item => {
+    const metricCardsMarkup = (
+        items,
+        { historyKind = null, accumulated = false } = {}
+    ) => items.map(item => {
         const percent = (
             item.change_percent === null
             || item.change_percent === undefined
@@ -5941,8 +5952,12 @@ function renderWatchMarketOverview() {
             ? Number.NaN
             : Number(item.change_percent);
         const direction = getWatchMarketDirection(percent);
-        const percentMarkup = item.key === "market_trade_value"
-            ? '<span class="watch-market-metric-change neutral">تجمعی امروز</span>'
+        const percentMarkup = accumulated
+            ? `<span class="watch-market-metric-change neutral">${
+                item.key === "total_market_cap_usd"
+                    ? "ارزش کل بازار"
+                    : "تجمعی امروز"
+            }</span>`
             : Number.isFinite(percent)
             ? `<span class="watch-market-metric-change ${direction}">${watchMarketSignedFormatter.format(percent)}٪</span>`
             : '<span class="watch-market-metric-change neutral">بدون تغییر ثبت‌شده</span>';
@@ -5958,9 +5973,9 @@ function renderWatchMarketOverview() {
                 >↗</a>
             `
             : "";
-        const historyButton = item.key === "market_trade_value"
+        const historyButton = historyKind
             ? historyChartButtonMarkup({
-                kind: "total-market",
+                kind: historyKind,
                 key: item.key,
                 name: item.name,
                 label: item.name,
@@ -5985,6 +6000,11 @@ function renderWatchMarketOverview() {
             </article>
         `;
     }).join("");
+    const priceCards = metricCardsMarkup(prices);
+    const marketValueCards = metricCardsMarkup(
+        marketValues,
+        { historyKind: "market-value", accumulated: true }
+    );
 
     const flowCards = flows.map(item => {
         const value = Number(item.value);
@@ -6066,6 +6086,14 @@ function renderWatchMarketOverview() {
                     <span>آخرین معامله و تغییر روزانه</span>
                 </div>
                 <div class="watch-market-metric-grid">${priceCards}</div>
+            </section>
+        ` : ""}
+        ${marketValues.length ? `
+            <section class="watch-market-overview-group watch-market-values-group" aria-labelledby="watch-market-values-title">
+                <div class="watch-market-overview-title">
+                    <h3 id="watch-market-values-title">ارزش معاملات بازار</h3>
+                </div>
+                <div class="watch-market-value-grid">${marketValueCards}</div>
             </section>
         ` : ""}
         ${flows.length ? `
@@ -8497,8 +8525,13 @@ async function fetchMarketHistoryPoints(kind, key, name) {
     return (Array.isArray(payload.snapshots) ? payload.snapshots : [])
         .map(snapshot => {
             let value = null;
-            if (kind === "total-market") {
-                value = snapshot.total_market_trade_value;
+            if (kind === "market-value") {
+                const marketValueFields = {
+                    total_market_cap_usd: "total_market_cap_usd",
+                    retail_market_trade_value: "retail_market_trade_value"
+                };
+                const field = marketValueFields[String(key || "")];
+                value = field ? snapshot[field] : null;
             } else {
                 const collection = kind === "industry"
                     ? snapshot.industry_flows
@@ -9867,38 +9900,63 @@ function setAllStockRefreshButtonState(isRefreshing) {
     button.setAttribute("aria-busy", isRefreshing ? "true" : "false");
 }
 
+function formatAllStockUpdatedAt(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+
+    const parts = new Intl.DateTimeFormat("fa-IR-u-ca-persian", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+        timeZone: "Asia/Tehran"
+    }).formatToParts(date);
+    const part = type => parts.find(item => item.type === type)?.value || "";
+    return `${part("year")}/${part("month")}/${part("day")} · ${part("hour")}:${part("minute")}`;
+}
+
 function updateAllStockStatus(payload) {
     const status = document.getElementById("all-stocks-sync-status");
     setAllStockRefreshButtonState(Boolean(payload?.refreshing));
     if (!status) return;
-    status.classList.toggle("is-error", Boolean(payload?.warning));
-    status.title = payload?.warning || "";
-    if (payload?.warning && !payload?.refreshing) {
-        status.textContent = payload.warning;
-        return;
-    }
+
+    const isRefreshing = Boolean(payload?.refreshing);
+    const updatedAt = formatAllStockUpdatedAt(payload?.source_updated_at);
     const priceHistory = payload?.price_history;
     const strategyHistory = payload?.strategy_history;
+    const details = [];
+    if (payload?.warning) details.push(payload.warning);
     if (priceHistory?.running || strategyHistory?.running) {
         const formatter = new Intl.NumberFormat("fa-IR");
         const progress = [];
         if (priceHistory?.running) {
-            progress.push(`قیمت ${formatter.format(priceHistory.completed || 0)} از ${formatter.format(priceHistory.total || 0)}`);
+            progress.push(`تاریخچه قیمت ${formatter.format(priceHistory.completed || 0)} از ${formatter.format(priceHistory.total || 0)} نماد`);
         }
         if (strategyHistory?.running) {
-            progress.push(`استراتژی ${formatter.format(strategyHistory.completed || 0)} از ${formatter.format(strategyHistory.total || 0)}`);
+            progress.push(`تاریخچه استراتژی ${formatter.format(strategyHistory.completed || 0)} از ${formatter.format(strategyHistory.total || 0)} نماد`);
         }
-        status.textContent = `در حال تکمیل تاریخچه: ${progress.join("؛ ")}`;
-        return;
+        details.push(progress.join("؛ "));
     }
     if (priceHistory?.error || strategyHistory?.error) {
-        status.textContent = [priceHistory?.error, strategyHistory?.error]
-            .filter(Boolean)
-            .join("؛ ");
-        status.classList.add("is-error");
-        return;
+        details.push(
+            [priceHistory?.error, strategyHistory?.error]
+                .filter(Boolean)
+                .join("؛ ")
+        );
     }
-    status.textContent = "";
+    status.classList.toggle(
+        "is-error",
+        Boolean(payload?.warning || priceHistory?.error || strategyHistory?.error)
+    );
+    status.classList.toggle("is-refreshing", isRefreshing);
+    status.textContent = updatedAt || (isRefreshing ? "در حال بروزرسانی" : "—");
+    status.title = [
+        updatedAt ? `آخرین بروزرسانی: ${updatedAt}` : "",
+        ...details
+    ].filter(Boolean).join("\n");
 }
 
 function applyAllStockPayload(payload) {
@@ -10754,7 +10812,8 @@ async function loadStrategyBuyQueueFilter(event) {
         const params = new URLSearchParams({
             count: String(requestedCount),
             source: stockStrategySource,
-            use_previous_day: previousDayToggle?.checked ? "1" : "0"
+            use_previous_day: previousDayToggle?.checked ? "1" : "0",
+            live: previousDayToggle?.checked ? "0" : "1"
         });
         const response = await fetch(`/stock-buy-queues?${params}`, {
             cache: "no-store"
@@ -10780,10 +10839,17 @@ async function loadStrategyBuyQueueFilter(event) {
         const sourceLabel = payload.source === "all" ? "تمام سهام‌ها" : "سهام برتر";
         const dataModeLabel = payload.data_mode === "previous_day"
             ? "دیتای روز قبل"
-            : "آخرین دیتاست";
+            : (payload.data_source === "live" ? "داده زنده" : "آخرین دیتاست");
+        const liveFetchedAt = payload.live_fetched_at
+            ? new Intl.DateTimeFormat("fa-IR", {
+                dateStyle: "short",
+                timeStyle: "medium"
+            }).format(new Date(payload.live_fetched_at))
+            : "";
+        const liveTimeLabel = liveFetchedAt ? `؛ دریافت ${liveFetchedAt}` : "";
         summary.textContent = rows.length
-            ? `${formatter.format(rows.length)} مورد نخست از ${formatter.format(payload.matched_count || rows.length)} نماد صف خرید در ${sourceLabel} بر اساس ${dataModeLabel}؛ مرتب‌شده بر اساس ارزش صف خرید`
-            : `در ${sourceLabel} نمادی با صف خرید بر اساس ${dataModeLabel} پیدا نشد.`;
+            ? `${formatter.format(rows.length)} مورد نخست از ${formatter.format(payload.matched_count || rows.length)} نماد صف خرید در ${sourceLabel} بر اساس ${dataModeLabel}${liveTimeLabel}؛ مرتب‌شده بر اساس ارزش صف خرید`
+            : `در ${sourceLabel} نمادی با صف خرید بر اساس ${dataModeLabel}${liveTimeLabel} پیدا نشد.`;
         resetExpectationSummarySort(table);
         const buyQueueValueHeader = table.querySelectorAll("th[data-sort-type]")[1];
         if (buyQueueValueHeader) {
@@ -10837,7 +10903,9 @@ function formatStockStrategyValue(metric, value) {
         "industry_average_growth_percent",
         "below_industry_average_percent",
         "symbol_industry_return_percent",
-        "symbol_industry_average_return_percent"
+        "symbol_industry_average_return_percent",
+        "industry_market_index_growth_percent",
+        "symbol_industry_market_index_growth_percent"
     ].includes(metric)) {
         return formatStockCell({ key: metric, format: "precisePercent" }, value, false);
     }
@@ -11173,6 +11241,14 @@ function renderStockStrategyTable(payload) {
                 width: 155
             },
             {
+                key: "industry_market_index_growth_percent",
+                label: "رشد شاخص کل",
+                unit: "درصد",
+                metric: "industry_market_index_growth_percent",
+                historyKey: "industry_market_index_growth_days_used",
+                width: 145
+            },
+            {
                 key: "below_industry_average_percent",
                 label: "پایین‌تر از میانگین صنعت",
                 unit: "درصد",
@@ -11198,6 +11274,14 @@ function renderStockStrategyTable(payload) {
                 unit: "درصد",
                 metric: "symbol_industry_average_return_percent",
                 width: 165
+            },
+            {
+                key: "symbol_industry_market_index_growth_percent",
+                label: "رشد شاخص کل",
+                unit: "درصد",
+                metric: "symbol_industry_market_index_growth_percent",
+                historyKey: "symbol_industry_market_index_growth_days_used",
+                width: 145
             }
         );
     }

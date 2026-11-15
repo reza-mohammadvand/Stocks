@@ -3290,6 +3290,7 @@
 }
 
 .dashboard-shell .watch-market-metric-grid,
+.dashboard-shell .watch-market-value-grid,
 .dashboard-shell .watch-market-flow-grid {
     display: grid;
     gap: 10px;
@@ -3297,6 +3298,10 @@
 
 .dashboard-shell .watch-market-metric-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dashboard-shell .watch-market-value-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .dashboard-shell .watch-market-flow-grid {
@@ -3351,6 +3356,14 @@
 
 .dashboard-shell .watch-market-metric-card[data-tone="iron"] {
     --metric-accent: #ff9d67;
+}
+
+.dashboard-shell .watch-market-metric-card[data-tone="market-dollar"] {
+    --metric-accent: #45e2a8;
+}
+
+.dashboard-shell .watch-market-metric-card[data-tone="retail-market"] {
+    --metric-accent: #a78bfa;
 }
 
 .dashboard-shell .watch-market-metric-card header,
@@ -3679,6 +3692,7 @@
 
 @media (max-width: 780px) {
     .dashboard-shell .watch-market-metric-grid,
+    .dashboard-shell .watch-market-value-grid,
     .dashboard-shell .watch-market-flow-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -3701,6 +3715,7 @@
     }
 
     .dashboard-shell .watch-market-metric-grid,
+    .dashboard-shell .watch-market-value-grid,
     .dashboard-shell .watch-market-flow-grid {
         grid-template-columns: 1fr;
     }

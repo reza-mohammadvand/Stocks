@@ -467,6 +467,64 @@ class StockStrategyTests(unittest.TestCase):
             2,
         )
 
+    def test_buy_queue_summary_uses_the_live_snapshot_when_requested(self):
+        stored_rows = [{
+            "symbol": "نماد۱",
+            "ins_code": "10000000000000001",
+            "market_date": "2026-11-09",
+            "last_price": 100,
+            "closing_price": 99,
+            "daily_high_price": 101,
+            "daily_low_price": 95,
+            "trade_value": 1_000,
+            "order_book_buy_value": 200,
+        }]
+        live_rows = [{
+            **stored_rows[0],
+            "market_date": "2026-11-10",
+            "last_price": 105,
+            "closing_price": 104,
+            "daily_high_price": 105,
+            "trade_value": 9_000,
+            "order_book_buy_value": 3_000,
+            "order_book_sell_value": 0,
+        }]
+        live_metadata = {
+            "fetched_at": "2026-11-10T10:00:00+03:30",
+            "market_date": "2026-11-10",
+            "missing_count": 0,
+        }
+
+        with (
+            patch.object(
+                stock_app,
+                "read_stock_database",
+                return_value=(stored_rows, {"last_successful_update": "old"}),
+            ),
+            patch.object(
+                stock_app,
+                "fetch_live_stock_buy_queue_rows",
+                return_value=(live_rows, live_metadata),
+            ) as live_fetch,
+            patch.object(
+                stock_app,
+                "read_stock_strategy_history",
+                return_value={},
+            ),
+        ):
+            result = stock_app.get_stock_buy_queue_summary(
+                limit=10,
+                source="featured",
+                live=True,
+            )
+
+        live_fetch.assert_called_once_with(stored_rows)
+        self.assertEqual(result["data_source"], "live")
+        self.assertEqual(result["source_updated_at"], live_metadata["fetched_at"])
+        self.assertEqual(result["stocks"][0]["market_date"], "2026-11-10")
+        self.assertEqual(result["stocks"][0]["trade_value"], 9_000)
+        self.assertEqual(result["stocks"][0]["buy_queue_value"], 3_000)
+
     def test_technical_indicator_calculations(self):
         values = [100, 101, 102, 103, 104, 105, 106, 107, 108, 110]
 
@@ -886,6 +944,7 @@ class StockStrategyTests(unittest.TestCase):
             "real_buy_power_average",
             "symbol_industry_return_percent",
             "symbol_industry_average_return_percent",
+            "symbol_industry_market_index_growth_percent",
             "rsi",
             "ema_cross_direction",
         ])
@@ -987,6 +1046,7 @@ class StockStrategyTests(unittest.TestCase):
             "industry",
             "symbol_industry_return_percent",
             "symbol_industry_average_return_percent",
+            "symbol_industry_market_index_growth_percent",
         ])
 
     def test_each_technical_strategy_shows_only_rsi_and_ema_cross(self):

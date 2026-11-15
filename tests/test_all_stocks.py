@@ -84,6 +84,43 @@ class AllStockDailyTests(unittest.TestCase):
         self.assertEqual(rows[0]["share_count"], 5_000_000_000)
         self.assertTrue(stock_app.is_stock_rights_symbol("آزمونح"))
 
+    def test_market_watch_plus_parser_reads_live_prices_and_five_order_levels(self):
+        fields = self.market_row(
+            "10000000000000001",
+            "IRO1TEST0001",
+            "آزمون",
+            "شرکت آزمون",
+            "N1",
+        ).split(",")
+        fields[11] = "980"
+        fields[12] = "1010"
+        fields[19] = "1040"
+        fields[20] = "950"
+        market_row = ",".join(fields)
+        order_rows = ";".join([
+            "10000000000000001,1,0,3,1010,0,1000,0",
+            "10000000000000001,2,2,4,1000,1020,500,700",
+        ])
+        response_text = f"summary@@{market_row}@{order_rows}@sequence"
+
+        rows = stock_app.parse_all_stock_market_watch(response_text)
+        order_books = stock_app.parse_stock_market_watch_order_books(
+            response_text
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["daily_low_price"], 980)
+        self.assertEqual(rows[0]["daily_high_price"], 1010)
+        self.assertEqual(rows[0]["daily_upper_price"], 1040)
+        self.assertEqual(rows[0]["daily_lower_price"], 950)
+        totals = order_books["10000000000000001"]
+        self.assertEqual(totals["order_book_buy_value"], 1_510_000)
+        self.assertEqual(totals["order_book_buy_volume"], 1_500)
+        self.assertEqual(totals["order_book_buy_count"], 7)
+        self.assertEqual(totals["order_book_sell_value"], 714_000)
+        self.assertEqual(totals["order_book_sell_volume"], 700)
+        self.assertEqual(totals["order_book_sell_count"], 2)
+
     def test_due_phases_are_completed_only_once_per_tehran_day(self):
         self.assertEqual(stock_app.all_stock_due_phases(self.at(12, 29), {}), [])
         self.assertEqual(

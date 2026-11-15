@@ -114,6 +114,13 @@ stock_strategy_history_state = {
     "error": None,
 }
 
+market_index_history_lock = threading.Lock()
+market_index_history_state = {
+    "last_backfill_date": None,
+    "last_daily_attempt_date": None,
+    "error": None,
+}
+
 watch_market_cache_lock = threading.Lock()
 watch_market_cache = {
     "data": None,
@@ -148,6 +155,15 @@ RAHAVARD_HEADERS = {
     "Pragma": "no-cache",
     "User-Agent": "com.rahavard365.v2.front",
     "platform": "web",
+}
+
+CHARTIX_TOTAL_MARKET_CAP_USD_URL = (
+    "https://chartix.ir/market/saham/BRS00IRALLUSDCAP"
+)
+CHARTIX_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml",
+    "Cache-Control": "no-cache",
+    "User-Agent": "Mozilla/5.0 StockMarketWatch/1.0",
 }
 
 WATCH_MARKET_ASSETS = (
@@ -270,6 +286,11 @@ STOCK_EXTENDED_SNAPSHOT_MINUTE = 18 * 60
 # recursive-indicator seed drift versus charting services.
 STOCK_PRICE_HISTORY_TARGET_DAYS = 500
 STOCK_STRATEGY_HISTORY_TARGET_DAYS = 60
+MARKET_INDEX_KEY = "tedpix"
+MARKET_INDEX_NAME = "شاخص کل"
+MARKET_INDEX_INS_CODE = "32097828799138957"
+# A 60-session return needs the current close plus 60 previous closes.
+MARKET_INDEX_HISTORY_TARGET_POINTS = 61
 STOCK_PRICE_HISTORY_WORKERS = 10
 STOCK_STRATEGY_HISTORY_WORKERS = 5
 STOCK_EXTENDED_SESSION_SYMBOLS = {
@@ -841,6 +862,8 @@ def initialize_stock_database():
                     captured_at TEXT NOT NULL,
                     free_dollar_price REAL,
                     total_market_trade_value REAL,
+                    total_market_cap_usd REAL,
+                    retail_market_trade_value REAL,
                     money_flows_json TEXT NOT NULL,
                     industry_flows_json TEXT NOT NULL
                 )
@@ -855,6 +878,27 @@ def initialize_stock_database():
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS market_index_history (
+                    index_key TEXT NOT NULL,
+                    ins_code TEXT NOT NULL,
+                    index_name TEXT NOT NULL,
+                    trade_date TEXT NOT NULL,
+                    trade_date_jalali TEXT NOT NULL,
+                    closing_value REAL NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    PRIMARY KEY (index_key, trade_date)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_market_index_history_date
+                ON market_index_history (index_key, trade_date DESC)
+                """
+            )
             market_snapshot_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -866,6 +910,15 @@ def initialize_stock_database():
                     "ALTER TABLE market_daily_snapshots "
                     "ADD COLUMN source_market_date TEXT"
                 )
+            for column_name in (
+                "total_market_cap_usd",
+                "retail_market_trade_value",
+            ):
+                if column_name not in market_snapshot_columns:
+                    connection.execute(
+                        "ALTER TABLE market_daily_snapshots "
+                        f"ADD COLUMN {column_name} REAL"
+                    )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS stock_notes (
@@ -1187,6 +1240,8 @@ def save_all_stock_phase(rows, phase, captured_at=None):
     ]
     save_daily_stock_price_points(daily_price_rows, current_time)
     save_daily_stock_strategy_points(daily_price_rows, current_time)
+    if phase == "standard" and any(row.get("ins_code") for row in daily_price_rows):
+        save_daily_market_index_snapshot(current_time)
 
     return {
         "phase": phase,
@@ -1669,6 +1724,206 @@ def normalize_stock_market_date(value):
         return datetime.strptime(digits, "%Y%m%d").date().isoformat()
     except ValueError:
         return None
+
+
+def parse_tsetmc_market_index_history(
+    payload,
+    limit=MARKET_INDEX_HISTORY_TARGET_POINTS,
+):
+    """Normalize TSETMC's official daily total-index closing history."""
+    raw_rows = payload.get("indexB2") if isinstance(payload, dict) else []
+    parsed = []
+    for item in raw_rows if isinstance(raw_rows, list) else []:
+        if not isinstance(item, dict):
+            continue
+        trade_date = normalize_stock_market_date(item.get("dEven"))
+        closing_value = stock_number(item.get("xNivInuClMresIbs"))
+        if not trade_date or closing_value is None or closing_value <= 0:
+            continue
+        parsed.append({
+            "trade_date": trade_date,
+            "closing_value": closing_value,
+        })
+    parsed.sort(key=lambda item: item["trade_date"])
+    return parsed[-max(1, int(limit or MARKET_INDEX_HISTORY_TARGET_POINTS)):]
+
+
+def parse_tsetmc_market_index_last_day(payload):
+    """Return the last official total-index tick from a TSETMC trading day."""
+    raw_rows = payload.get("indexB1") if isinstance(payload, dict) else []
+    candidates = []
+    for item in raw_rows if isinstance(raw_rows, list) else []:
+        if not isinstance(item, dict):
+            continue
+        trade_date = normalize_stock_market_date(item.get("dEven"))
+        closing_value = stock_number(item.get("xDrNivJIdx004"))
+        if not trade_date or closing_value is None or closing_value <= 0:
+            continue
+        candidates.append({
+            "trade_date": trade_date,
+            "closing_value": closing_value,
+            "market_time": stock_integer(item.get("hEven")) or 0,
+            "is_last": item.get("last") is True,
+        })
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (
+            item["trade_date"],
+            item["is_last"],
+            item["market_time"],
+        ),
+    )
+
+
+def fetch_market_index_history(limit=MARKET_INDEX_HISTORY_TARGET_POINTS):
+    payload = fetch_tsetmc_json(
+        "https://cdn.tsetmc.com/api/Index/"
+        f"GetIndexB2History/{MARKET_INDEX_INS_CODE}",
+        attempts=3,
+    )
+    return parse_tsetmc_market_index_history(payload, limit)
+
+
+def fetch_market_index_last_day():
+    payload = fetch_tsetmc_json(
+        "https://cdn.tsetmc.com/api/Index/"
+        f"GetIndexB1LastDay/{MARKET_INDEX_INS_CODE}",
+        attempts=3,
+    )
+    return parse_tsetmc_market_index_last_day(payload)
+
+
+def store_market_index_history(points, captured_at=None, source="tsetmc_history"):
+    """Upsert total-index closing points without discarding older daily rows."""
+    current_time = captured_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+    captured_at_iso = current_time.isoformat()
+    prepared = []
+    for point in points or []:
+        trade_date = normalize_stock_market_date(point.get("trade_date"))
+        closing_value = stock_number(point.get("closing_value"))
+        if not trade_date or closing_value is None or closing_value <= 0:
+            continue
+        market_day = datetime.strptime(trade_date, "%Y-%m-%d").date()
+        prepared.append((
+            MARKET_INDEX_KEY,
+            MARKET_INDEX_INS_CODE,
+            MARKET_INDEX_NAME,
+            trade_date,
+            jdatetime.date.fromgregorian(date=market_day).strftime("%Y-%m-%d"),
+            closing_value,
+            captured_at_iso,
+            source,
+        ))
+    if not prepared:
+        return 0
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        before_changes = connection.total_changes
+        connection.executemany(
+            """
+            INSERT INTO market_index_history (
+                index_key, ins_code, index_name, trade_date,
+                trade_date_jalali, closing_value, captured_at, source
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(index_key, trade_date) DO UPDATE SET
+                ins_code = excluded.ins_code,
+                index_name = excluded.index_name,
+                trade_date_jalali = excluded.trade_date_jalali,
+                closing_value = excluded.closing_value,
+                captured_at = excluded.captured_at,
+                source = excluded.source
+            """,
+            prepared,
+        )
+        return connection.total_changes - before_changes
+
+
+def read_market_index_history(limit=None):
+    """Read total-index closes in ascending date order."""
+    initialize_stock_database()
+    query = """
+        SELECT trade_date, trade_date_jalali, closing_value, source
+        FROM market_index_history
+        WHERE index_key = ?
+        ORDER BY trade_date DESC
+    """
+    parameters = [MARKET_INDEX_KEY]
+    if limit is not None:
+        query += " LIMIT ?"
+        parameters.append(max(1, int(limit)))
+    with stock_database_connection() as connection:
+        records = connection.execute(query, parameters).fetchall()
+    return [dict(record) for record in reversed(records)]
+
+
+def ensure_market_index_history():
+    """Backfill the latest 60 market sessions at most once per Tehran day."""
+    if app.config.get("TESTING"):
+        return read_market_index_history()
+    today = datetime.now(IRAN_TIMEZONE).date().isoformat()
+    with market_index_history_lock:
+        if market_index_history_state["last_backfill_date"] == today:
+            return read_market_index_history()
+        try:
+            points = fetch_market_index_history()
+            store_market_index_history(points, source="tsetmc_history")
+            market_index_history_state["error"] = None
+        except (requests.RequestException, ValueError, TypeError) as error:
+            market_index_history_state["error"] = str(error)
+        finally:
+            market_index_history_state["last_backfill_date"] = today
+    return read_market_index_history()
+
+
+def save_daily_market_index_snapshot(captured_at=None):
+    """Save the first final total-index value received after the 12:30 close."""
+    current_time = captured_at or datetime.now(IRAN_TIMEZONE)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=IRAN_TIMEZONE)
+    else:
+        current_time = current_time.astimezone(IRAN_TIMEZONE)
+    if current_time.hour * 60 + current_time.minute < STOCK_STANDARD_SNAPSHOT_MINUTE:
+        return 0
+    trade_date = current_time.date().isoformat()
+    initialize_stock_database()
+    with stock_database_connection() as connection:
+        exists = connection.execute(
+            """
+            SELECT 1 FROM market_index_history
+            WHERE index_key = ? AND trade_date = ?
+            """,
+            (MARKET_INDEX_KEY, trade_date),
+        ).fetchone()
+    if exists:
+        return 0
+
+    with market_index_history_lock:
+        if market_index_history_state["last_daily_attempt_date"] == trade_date:
+            return 0
+        try:
+            point = fetch_market_index_last_day()
+            if not point or point.get("trade_date") != trade_date:
+                market_index_history_state["last_daily_attempt_date"] = trade_date
+                return 0
+            inserted_count = store_market_index_history(
+                [point],
+                captured_at=current_time,
+                source="daily_close",
+            )
+            market_index_history_state["last_daily_attempt_date"] = trade_date
+            market_index_history_state["error"] = None
+            return inserted_count
+        except (requests.RequestException, ValueError, TypeError) as error:
+            market_index_history_state["error"] = str(error)
+            market_index_history_state["last_daily_attempt_date"] = None
+            return 0
 
 
 def parse_tsetmc_price_history(payload, limit=STOCK_PRICE_HISTORY_TARGET_DAYS):
@@ -2907,6 +3162,12 @@ def save_daily_stock_snapshots(rows, captured_at=None):
 
     save_daily_stock_price_points(eligible_rows, current_time)
     save_daily_stock_strategy_points(eligible_rows, current_time)
+    if any(
+        row.get("ins_code")
+        and normalize_symbol(row.get("symbol")) not in extended_symbols
+        for row in eligible_rows
+    ):
+        save_daily_market_index_snapshot(current_time)
 
     return {
         "trade_date": trade_date,
@@ -3246,6 +3507,12 @@ def save_market_daily_snapshot(payload, captured_at=None):
     total_market_trade_value = watch_market_number(
         payload.get("total_market_trade_value")
     )
+    total_market_cap_usd = watch_market_number(
+        payload.get("total_market_cap_usd")
+    )
+    retail_market_trade_value = watch_market_number(
+        payload.get("retail_market_trade_value")
+    )
     trade_date = current_time.date().isoformat()
     trade_date_jalali = jdatetime.date.fromgregorian(
         date=current_time.date()
@@ -3273,10 +3540,12 @@ def save_market_daily_snapshot(payload, captured_at=None):
                 captured_at,
                 free_dollar_price,
                 total_market_trade_value,
+                total_market_cap_usd,
+                retail_market_trade_value,
                 money_flows_json,
                 industry_flows_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(trade_date) DO UPDATE SET
                 trade_date_jalali = excluded.trade_date_jalali,
                 source_market_date = COALESCE(
@@ -3291,6 +3560,14 @@ def save_market_daily_snapshot(payload, captured_at=None):
                 total_market_trade_value = COALESCE(
                     excluded.total_market_trade_value,
                     market_daily_snapshots.total_market_trade_value
+                ),
+                total_market_cap_usd = COALESCE(
+                    excluded.total_market_cap_usd,
+                    market_daily_snapshots.total_market_cap_usd
+                ),
+                retail_market_trade_value = COALESCE(
+                    excluded.retail_market_trade_value,
+                    market_daily_snapshots.retail_market_trade_value
                 ),
                 money_flows_json = CASE
                     WHEN excluded.money_flows_json <> '[]'
@@ -3310,6 +3587,8 @@ def save_market_daily_snapshot(payload, captured_at=None):
                 current_time.isoformat(),
                 free_dollar,
                 total_market_trade_value,
+                total_market_cap_usd,
+                retail_market_trade_value,
                 flows_json,
                 industry_flows_json,
             ),
@@ -3336,6 +3615,8 @@ def read_market_daily_snapshots(limit=30):
                 captured_at,
                 free_dollar_price,
                 total_market_trade_value,
+                total_market_cap_usd,
+                retail_market_trade_value,
                 money_flows_json,
                 industry_flows_json
             FROM market_daily_snapshots
@@ -3362,6 +3643,10 @@ def read_market_daily_snapshots(limit=30):
             "captured_at": row["captured_at"],
             "free_dollar_price": row["free_dollar_price"],
             "total_market_trade_value": row["total_market_trade_value"],
+            "total_market_cap_usd": row["total_market_cap_usd"],
+            "retail_market_trade_value": row[
+                "retail_market_trade_value"
+            ],
             "money_flows": flows,
             "industry_flows": industry_flows,
         })
@@ -3423,6 +3708,7 @@ def market_overview_from_daily_snapshots():
         return {}
 
     prices = []
+    market_values = []
     dollar_config = next(
         (
             config
@@ -3454,33 +3740,48 @@ def market_overview_from_daily_snapshots():
             "source_url": dollar_config["source_url"],
             "is_stale": True,
         })
-    market_trade_snapshot = next(
-        (
-            snapshot
-            for snapshot in snapshots
-            if (
-                watch_market_number(
-                    snapshot.get("total_market_trade_value")
-                )
-                or 0
-            ) > 0
-        ),
-        None,
-    )
-    if market_trade_snapshot:
-        prices.append({
-            "key": "market_trade_value",
-            "name": "ارزش معاملات کل روز بورس",
-            "price": market_trade_snapshot["total_market_trade_value"],
+    for definition in (
+        {
+            "key": "total_market_cap_usd",
+            "field": "total_market_cap_usd",
+            "name": "ارزش دلاری بورس",
+            "unit": "میلیارد دلار",
+            "tone": "market-dollar",
+            "source_url": CHARTIX_TOTAL_MARKET_CAP_USD_URL,
+        },
+        {
+            "key": "retail_market_trade_value",
+            "field": "retail_market_trade_value",
+            "name": "ارزش معاملات خرد",
             "unit": "میلیارد تومان",
-            "change": None,
-            "change_percent": None,
-            "market_time": market_trade_snapshot.get("captured_at"),
-            "tone": "market",
-            "source": "market-daily-snapshot",
+            "tone": "retail-market",
             "source_url": "https://tradersarena.ir/",
-            "is_stale": True,
-        })
+        },
+    ):
+        snapshot = next(
+            (
+                item for item in snapshots
+                if (watch_market_number(item.get(definition["field"])) or 0) > 0
+            ),
+            None,
+        )
+        if snapshot:
+            market_values.append({
+                "key": definition["key"],
+                "name": definition["name"],
+                "price": snapshot[definition["field"]],
+                "unit": definition["unit"],
+                "change": None,
+                "change_percent": None,
+                "market_time": snapshot.get("captured_at"),
+                "tone": definition["tone"],
+                "source": "market-daily-snapshot",
+                "source_url": definition.get(
+                    "source_url",
+                    "https://tradersarena.ir/",
+                ),
+                "is_stale": True,
+            })
 
     flows_by_key = {}
     industry_flows_by_key = {}
@@ -3509,6 +3810,7 @@ def market_overview_from_daily_snapshots():
 
     return {
         "prices": prices,
+        "market_values": market_values,
         "flows": list(flows_by_key.values()),
         "industry_flows": list(industry_flows_by_key.values()),
         "fetched_at": None,
@@ -3539,7 +3841,12 @@ def read_watch_market_latest_overview():
             merged.update({
                 key: value
                 for key, value in payload.items()
-                if key not in {"prices", "flows", "industry_flows"}
+                if key not in {
+                    "prices",
+                    "market_values",
+                    "flows",
+                    "industry_flows",
+                }
             })
             merged["prices"] = merge_watch_market_collection(
                 daily_fallback.get("prices"),
@@ -3547,6 +3854,23 @@ def read_watch_market_latest_overview():
                 "price",
                 positive_only=True,
             )
+            merged["prices"] = [
+                item for item in merged["prices"]
+                if item.get("key") != "market_trade_value"
+            ]
+            merged["market_values"] = merge_watch_market_collection(
+                daily_fallback.get("market_values"),
+                payload.get("market_values"),
+                "price",
+                positive_only=True,
+            )
+            merged["market_values"] = [
+                item for item in merged["market_values"]
+                if item.get("key") not in {
+                    "total_market_trade_value",
+                    "total_market_trade_value_usd",
+                }
+            ]
             merged["flows"] = merge_watch_market_collection(
                 daily_fallback.get("flows"),
                 payload.get("flows"),
@@ -3571,7 +3895,12 @@ def save_watch_market_latest_overview(overview, updated_at=None):
     merged.update({
         key: value
         for key, value in overview.items()
-        if key not in {"prices", "flows", "industry_flows"}
+        if key not in {
+            "prices",
+            "market_values",
+            "flows",
+            "industry_flows",
+        }
     })
     merged["prices"] = merge_watch_market_collection(
         previous.get("prices"),
@@ -3579,6 +3908,23 @@ def save_watch_market_latest_overview(overview, updated_at=None):
         "price",
         positive_only=True,
     )
+    merged["prices"] = [
+        item for item in merged["prices"]
+        if item.get("key") != "market_trade_value"
+    ]
+    merged["market_values"] = merge_watch_market_collection(
+        previous.get("market_values"),
+        overview.get("market_values"),
+        "price",
+        positive_only=True,
+    )
+    merged["market_values"] = [
+        item for item in merged["market_values"]
+        if item.get("key") not in {
+            "total_market_trade_value",
+            "total_market_trade_value_usd",
+        }
+    ]
     merged["flows"] = merge_watch_market_collection(
         previous.get("flows"),
         overview.get("flows"),
@@ -4113,6 +4459,39 @@ def calculate_stock_period_growth(closing_prices, requested_days):
     }
 
 
+def calculate_market_index_period_growth(
+    market_index_history,
+    requested_days,
+    target_date=None,
+):
+    """Calculate total-index growth through the stock data's effective date."""
+    points = []
+    for point in market_index_history or []:
+        if not isinstance(point, dict):
+            continue
+        trade_date = normalize_stock_market_date(point.get("trade_date"))
+        closing_value = stock_number(point.get("closing_value"))
+        if (
+            not trade_date
+            or closing_value is None
+            or closing_value <= 0
+            or (target_date and trade_date > target_date)
+        ):
+            continue
+        points.append((trade_date, closing_value))
+    closing_values = [
+        closing_value
+        for _, closing_value in sorted(points, key=lambda item: item[0])
+    ]
+    growth = calculate_stock_period_growth(closing_values, requested_days)
+    if growth is None:
+        return None
+    return {
+        **growth,
+        "trade_date": max((trade_date for trade_date, _ in points), default=None),
+    }
+
+
 def build_stock_industry_growth_comparisons(rows, history, requested_days):
     """Compare every stock's closing-price growth with its industry average."""
     requested_days = max(1, int(requested_days))
@@ -4287,7 +4666,7 @@ def stock_strategy_technical_required_points(metric, rule):
     return 0
 
 
-def evaluate_stock_strategy(rows, history, rules):
+def evaluate_stock_strategy(rows, history, rules, market_index_history=None):
     rows = [
         row
         for row in rows or []
@@ -4384,6 +4763,34 @@ def evaluate_stock_strategy(rows, history, rules):
         if not closing_price_series:
             closing_price_series = symbol_industry_price_series
 
+    effective_market_dates = [
+        normalize_stock_market_date(row.get("market_date"))
+        for row in rows
+        if isinstance(row, dict) and row.get("market_date")
+    ]
+    effective_market_dates = [
+        trade_date for trade_date in effective_market_dates if trade_date
+    ]
+    effective_market_date = max(effective_market_dates, default=None)
+    industry_market_index_growth = (
+        calculate_market_index_period_growth(
+            market_index_history,
+            industry_growth_rule["days"],
+            effective_market_date,
+        )
+        if industry_growth_active
+        else None
+    )
+    symbol_market_index_growth = (
+        calculate_market_index_period_growth(
+            market_index_history,
+            symbol_industry_rule["days"],
+            effective_market_date,
+        )
+        if symbol_industry_active
+        else None
+    )
+
     for row in rows:
         if not isinstance(row, dict) or not row.get("symbol"):
             continue
@@ -4470,10 +4877,30 @@ def evaluate_stock_strategy(rows, history, rules):
             "below_industry_average_percent": None,
             "industry_growth_days_used": 0,
             "industry_growth_member_count": 0,
+            "industry_market_index_growth_percent": (
+                industry_market_index_growth["growth_percent"]
+                if industry_market_index_growth
+                else None
+            ),
+            "industry_market_index_growth_days_used": (
+                industry_market_index_growth["days_used"]
+                if industry_market_index_growth
+                else 0
+            ),
             "symbol_industry_return_percent": None,
             "symbol_industry_average_return_percent": None,
             "symbol_industry_days_used": 0,
             "symbol_industry_member_count": 0,
+            "symbol_industry_market_index_growth_percent": (
+                symbol_market_index_growth["growth_percent"]
+                if symbol_market_index_growth
+                else None
+            ),
+            "symbol_industry_market_index_growth_days_used": (
+                symbol_market_index_growth["days_used"]
+                if symbol_market_index_growth
+                else 0
+            ),
         })
 
         if primary_metrics_active:
@@ -4813,6 +5240,17 @@ def evaluate_stock_strategy(rows, history, rules):
             if symbol_industry_target
             else None
         ),
+        "market_index_latest_trade_date": max(
+            (
+                growth.get("trade_date")
+                for growth in (
+                    industry_market_index_growth,
+                    symbol_market_index_growth,
+                )
+                if growth and growth.get("trade_date")
+            ),
+            default=None,
+        ),
         "rules": normalized_rules,
         "stocks": results,
     }
@@ -4832,6 +5270,16 @@ def get_stock_strategy(payload, use_saved_data=False, source="featured"):
             if source == "all"
             else apply_latest_stock_snapshots(rows)
         )
+    normalized_rules = normalize_stock_strategy_rules(payload)
+    needs_market_index = any(
+        stock_strategy_rule_is_active(metric, normalized_rules[metric])
+        for metric in ("industry_growth", "symbol_industry_compare")
+    )
+    market_index_history = (
+        ensure_market_index_history()
+        if needs_market_index
+        else []
+    )
     result = evaluate_stock_strategy(
         rows,
         read_stock_strategy_history(
@@ -4839,6 +5287,7 @@ def get_stock_strategy(payload, use_saved_data=False, source="featured"):
             symbols=[row.get("symbol") for row in rows if row.get("symbol")],
         ),
         payload,
+        market_index_history=market_index_history,
     )
     result["source"] = source
     result["source_updated_at"] = metadata.get("last_successful_update")
@@ -5075,6 +5524,10 @@ def stock_strategy_export_columns(rules):
             "میانگین بازدهی صنعت (درصد)",
         )
         add(
+            "industry_market_index_growth_percent",
+            "بازدهی شاخص کل (درصد)",
+        )
+        add(
             "below_industry_average_percent",
             "فاصله از میانگین صنعت (درصد)",
         )
@@ -5084,6 +5537,10 @@ def stock_strategy_export_columns(rules):
         add(
             "symbol_industry_average_return_percent",
             "میانگین بازدهی صنعت (درصد)",
+        )
+        add(
+            "symbol_industry_market_index_growth_percent",
+            "بازدهی شاخص کل (درصد)",
         )
 
     technical_metrics_active = any(
@@ -5432,10 +5889,79 @@ def build_stock_buy_queue_summary(
     }
 
 
+def fetch_live_stock_buy_queue_rows(rows):
+    """Overlay a catalogue with one live bulk TSETMC price/order-book snapshot."""
+    try:
+        response_text = fetch_stock_market_watch_plus_text()
+    except (requests.RequestException, ValueError, TypeError) as error:
+        raise RuntimeError(
+            "دریافت لحظه‌ای صف‌های خرید از TSETMC ناموفق بود."
+        ) from error
+
+    instruments = parse_all_stock_market_watch(
+        response_text,
+        equities_only=False,
+    )
+    order_books = parse_stock_market_watch_order_books(response_text)
+    base_by_symbol = {
+        normalize_symbol(row.get("symbol")): row
+        for row in rows or []
+        if isinstance(row, dict) and row.get("symbol")
+    }
+
+    live_market_date = None
+    for instrument in sorted(
+        instruments,
+        key=lambda item: stock_number(item.get("trade_value")) or 0,
+        reverse=True,
+    )[:5]:
+        try:
+            live_market_date = fetch_closing_data(
+                instrument.get("ins_code")
+            ).get("market_date")
+        except (requests.RequestException, ValueError, TypeError):
+            continue
+        if live_market_date:
+            break
+
+    live_rows = []
+    for instrument in instruments:
+        normalized_symbol = normalize_symbol(instrument.get("symbol"))
+        base_row = base_by_symbol.get(normalized_symbol)
+        if base_row is None:
+            continue
+        row = dict(base_row)
+        row.update({
+            key: value
+            for key, value in instrument.items()
+            if value is not None
+        })
+        row["market_date"] = (
+            live_market_date
+            or row.get("market_date")
+            or row.get("trade_date")
+        )
+        row.update(order_books.get(str(instrument.get("ins_code") or ""), {}))
+        apply_stock_floating_share_override(row)
+        row.update(calculate_stock_indicators(row))
+        live_rows.append(row)
+
+    if not live_rows:
+        raise RuntimeError("داده لحظه‌ای معتبری برای نمادهای انتخاب‌شده دریافت نشد.")
+
+    fetched_at = datetime.now(IRAN_TIMEZONE).isoformat()
+    return live_rows, {
+        "fetched_at": fetched_at,
+        "market_date": live_market_date,
+        "missing_count": max(0, len(base_by_symbol) - len(live_rows)),
+    }
+
+
 def get_stock_buy_queue_summary(
     limit=10,
     source="all",
     use_previous_day=False,
+    live=False,
 ):
     source = "featured" if source == "featured" else "all"
     rows, metadata = (
@@ -5443,6 +5969,9 @@ def get_stock_buy_queue_summary(
         if source == "featured"
         else read_all_stock_database()
     )
+    live_metadata = None
+    if live and not use_previous_day:
+        rows, live_metadata = fetch_live_stock_buy_queue_rows(rows)
     result = build_stock_buy_queue_summary(
         rows,
         read_stock_strategy_history(
@@ -5454,9 +5983,20 @@ def get_stock_buy_queue_summary(
     )
     result.update({
         "source": source,
-        "source_updated_at": metadata.get("last_successful_update"),
+        "source_updated_at": (
+            live_metadata["fetched_at"]
+            if live_metadata
+            else metadata.get("last_successful_update")
+        ),
         "evaluated_count": len(rows),
+        "data_source": "live" if live_metadata else "database",
     })
+    if live_metadata:
+        result.update({
+            "live_fetched_at": live_metadata["fetched_at"],
+            "live_market_date": live_metadata["market_date"],
+            "missing_live_count": live_metadata["missing_count"],
+        })
     return result
 
 
@@ -6068,7 +6608,6 @@ def get_watch_market_overview(force=False):
     price_order = [config["key"] for config in WATCH_MARKET_ASSETS]
     price_order.insert(5, "global_copper")
     price_order.extend(config["key"] for config in WATCH_IME_COMMODITIES)
-    price_order.append("market_trade_value")
     flow_order = (
         "gold_funds",
         "silver_funds",
@@ -6242,6 +6781,48 @@ def extract_tradersarena_stock_trade_value(summary):
     return value / money_scale if value is not None else None
 
 
+def extract_tradersarena_retail_trade_value(summary):
+    """Return TradersArena's retail-trade total in billion tomans."""
+    money_scale = 10_000_000_000
+    retail_row = summary.get("afl", []) if isinstance(summary, dict) else []
+    if not isinstance(retail_row, list) or len(retail_row) <= 1:
+        return None
+    value = watch_market_number(retail_row[1])
+    return value / money_scale if value is not None else None
+
+
+def parse_chartix_total_market_cap_usd(response_text):
+    """Parse Chartix's aggregate stock-market value as billions of USD."""
+    if not isinstance(response_text, str) or not response_text.strip():
+        raise ValueError("Chartix market-cap response is empty")
+
+    match = re.search(
+        r'<meta\s+name="description"\s+content="[^"]*?'
+        r'قیمت\s+ارزش\s+دلاری\s+کل\s+بورس\s+امروز\s+'
+        r'([0-9][0-9,.]*)\s+است',
+        response_text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        raise ValueError("Chartix market-cap value was not found")
+
+    value_usd = watch_market_number(match.group(1).replace(",", ""))
+    if value_usd is None or value_usd <= 0:
+        raise ValueError("Chartix market-cap value is invalid")
+    return value_usd / 1_000_000_000
+
+
+def fetch_chartix_total_market_cap_usd():
+    """Fetch aggregate TSE/IFB/base-market capitalization in USD billions."""
+    response = requests.get(
+        CHARTIX_TOTAL_MARKET_CAP_USD_URL,
+        headers=CHARTIX_HEADERS,
+        timeout=25,
+    )
+    response.raise_for_status()
+    return parse_chartix_total_market_cap_usd(response.text)
+
+
 def get_watch_market(force=False):
     """Return the Markets-tab overview and six live Tehran-market charts."""
     now = int(time.time())
@@ -6252,7 +6833,7 @@ def get_watch_market(force=False):
             return dict(cached_data)
 
     try:
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             summary_future = executor.submit(
                 fetch_tradersarena_json,
                 "/data/market0",
@@ -6267,6 +6848,9 @@ def get_watch_market(force=False):
             )
             industry_flows_future = executor.submit(
                 fetch_tradersarena_industry_money_flows
+            )
+            market_cap_usd_future = executor.submit(
+                fetch_chartix_total_market_cap_usd
             )
             overview = overview_future.result()
             summary = summary_future.result()
@@ -6289,6 +6873,14 @@ def get_watch_market(force=False):
                     for item in fallback_industry_flows
                 ]
                 overview.setdefault("errors", []).append("industry-money-flow")
+
+            try:
+                total_market_cap_usd = market_cap_usd_future.result()
+                market_cap_usd_is_stale = False
+            except (requests.RequestException, ValueError, TypeError):
+                total_market_cap_usd = None
+                market_cap_usd_is_stale = True
+                overview.setdefault("errors", []).append("market-cap-usd")
 
         industry_flows, dedicated_industry_flows = (
             split_dedicated_industry_money_flows(industry_flows)
@@ -6335,6 +6927,9 @@ def get_watch_market(force=False):
         # one billion tomans, which is the unit shown in the charts.
         money_scale = 10_000_000_000
         total_market_trade_value = extract_tradersarena_stock_trade_value(
+            summary
+        )
+        retail_market_trade_value = extract_tradersarena_retail_trade_value(
             summary
         )
         price_range = [
@@ -6416,41 +7011,68 @@ def get_watch_market(force=False):
             "errors": [],
         }
         overview = dict(overview)
-        previous_market_trade_value = next(
-            (
-                item
-                for item in overview.get("prices", [])
-                if item.get("key") == "market_trade_value"
-            ),
-            None,
-        )
         overview_prices = [
             item
             for item in overview.get("prices", [])
             if item.get("key") != "market_trade_value"
         ]
-        if (
-            total_market_trade_value is not None
-            and total_market_trade_value > 0
-        ):
-            overview_prices.append({
-                "key": "market_trade_value",
-                "name": "ارزش معاملات کل روز بورس",
-                "price": total_market_trade_value,
-                "unit": "میلیارد تومان",
-                "change": None,
-                "change_percent": None,
-                "tone": "market",
-                "source": "tradersarena.ir",
-                "source_url": "https://tradersarena.ir/",
-                "is_stale": False,
-            })
-        elif previous_market_trade_value:
-            overview_prices.append({
-                **previous_market_trade_value,
-                "is_stale": True,
-            })
         overview["prices"] = overview_prices
+        current_market_values = {
+            "total_market_cap_usd": total_market_cap_usd,
+            "retail_market_trade_value": retail_market_trade_value,
+        }
+        previous_market_values = {
+            item.get("key"): item
+            for item in overview.get("market_values", [])
+            if isinstance(item, dict) and item.get("key")
+        }
+        market_value_definitions = (
+            (
+                "total_market_cap_usd",
+                "ارزش دلاری بورس",
+                "میلیارد دلار",
+                "market-dollar",
+            ),
+            (
+                "retail_market_trade_value",
+                "ارزش معاملات خرد",
+                "میلیارد تومان",
+                "retail-market",
+            ),
+        )
+        market_value_cards = []
+        for key, name, unit, tone in market_value_definitions:
+            value = watch_market_number(current_market_values.get(key))
+            if value is not None and value > 0:
+                market_value_cards.append({
+                    "key": key,
+                    "name": name,
+                    "price": value,
+                    "unit": unit,
+                    "change": None,
+                    "change_percent": None,
+                    "tone": tone,
+                    "source": (
+                        "chartix.ir / TSETMC"
+                        if key == "total_market_cap_usd"
+                        else "tradersarena.ir"
+                    ),
+                    "source_url": (
+                        CHARTIX_TOTAL_MARKET_CAP_USD_URL
+                        if key == "total_market_cap_usd"
+                        else "https://tradersarena.ir/"
+                    ),
+                    "is_stale": (
+                        key == "total_market_cap_usd"
+                        and market_cap_usd_is_stale
+                    ),
+                })
+            elif key in previous_market_values:
+                market_value_cards.append({
+                    **previous_market_values[key],
+                    "is_stale": True,
+                })
+        overview["market_values"] = market_value_cards
         overview_flows = [
             item
             for item in overview.get("flows", [])
@@ -6528,6 +7150,8 @@ def get_watch_market(force=False):
             print("Market latest overview save error:", error)
         result["overview"] = overview
         result["total_market_trade_value"] = total_market_trade_value
+        result["total_market_cap_usd"] = total_market_cap_usd
+        result["retail_market_trade_value"] = retail_market_trade_value
         try:
             save_market_daily_snapshot(result)
         except Exception as error:
@@ -6564,11 +7188,12 @@ def get_watch_market(force=False):
         }
 
 
-def parse_all_stock_market_watch(response_text):
-    """Parse ordinary equity instruments from MarketWatchPlus."""
+def parse_all_stock_market_watch(response_text, equities_only=True):
+    """Parse MarketWatchPlus instruments, optionally limiting them to equities."""
+    market_rows_text, _ = split_stock_market_watch_plus_sections(response_text)
     instruments = []
     seen_codes = set()
-    for market_row in str(response_text or "").strip().split(";"):
+    for market_row in market_rows_text.strip().split(";"):
         fields = market_row.split(",")
         if len(fields) < 26:
             continue
@@ -6581,12 +7206,15 @@ def parse_all_stock_market_watch(response_text):
             not re.fullmatch(r"\d{10,}", ins_code)
             or ins_code in seen_codes
             or not symbol
-            or not is_all_stock_equity_instrument(
-                symbol,
-                instrument_id,
-                company,
-                category,
-                "standard",
+            or (
+                equities_only
+                and not is_all_stock_equity_instrument(
+                    symbol,
+                    instrument_id,
+                    company,
+                    category,
+                    "standard",
+                )
             )
         ):
             continue
@@ -6625,6 +7253,10 @@ def parse_all_stock_market_watch(response_text):
                 if yesterday_price and yesterday_price > 0
                 else None
             ),
+            "daily_low_price": stock_integer(fields[11]),
+            "daily_high_price": stock_integer(fields[12]),
+            "daily_upper_price": stock_integer(fields[19]),
+            "daily_lower_price": stock_integer(fields[20]),
             "trade_volume": stock_integer(fields[9]),
             "trade_value": stock_integer(fields[10]),
             "share_count": stock_integer(fields[21]),
@@ -6632,16 +7264,74 @@ def parse_all_stock_market_watch(response_text):
     return instruments
 
 
-def fetch_all_stock_market_watch():
-    """Fetch the complete share/fund universe with its current market values."""
+def split_stock_market_watch_plus_sections(response_text):
+    """Return instrument and five-level order-book sections from MarketWatchPlus."""
+    text = str(response_text or "")
+    sections = text.split("@")
+    if len(sections) >= 4:
+        return sections[2], sections[3]
+    return text, ""
+
+
+def parse_stock_market_watch_order_books(response_text):
+    """Aggregate the five live buy/sell levels embedded in MarketWatchPlus."""
+    _, order_rows_text = split_stock_market_watch_plus_sections(response_text)
+    totals_by_code = {}
+    for order_row in order_rows_text.strip().split(";"):
+        fields = order_row.split(",")
+        if len(fields) < 8:
+            continue
+        ins_code = str(fields[0] or "").strip()
+        level = stock_integer(fields[1])
+        if not re.fullmatch(r"\d{10,}", ins_code) or level not in range(1, 6):
+            continue
+
+        sell_count = stock_integer(fields[2]) or 0
+        buy_count = stock_integer(fields[3]) or 0
+        buy_price = stock_number(fields[4]) or 0
+        sell_price = stock_number(fields[5]) or 0
+        buy_volume = stock_integer(fields[6]) or 0
+        sell_volume = stock_integer(fields[7]) or 0
+        totals = totals_by_code.setdefault(ins_code, {
+            "order_book_value": 0,
+            "order_book_volume": 0,
+            "order_book_count": 0,
+            "order_book_buy_value": 0,
+            "order_book_buy_volume": 0,
+            "order_book_buy_count": 0,
+            "order_book_sell_value": 0,
+            "order_book_sell_volume": 0,
+            "order_book_sell_count": 0,
+        })
+        buy_value = int(round(buy_price * buy_volume))
+        sell_value = int(round(sell_price * sell_volume))
+        totals["order_book_buy_value"] += buy_value
+        totals["order_book_buy_volume"] += buy_volume
+        totals["order_book_buy_count"] += buy_count
+        totals["order_book_sell_value"] += sell_value
+        totals["order_book_sell_volume"] += sell_volume
+        totals["order_book_sell_count"] += sell_count
+        totals["order_book_value"] += buy_value + sell_value
+        totals["order_book_volume"] += buy_volume + sell_volume
+        totals["order_book_count"] += buy_count + sell_count
+    return totals_by_code
+
+
+def fetch_stock_market_watch_plus_text():
+    """Fetch the live bulk prices and order books used by the market watch."""
     response = requests.get(
         "https://old.tsetmc.com/tsev2/data/MarketWatchPlus.aspx",
         headers=TSETMC_HEADERS,
-        timeout=20
+        timeout=20,
     )
     response.raise_for_status()
     response.encoding = "utf-8"
-    return parse_all_stock_market_watch(response.text)
+    return response.text
+
+
+def fetch_all_stock_market_watch():
+    """Fetch the complete share/fund universe with its current market values."""
+    return parse_all_stock_market_watch(fetch_stock_market_watch_plus_text())
 
 
 def fetch_stock_market_map():
@@ -10603,14 +11293,19 @@ def stock_strategy_export():
 @app.route("/stock-buy-queues")
 def stock_buy_queue_filter():
     try:
+        use_previous_day = request.args.get(
+            "use_previous_day", default="0", type=str
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        use_live_data = request.args.get(
+            "live", default="1", type=str
+        ).strip().lower() in {"1", "true", "yes", "on"}
         return Response(
             json.dumps(
                 get_stock_buy_queue_summary(
                     limit=request.args.get("count", default=10, type=int),
                     source=request.args.get("source") or "all",
-                    use_previous_day=request.args.get(
-                        "use_previous_day", default="0", type=str
-                    ).strip().lower() in {"1", "true", "yes", "on"},
+                    use_previous_day=use_previous_day,
+                    live=use_live_data and not use_previous_day,
                 ),
                 ensure_ascii=False,
             ),
