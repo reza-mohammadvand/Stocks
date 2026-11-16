@@ -302,8 +302,8 @@ STOCK_EXTENDED_SESSION_SYMBOLS = {
     "نقران",
 }
 
-# The complete-market tab now contains equity instruments only.  Funds are
-# intentionally excluded even if they are exchange traded.
+# The complete-market tab contains ordinary equities plus selected exchange
+# traded funds.  Precious-metal and fixed-income funds remain excluded.
 ALL_STOCK_EXTENDED_CATEGORIES = {
     "1A",
     "2A",
@@ -311,6 +311,19 @@ ALL_STOCK_EXTENDED_CATEGORIES = {
     "H2",
     "Q1",
     "QS",
+}
+ALL_STOCK_INCLUDED_FUND_CATEGORY_PREFIXES = {
+    # Government/equity/sector ETFs on TSE.
+    "51": ("IRT1",),
+    # Leveraged ETFs on TSE.
+    "5A": ("IRT1",),
+    # Equity/sector/mixed ETFs on IFB.
+    "T1": ("IRT3",),
+    # Leveraged ETFs on IFB.
+    "TA": ("IRT3",),
+    # Non-precious commodity ETFs such as Nahál.  Raw commodity
+    # certificates use IRK..., while gold/silver funds use category QS.
+    "Q1": ("IRTK",),
 }
 ALL_STOCK_EQUITY_INSTRUMENT_PREFIXES = (
     "IRO1",
@@ -568,7 +581,7 @@ def is_all_stock_equity_instrument(
     category=None,
     session_type=None,
 ):
-    """Keep ordinary equity rows; reject funds and numbered side instruments."""
+    """Keep equities and selected ETFs; reject unrelated/secondary instruments."""
     clean_symbol = clean_stock_text(symbol)
     if (
         not clean_symbol
@@ -577,13 +590,22 @@ def is_all_stock_equity_instrument(
     ):
         return False
 
+    clean_category = clean_stock_text(category).upper()
+    clean_instrument_id = str(instrument_id or "").strip().upper()
+    allowed_fund_prefixes = ALL_STOCK_INCLUDED_FUND_CATEGORY_PREFIXES.get(
+        clean_category
+    )
+    if allowed_fund_prefixes and clean_instrument_id.startswith(
+        allowed_fund_prefixes
+    ):
+        return True
+
     clean_company = clean_stock_text(company)
     if "صندوق" in clean_company or "گواهی سپرده" in clean_company:
         return False
-    if clean_stock_text(category).upper() in ALL_STOCK_EXTENDED_CATEGORIES:
+    if clean_category in ALL_STOCK_EXTENDED_CATEGORIES:
         return False
 
-    clean_instrument_id = str(instrument_id or "").strip().upper()
     if clean_instrument_id:
         return clean_instrument_id.startswith(
             ALL_STOCK_EQUITY_INSTRUMENT_PREFIXES
@@ -1097,6 +1119,11 @@ def all_stock_due_phases(current_time, metadata=None):
         and metadata.get("standard_completed_date") != trade_date
     ):
         phases.append("standard")
+    if (
+        current_minute >= STOCK_EXTENDED_SNAPSHOT_MINUTE
+        and metadata.get("extended_completed_date") != trade_date
+    ):
+        phases.append("extended")
     return phases
 
 
@@ -1352,6 +1379,18 @@ def publish_all_stock_current_phase(rows, phase, captured_at=None):
     }
 
 
+def refresh_stock_snapshot_derived_fields(data):
+    """Rebuild derived fields so archived rows follow the current formulas."""
+    if not isinstance(data, dict):
+        return {}
+    refreshed = dict(data)
+    apply_stock_floating_share_override(refreshed)
+    for field, value in calculate_stock_indicators(refreshed).items():
+        if value is not None or refreshed.get(field) is None:
+            refreshed[field] = value
+    return refreshed
+
+
 def read_all_stock_daily_snapshots(trade_date=None, symbol=None):
     """Read the complete-market daily archive, newest market day by default."""
     initialize_stock_database()
@@ -1393,6 +1432,7 @@ def read_all_stock_daily_snapshots(trade_date=None, symbol=None):
             data = json.loads(record["data_json"] or "{}")
         except (TypeError, ValueError, json.JSONDecodeError):
             data = {}
+        data = refresh_stock_snapshot_derived_fields(data)
         snapshots.append({
             "trade_date": record["trade_date"],
             "trade_date_jalali": record["trade_date_jalali"],
@@ -1400,7 +1440,7 @@ def read_all_stock_daily_snapshots(trade_date=None, symbol=None):
             "category": record["category"],
             "session_type": record["session_type"],
             "captured_at": record["captured_at"],
-            "data": data if isinstance(data, dict) else {},
+            "data": data,
         })
     return snapshots, selected_date
 
@@ -3224,6 +3264,7 @@ def read_daily_stock_snapshots(trade_date=None, symbol=None):
             data = json.loads(database_row["data_json"])
         except (TypeError, json.JSONDecodeError):
             data = {}
+        data = refresh_stock_snapshot_derived_fields(data)
         snapshots.append(
             {
                 "trade_date": database_row["trade_date"],
@@ -3287,6 +3328,7 @@ def read_latest_daily_stock_snapshots(symbols=None, source="featured"):
             data = {}
         if not isinstance(data, dict):
             data = {}
+        data = refresh_stock_snapshot_derived_fields(data)
 
         snapshots.append(
             {
@@ -3965,11 +4007,20 @@ def save_watch_market_latest_overview(overview, updated_at=None):
 
 STOCK_STRATEGY_METRICS = (
     "trade_value",
+    "suspicious_volume",
     "trade_to_float_percent",
     "real_buy_power",
     "real_money_flow",
     "money_flow_quality",
 )
+
+STOCK_STRATEGY_GTE_ONLY_METRICS = {
+    "trade_value",
+    "suspicious_volume",
+    "trade_to_float_percent",
+    "real_buy_power",
+    "money_flow_quality",
+}
 
 STOCK_STRATEGY_TECHNICAL_METRICS = (
     "rsi",
@@ -3999,12 +4050,27 @@ def normalize_stock_strategy_rules(payload):
     for metric in STOCK_STRATEGY_METRICS:
         rule = source.get(metric) if isinstance(source.get(metric), dict) else {}
         operator = str(rule.get("operator") or "gte").strip().lower()
-        if operator not in {"gte", "lte", "eq"}:
+        if (
+            metric in STOCK_STRATEGY_GTE_ONLY_METRICS
+            or operator not in {"gte", "lte", "eq"}
+        ):
             operator = "gte"
+        default_days = 30 if metric in {
+            "trade_value",
+            "suspicious_volume",
+        } else 0
+        minimum_days = 1 if metric in {
+            "trade_value",
+            "suspicious_volume",
+        } else 0
         try:
-            days = int(rule.get("days") or 0)
+            days = int(
+                rule.get("days")
+                if rule.get("days") is not None
+                else default_days
+            )
         except (TypeError, ValueError):
-            days = 0
+            days = default_days
         try:
             consecutive_days = int(rule.get("consecutive_days") or 0)
         except (TypeError, ValueError):
@@ -4013,10 +4079,19 @@ def normalize_stock_strategy_rules(payload):
             fixed_value = float(rule.get("fixed") or 0)
         except (TypeError, ValueError):
             fixed_value = 0
+        default_multiplier = 3 if metric == "suspicious_volume" else 1
+        try:
+            multiplier = float(
+                rule.get("multiplier")
+                if rule.get("multiplier") is not None
+                else default_multiplier
+            )
+        except (TypeError, ValueError):
+            multiplier = default_multiplier
         normalized[metric] = {
             "enabled": bool(rule.get("enabled")),
             "operator": operator,
-            "days": max(0, min(days, 250)),
+            "days": max(minimum_days, min(days, 250)),
             "fixed": (
                 fixed_value
                 if metric == "money_flow_quality"
@@ -4027,6 +4102,7 @@ def normalize_stock_strategy_rules(payload):
                 if metric == "real_money_flow"
                 else 0
             ),
+            "multiplier": max(0.01, min(multiplier, 1000)),
         }
 
     rsi_source = (
@@ -4249,12 +4325,16 @@ def stock_price_power_status(row):
 
     last_price = stock_number(row.get("last_price"))
     closing_price = stock_number(row.get("closing_price"))
-    upper_price = stock_number(row.get("daily_high_price"))
-    if upper_price is None or upper_price <= 0:
-        upper_price = stock_number(row.get("daily_upper_price"))
-    lower_price = stock_number(row.get("daily_low_price"))
-    if lower_price is None or lower_price <= 0:
-        lower_price = stock_number(row.get("daily_lower_price"))
+    # A queue is defined by the exchange's permitted daily ceiling/floor,
+    # not by the highest/lowest trade that happened during the session.  On a
+    # one-price trading day the observed high and low are identical, which
+    # would otherwise misclassify a sell queue as a buy queue.
+    upper_price = stock_number(row.get("daily_upper_price"))
+    if upper_price is not None and upper_price <= 0:
+        upper_price = None
+    lower_price = stock_number(row.get("daily_lower_price"))
+    if lower_price is not None and lower_price <= 0:
+        lower_price = None
 
     if last_price is not None and closing_price is not None:
         if upper_price is not None and last_price == upper_price:
@@ -4606,6 +4686,7 @@ def read_stock_strategy_history(source="featured", symbols=None):
             continue
         if not isinstance(data, dict):
             continue
+        data = refresh_stock_snapshot_derived_fields(data)
         data["trade_date"] = record["trade_date"]
         history.setdefault(normalized_symbol, []).append(data)
 
@@ -5013,10 +5094,17 @@ def evaluate_stock_strategy(rows, history, rules, market_index_history=None):
 
         for metric in STOCK_STRATEGY_METRICS:
             rule = normalized_rules[metric]
-            current_value = stock_number(row.get(metric))
+            source_field = (
+                "trade_volume"
+                if metric == "suspicious_volume"
+                else metric
+            )
+            current_value = stock_number(row.get(source_field))
             result[metric] = current_value
             result[f"{metric}_average"] = None
             result[f"{metric}_history_count"] = 0
+            if metric == "suspicious_volume":
+                result["suspicious_volume_ratio"] = None
             if metric == "real_money_flow":
                 result["real_money_flow_positive_streak"] = 0
             metric_is_active = stock_strategy_rule_is_active(metric, rule)
@@ -5031,7 +5119,7 @@ def evaluate_stock_strategy(rows, history, rules, market_index_history=None):
                             == current_market_date
                         ):
                             continue
-                        value = stock_number(snapshot.get(metric))
+                        value = stock_number(snapshot.get(source_field))
                         if value is None or value <= 0:
                             continue
                         historical_values.append(value)
@@ -5085,7 +5173,11 @@ def evaluate_stock_strategy(rows, history, rules, market_index_history=None):
             should_compare_fixed = (
                 metric == "money_flow_quality"
                 or (
-                    metric not in {"trade_value", "real_money_flow"}
+                    metric not in {
+                        "trade_value",
+                        "suspicious_volume",
+                        "real_money_flow",
+                    }
                     and rule["fixed"] > 0
                 )
             )
@@ -5105,7 +5197,7 @@ def evaluate_stock_strategy(rows, history, rules, market_index_history=None):
                         and snapshot.get("trade_date") == current_market_date
                     ):
                         continue
-                    value = stock_number(snapshot.get(metric))
+                    value = stock_number(snapshot.get(source_field))
                     if value is None or value == 0:
                         continue
                     if metric != "real_money_flow" and value < 0:
@@ -5121,6 +5213,11 @@ def evaluate_stock_strategy(rows, history, rules, market_index_history=None):
                 else:
                     average = sum(historical_values) / len(historical_values)
                     result[f"{metric}_average"] = average
+                    if metric == "suspicious_volume" and average > 0:
+                        result["suspicious_volume_ratio"] = round(
+                            current_value / average,
+                            4,
+                        )
                     coverage = history_coverage[metric]
                     used_days = len(historical_values)
                     if used_days < rule["days"]:
@@ -5136,12 +5233,20 @@ def evaluate_stock_strategy(rows, history, rules, market_index_history=None):
                             if coverage["maximum_days_used"] is None
                             else max(coverage["maximum_days_used"], used_days)
                         )
+                    reference_value = (
+                        average * rule["multiplier"]
+                        if metric in {
+                            "trade_value",
+                            "suspicious_volume",
+                        }
+                        else average
+                    )
                     average_passed = (
                         current_value > average
                         if metric == "real_money_flow"
                         else compare_stock_strategy_value(
                             current_value,
-                            average,
+                            reference_value,
                             rule["operator"],
                         )
                     )
@@ -5310,6 +5415,7 @@ def stock_strategy_export_settings(rules):
 
     for metric, strategy_name in (
         ("trade_value", "ارزش معاملات"),
+        ("suspicious_volume", "حجم مشکوک"),
         ("trade_to_float_percent", "نسبت معامله به شناوری"),
         ("real_buy_power", "قدرت خرید حقیقی"),
         ("real_money_flow", "ورود پول حقیقی"),
@@ -5325,10 +5431,20 @@ def stock_strategy_export_settings(rules):
             continue
 
         if metric == "trade_value":
-            add(strategy_name, "نوع مقایسه", operator_labels[rule["operator"]])
+            add(
+                strategy_name,
+                "ضریب نسبت به میانگین",
+                rule.get("multiplier", 1),
+            )
+            add(strategy_name, "میانگین چند روزه", rule["days"])
+        elif metric == "suspicious_volume":
+            add(
+                strategy_name,
+                "ضریب نسبت به میانگین",
+                rule.get("multiplier", 3),
+            )
             add(strategy_name, "میانگین چند روزه", rule["days"])
         elif metric in {"trade_to_float_percent", "real_buy_power"}:
-            add(strategy_name, "نوع مقایسه", operator_labels[rule["operator"]])
             add(
                 strategy_name,
                 "عدد ثابت (درصد)"
@@ -5349,7 +5465,6 @@ def stock_strategy_export_settings(rules):
                 rule["days"],
             )
         elif metric == "money_flow_quality":
-            add(strategy_name, "نوع مقایسه", operator_labels[rule["operator"]])
             add(strategy_name, "درصد کیفیت ورود پول", rule["fixed"])
         elif metric == "symbol_industry_compare":
             add(strategy_name, "نماد مبنا", rule.get("symbol") or "—")
@@ -5435,6 +5550,25 @@ def stock_strategy_export_columns(rules):
             "میانگین ارزش معاملات (میلیارد تومان)",
             "#,##0.00",
             10_000_000_000,
+        )
+
+    if active("suspicious_volume"):
+        add(
+            "suspicious_volume",
+            "حجم معاملات (میلیون)",
+            "#,##0.00",
+            1_000_000,
+        )
+        add(
+            "suspicious_volume_average",
+            "میانگین حجم معاملات (میلیون)",
+            "#,##0.00",
+            1_000_000,
+        )
+        add(
+            "suspicious_volume_ratio",
+            "نسبت حجم معاملات به میانگین (برابر)",
+            "0.00",
         )
 
     trade_to_float_rule = rules.get("trade_to_float_percent") or {}
@@ -7955,6 +8089,7 @@ def fetch_all_stock_row(instrument):
         "category": clean_stock_text(instrument.get("category")).upper(),
         "session_type": instrument.get("session_type") or "standard",
         "ins_code": ins_code,
+        "instrument_id": clean_stock_text(instrument.get("instrument_id")),
         "market_date": (
             closing_data.get("market_date")
             or normalize_stock_market_date(info.get("dEven"))
@@ -8411,7 +8546,11 @@ def start_all_stock_database_refresh(current_time=None, manual=False):
     else:
         current_time = current_time.astimezone(IRAN_TIMEZONE)
     _, metadata = read_all_stock_database()
-    phases = ["standard"] if manual else all_stock_due_phases(current_time, metadata)
+    phases = (
+        ["standard", "extended"]
+        if manual
+        else all_stock_due_phases(current_time, metadata)
+    )
     if not phases:
         return False
 

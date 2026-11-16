@@ -7,7 +7,7 @@ Stock Market Watch is a Persian, right-to-left dashboard for analysing the Irani
 The dashboard has six main tabs:
 
 - **Stocks**, the default first tab, reads immediately from SQLite and refreshes company, industry, and market-value data from TSETMC in the background.
-- **All Stocks** covers the complete TSETMC equity universe and serves finalized daily rows from SQLite.
+- **All Stocks** covers the complete TSETMC equity universe plus selected ETFs and serves finalized daily rows from SQLite.
 - **Watchlist** stores a persistent user-selected subset of symbols.
 - **Strategy** applies enabled screening rules to current or archived rows.
 - **Options** presents option-based market-expectation analysis.
@@ -55,7 +55,7 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 - Keeps the stock-table header visible inside a height-limited, vertically scrollable table area.
 - Lets users hide or restore columns; the selection is saved in browser storage.
 - Includes a persistent watchlist tab where symbols can be added directly from the Stocks table or removed from the Watchlist. Watchlist rows are stored in SQLite, reuse the full stock-column set, and remain available after a page refresh.
-- Includes a Strategy tab that combines enabled filters with AND logic and can run against either the curated top-stock list or the complete-market universe. Current trading value, free-float turnover, and real buy power can be compared with fixed thresholds and/or N-day averages; real-money flow supports positive-day streaks and comparison with its N-day average, while money-flow quality supports a fixed percentage comparison. Daily averages use the selected universe's SQLite snapshots, report partial history, and exclude zero or missing values.
+- Includes a Strategy tab that combines enabled filters with AND logic and can run against either the curated top-stock list or the complete-market universe. Trading value uses a configurable multiple of its N-day average (default 1×/30 days), and suspicious volume uses the same model with a 3×/30-day default. Trading value, free-float turnover, real buy power, suspicious volume, and money-flow quality use fixed greater-than-or-equal comparisons; real-money flow supports positive-day streaks and comparison with its N-day average. Daily averages use the selected universe's SQLite snapshots, report partial history, and exclude zero or missing values.
 - Adds an industry-relative growth rule that calculates each symbol's N-session closing-price return, compares it with the simple average return of its own industry, and keeps symbols below that average while reporting the percentage-point gap.
 - Adds a quick buy-queue ranking in the Strategy toolbar that returns the requested number of latest queued symbols, ranked by previous-session traded value with queue value, value-to-queue percentage, and prior consecutive queue days.
 - Adds configurable RSI, EMA, and MACD strategy rules based on archived daily closing prices. RSI supports a custom period, single threshold, or inclusive lower/upper range. EMA can compare the closing price with one EMA or detect a real upward/downward crossover between custom short and long periods. MACD supports custom fast, slow, and signal periods plus Signal/zero-line comparisons. Symbols with insufficient history are excluded with a coverage warning.
@@ -69,8 +69,8 @@ The former Market and Bull Spread views are no longer shown in the interface. Th
 ### All Stocks
 
 - Reuses the Stocks tab's complete column set, sorting, filters, industry grouping, column selector, dollar view, notes, history charts, TSETMC links, and watchlist actions.
-- Discovers ordinary TSE/IFB equity instruments from TSETMC while excluding funds, derivatives, debt securities, and symbols ending in digits.
-- Finalizes the equity universe once per Tehran day, using the first eligible request at or after 12:30.
+- Discovers ordinary TSE/IFB equities plus leveraged, equity, sector, mixed, government and non-precious commodity ETFs. Fixed-income and gold/silver funds, derivatives, debt securities, rights, raw commodity certificates and symbols ending in digits remain excluded.
+- Finalizes ordinary, leveraged, equity and sector instruments with the first eligible request at or after 12:30 Tehran time; supported extended-session commodity funds are finalized at or after 18:00.
 - Keeps the previous finalized rows visible until the new phase has been fetched completely and published atomically.
 - Stores an independent daily row for every resolved symbol in `all_stock_daily_snapshots`; stale previous-market-day responses remain visible as the latest row but are not archived under a new date.
 - Provides a manual online-refresh button that updates the displayed SQLite rows atomically without creating extra daily archive records or changing the once-per-day close rules.

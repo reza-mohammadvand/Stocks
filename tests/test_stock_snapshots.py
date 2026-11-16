@@ -292,16 +292,20 @@ class StockSnapshotTests(unittest.TestCase):
                     expected in {"buy_queue", "buy_queue_neutral"},
                 )
 
-        # Conditions are evaluated top-to-bottom: equality with the daily high
-        # wins before the generic last-price-equals-closing-price condition.
+        # Observed intraday highs/lows are not queue boundaries.  Fazar on
+        # 1405-08-23 traded only at the permitted floor, so its observed high
+        # and low were identical; the static limits must classify it as a
+        # neutral sell queue rather than a neutral buy queue.
         self.assertEqual(
             stock_app.stock_price_power_status({
-                "last_price": 28_330,
-                "closing_price": 28_330,
-                "daily_high_price": 28_330,
-                "daily_low_price": 28_200,
+                "last_price": 290_700,
+                "closing_price": 290_700,
+                "daily_high_price": 290_700,
+                "daily_low_price": 290_700,
+                "daily_upper_price": 308_500,
+                "daily_lower_price": 290_700,
             }),
-            "buy_queue_neutral",
+            "sell_queue_neutral",
         )
 
         # TSETMC reports zero daily highs/lows for instruments without a

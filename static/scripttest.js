@@ -7919,13 +7919,13 @@ function getStockPricePowerPresentation(stock) {
             label: "صف خرید -\nخنثی",
             tone: "positive",
             stacked: true,
-            title: "آخرین قیمت، قیمت پایانی و بالاترین قیمت روز برابرند"
+            title: "آخرین قیمت، قیمت پایانی و سقف مجاز روز برابرند"
         },
         buy_queue: {
             label: "صف\nخرید",
             tone: "positive",
             stacked: true,
-            title: "آخرین قیمت با بالاترین قیمت روز برابر است"
+            title: "آخرین قیمت با سقف مجاز روز برابر است"
         },
         positive: {
             label: "صعودی",
@@ -7941,13 +7941,13 @@ function getStockPricePowerPresentation(stock) {
             label: "صف فروش -\nخنثی",
             tone: "negative",
             stacked: true,
-            title: "آخرین قیمت، قیمت پایانی و پایین‌ترین قیمت روز برابرند"
+            title: "آخرین قیمت، قیمت پایانی و کف مجاز روز برابرند"
         },
         sell_queue: {
             label: "صف\nفروش",
             tone: "negative",
             stacked: true,
-            title: "آخرین قیمت با پایین‌ترین قیمت روز برابر است"
+            title: "آخرین قیمت با کف مجاز روز برابر است"
         },
         neutral: {
             label: "خنثی",
@@ -7967,16 +7967,14 @@ function getStockPricePowerPresentation(stock) {
     };
     const lastPrice = numberOrNull(stock?.last_price);
     const closingPrice = numberOrNull(stock?.closing_price);
-    const dailyHighPrice = numberOrNull(stock?.daily_high_price);
-    const dailyLowPrice = numberOrNull(stock?.daily_low_price);
-    const upperPrice = (
-        (dailyHighPrice !== null && dailyHighPrice > 0 ? dailyHighPrice : null)
-        ?? numberOrNull(stock?.daily_upper_price)
-    );
-    const lowerPrice = (
-        (dailyLowPrice !== null && dailyLowPrice > 0 ? dailyLowPrice : null)
-        ?? numberOrNull(stock?.daily_lower_price)
-    );
+    const rawUpperPrice = numberOrNull(stock?.daily_upper_price);
+    const rawLowerPrice = numberOrNull(stock?.daily_lower_price);
+    const upperPrice = rawUpperPrice !== null && rawUpperPrice > 0
+        ? rawUpperPrice
+        : null;
+    const lowerPrice = rawLowerPrice !== null && rawLowerPrice > 0
+        ? rawLowerPrice
+        : null;
     if (lastPrice !== null && closingPrice !== null) {
         if (upperPrice !== null && lastPrice === upperPrice) {
             return presentations[
@@ -10291,8 +10289,19 @@ function startStockWatchlistAutoRefresh() {
 const stockStrategyControlMap = {
     trade_value: {
         enabled: "strategy-trade-value-enabled",
-        operator: "strategy-trade-value-operator",
-        days: "strategy-trade-value-days"
+        multiplier: "strategy-trade-value-multiplier",
+        multiplierDefault: 1,
+        days: "strategy-trade-value-days",
+        daysMinimum: 1,
+        daysDefault: 30
+    },
+    suspicious_volume: {
+        enabled: "strategy-suspicious-volume-enabled",
+        multiplier: "strategy-suspicious-volume-multiplier",
+        multiplierDefault: 3,
+        days: "strategy-suspicious-volume-days",
+        daysMinimum: 1,
+        daysDefault: 30
     },
     industry_growth: {
         enabled: "strategy-industry-growth-enabled",
@@ -10302,13 +10311,11 @@ const stockStrategyControlMap = {
     },
     trade_to_float_percent: {
         enabled: "strategy-trade-to-float-enabled",
-        operator: "strategy-trade-to-float-operator",
         fixed: "strategy-trade-to-float-fixed",
         days: "strategy-trade-to-float-days"
     },
     real_buy_power: {
         enabled: "strategy-real-buy-power-enabled",
-        operator: "strategy-real-buy-power-operator",
         fixed: "strategy-real-buy-power-fixed",
         days: "strategy-real-buy-power-days"
     },
@@ -10319,7 +10326,6 @@ const stockStrategyControlMap = {
     },
     money_flow_quality: {
         enabled: "strategy-money-flow-quality-enabled",
-        operator: "strategy-money-flow-quality-operator",
         fixed: "strategy-money-flow-quality-fixed",
         allowNegativeFixed: true
     },
@@ -10417,6 +10423,9 @@ function readStockStrategyRules() {
         const rawFixed = controls.fixed
             ? Number(document.getElementById(controls.fixed)?.value)
             : 0;
+        const rawMultiplier = controls.multiplier
+            ? Number(document.getElementById(controls.multiplier)?.value)
+            : 1;
         const rawRangeMaximum = controls.rangeMaximum
             ? Number(document.getElementById(controls.rangeMaximum)?.value)
             : 0;
@@ -10428,6 +10437,17 @@ function readStockStrategyRules() {
         if (Number.isFinite(controls.fixedMaximum)) {
             fixed = Math.min(controls.fixedMaximum, fixed);
         }
+        const multiplier = controls.multiplier
+            ? Math.max(
+                0.01,
+                Math.min(
+                    1000,
+                    Number.isFinite(rawMultiplier)
+                        ? rawMultiplier
+                        : (controls.multiplierDefault || 1)
+                )
+            )
+            : 1;
         let rangeMaximum = Number.isFinite(rawRangeMaximum)
             ? Math.max(0, rawRangeMaximum)
             : 0;
@@ -10441,6 +10461,7 @@ function readStockStrategyRules() {
                 : "gte",
             days,
             fixed,
+            multiplier,
             maximum: rangeMaximum,
             consecutive_days: consecutiveDays,
             period,
@@ -10567,6 +10588,9 @@ function restoreStockStrategyRules() {
             const fixed = controls.fixed
                 ? document.getElementById(controls.fixed)
                 : null;
+            const multiplier = controls.multiplier
+                ? document.getElementById(controls.multiplier)
+                : null;
             const rangeMaximum = controls.rangeMaximum
                 ? document.getElementById(controls.rangeMaximum)
                 : null;
@@ -10611,10 +10635,34 @@ function restoreStockStrategyRules() {
                 const defaultDays = Number.isFinite(controls.daysDefault)
                     ? controls.daysDefault
                     : 0;
+                const isLegacyTradeValueRule = (
+                    metric === "trade_value"
+                    && !Number.isFinite(Number(rule.multiplier))
+                );
                 days.value = String(
                     Math.max(
                         minimumDays,
-                        Math.min(250, Number(rule.days) || defaultDays)
+                        Math.min(
+                            250,
+                            isLegacyTradeValueRule
+                                ? defaultDays
+                                : (Number(rule.days) || defaultDays)
+                        )
+                    )
+                );
+            }
+            if (multiplier) {
+                const defaultMultiplier = controls.multiplierDefault || 1;
+                const savedMultiplier = Number(rule.multiplier);
+                multiplier.value = String(
+                    Math.max(
+                        0.01,
+                        Math.min(
+                            1000,
+                            Number.isFinite(savedMultiplier)
+                                ? savedMultiplier
+                                : defaultMultiplier
+                        )
                     )
                 );
             }
@@ -10992,6 +11040,7 @@ function renderStockStrategyTable(payload) {
         } else {
             const metricNames = {
                 trade_value: "ارزش معاملات",
+                suspicious_volume: "حجم مشکوک",
                 trade_to_float_percent: "معامله به شناوری",
                 real_buy_power: "قدرت خرید حقیقی",
                 real_money_flow: "ورود پول حقیقی",
@@ -11074,6 +11123,7 @@ function renderStockStrategyTable(payload) {
     };
     const primaryMetrics = [
         "trade_value",
+        "suspicious_volume",
         "trade_to_float_percent",
         "real_buy_power",
         "real_money_flow",
@@ -11102,6 +11152,33 @@ function renderStockStrategyTable(payload) {
                     ? "trade_value_history_count"
                     : null,
                 width: 160
+            }
+        );
+    }
+
+    if (strategyRuleIsActive("suspicious_volume")) {
+        columns.push(
+            {
+                key: "suspicious_volume",
+                label: "حجم معاملات",
+                unit: "میلیون",
+                metric: "trade_volume",
+                width: 145
+            },
+            {
+                key: "suspicious_volume_average",
+                label: "میانگین حجم معاملات",
+                unit: "میلیون",
+                metric: "trade_volume",
+                historyKey: "suspicious_volume_history_count",
+                width: 170
+            },
+            {
+                key: "suspicious_volume_ratio",
+                label: "نسبت حجم معاملات به میانگین",
+                unit: "برابر",
+                metric: "suspicious_volume_ratio",
+                width: 190
             }
         );
     }

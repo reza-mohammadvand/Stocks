@@ -12,6 +12,95 @@ class StockStrategyTests(unittest.TestCase):
     def history(*rows):
         return {stock_app.normalize_symbol("نماد۱"): list(rows)}
 
+    def test_gte_only_rules_and_new_defaults_are_normalized(self):
+        rules = stock_app.normalize_stock_strategy_rules({
+            "trade_value": {"enabled": True, "operator": "lte"},
+            "suspicious_volume": {"enabled": True, "operator": "eq"},
+            "trade_to_float_percent": {
+                "enabled": True,
+                "operator": "lte",
+            },
+            "real_buy_power": {"enabled": True, "operator": "eq"},
+            "money_flow_quality": {"enabled": True, "operator": "lte"},
+        })
+
+        for metric in (
+            "trade_value",
+            "suspicious_volume",
+            "trade_to_float_percent",
+            "real_buy_power",
+            "money_flow_quality",
+        ):
+            self.assertEqual(rules[metric]["operator"], "gte")
+        self.assertEqual(rules["trade_value"]["multiplier"], 1)
+        self.assertEqual(rules["trade_value"]["days"], 30)
+        self.assertEqual(rules["suspicious_volume"]["multiplier"], 3)
+        self.assertEqual(rules["suspicious_volume"]["days"], 30)
+
+    def test_trade_value_uses_multiplier_of_historical_average(self):
+        rows = [{
+            "symbol": "نماد۱",
+            "market_date": "2026-10-25",
+            "trade_value": 300,
+        }]
+        history = self.history(
+            {"trade_date": "2026-10-24", "trade_value": 100},
+            {"trade_date": "2026-10-23", "trade_value": 100},
+        )
+        rules = {
+            "trade_value": {
+                "enabled": True,
+                "multiplier": 3,
+                "days": 2,
+            },
+        }
+
+        passed = stock_app.evaluate_stock_strategy(rows, history, rules)
+        self.assertEqual(passed["count"], 1)
+        self.assertEqual(passed["stocks"][0]["trade_value_average"], 100)
+
+        rows[0]["trade_value"] = 299
+        failed = stock_app.evaluate_stock_strategy(rows, history, rules)
+        self.assertEqual(failed["count"], 0)
+
+    def test_suspicious_volume_uses_trade_volume_history(self):
+        rows = [{
+            "symbol": "نماد۱",
+            "market_date": "2026-10-25",
+            "trade_volume": 3_000_000,
+        }]
+        history = self.history(
+            {"trade_date": "2026-10-24", "trade_volume": 1_000_000},
+            {"trade_date": "2026-10-23", "trade_volume": 1_000_000},
+        )
+        rules = {
+            "suspicious_volume": {
+                "enabled": True,
+                "multiplier": 3,
+                "days": 2,
+            },
+        }
+
+        passed = stock_app.evaluate_stock_strategy(rows, history, rules)
+        self.assertEqual(passed["count"], 1)
+        self.assertEqual(passed["stocks"][0]["suspicious_volume"], 3_000_000)
+        self.assertEqual(
+            passed["stocks"][0]["suspicious_volume_average"],
+            1_000_000,
+        )
+        self.assertEqual(
+            passed["stocks"][0]["suspicious_volume_history_count"],
+            2,
+        )
+        self.assertEqual(
+            passed["stocks"][0]["suspicious_volume_ratio"],
+            3,
+        )
+
+        rows[0]["trade_volume"] = 2_999_999
+        failed = stock_app.evaluate_stock_strategy(rows, history, rules)
+        self.assertEqual(failed["count"], 0)
+
     def test_strategy_excludes_every_rights_symbol(self):
         rows = [
             {
@@ -891,6 +980,10 @@ class StockStrategyTests(unittest.TestCase):
                 "enabled": True,
                 "days": 0,
             },
+            "suspicious_volume": {
+                "enabled": True,
+                "days": 30,
+            },
             "trade_to_float_percent": {
                 "enabled": True,
                 "days": 0,
@@ -933,6 +1026,9 @@ class StockStrategyTests(unittest.TestCase):
             "industry",
             "trade_value",
             "trade_value_average",
+            "suspicious_volume",
+            "suspicious_volume_average",
+            "suspicious_volume_ratio",
             "trade_to_float_percent",
             "real_money_flow",
             "real_money_flow_positive_streak",

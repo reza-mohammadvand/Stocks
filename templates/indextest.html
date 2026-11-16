@@ -10,7 +10,7 @@
     >
     <title>دیدبان بازار سهام</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='retail-value-v3') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='strategy-volume-v4') }}">
     <link rel="icon" href="{{ url_for('static', filename='logo.png', v='market-logo-v2') }}" type="image/png">
 </head>
 <body class="dashboard-shell">
@@ -770,16 +770,30 @@
                             <strong>ارزش معاملات</strong>
                         </label>
                         <label class="strategy-field">
-                            <span>نوع مقایسه</span>
-                            <select id="strategy-trade-value-operator">
-                                <option value="gte">بزرگ‌تر یا مساوی</option>
-                                <option value="lte">کوچک‌تر یا مساوی</option>
-                                <option value="eq">مساوی</option>
-                            </select>
+                            <span>ضریب نسبت به میانگین</span>
+                            <input id="strategy-trade-value-multiplier" type="number" min="0.01" max="1000" step="0.1" value="1" inputmode="decimal">
                         </label>
                         <label class="strategy-field">
                             <span>میانگین چند روزه</span>
-                            <input id="strategy-trade-value-days" type="number" min="0" max="250" step="1" value="5" inputmode="numeric">
+                            <input id="strategy-trade-value-days" type="number" min="1" max="250" step="1" value="30" inputmode="numeric">
+                        </label>
+                    </article>
+
+                    <article class="strategy-rule" data-strategy-rule="suspicious_volume">
+                        <label class="stock-industry-toggle strategy-rule-toggle" for="strategy-suspicious-volume-enabled">
+                            <input id="strategy-suspicious-volume-enabled" type="checkbox" role="switch">
+                            <span class="stock-toggle-track" aria-hidden="true">
+                                <span class="stock-toggle-thumb"></span>
+                            </span>
+                            <strong>حجم مشکوک</strong>
+                        </label>
+                        <label class="strategy-field">
+                            <span>ضریب نسبت به میانگین</span>
+                            <input id="strategy-suspicious-volume-multiplier" type="number" min="0.01" max="1000" step="0.1" value="3" inputmode="decimal">
+                        </label>
+                        <label class="strategy-field">
+                            <span>میانگین چند روزه</span>
+                            <input id="strategy-suspicious-volume-days" type="number" min="1" max="250" step="1" value="30" inputmode="numeric">
                         </label>
                     </article>
 
@@ -790,14 +804,6 @@
                                 <span class="stock-toggle-thumb"></span>
                             </span>
                             <strong>نسبت معامله به شناوری</strong>
-                        </label>
-                        <label class="strategy-field">
-                            <span>نوع مقایسه</span>
-                            <select id="strategy-trade-to-float-operator">
-                                <option value="gte">بزرگ‌تر یا مساوی</option>
-                                <option value="lte">کوچک‌تر یا مساوی</option>
-                                <option value="eq">مساوی</option>
-                            </select>
                         </label>
                         <label class="strategy-field">
                             <span>عدد ثابت (درصد)</span>
@@ -816,14 +822,6 @@
                                 <span class="stock-toggle-thumb"></span>
                             </span>
                             <strong>قدرت خرید حقیقی</strong>
-                        </label>
-                        <label class="strategy-field">
-                            <span>نوع مقایسه</span>
-                            <select id="strategy-real-buy-power-operator">
-                                <option value="gte">بزرگ‌تر یا مساوی</option>
-                                <option value="lte">کوچک‌تر یا مساوی</option>
-                                <option value="eq">مساوی</option>
-                            </select>
                         </label>
                         <label class="strategy-field">
                             <span>عدد ثابت (برابر)</span>
@@ -860,14 +858,6 @@
                                 <span class="stock-toggle-thumb"></span>
                             </span>
                             <strong>کیفیت ورود پول</strong>
-                        </label>
-                        <label class="strategy-field">
-                            <span>نوع مقایسه</span>
-                            <select id="strategy-money-flow-quality-operator">
-                                <option value="gte">بزرگ‌تر یا مساوی</option>
-                                <option value="lte">کوچک‌تر یا مساوی</option>
-                                <option value="eq">مساوی</option>
-                            </select>
                         </label>
                         <label class="strategy-field">
                             <span>درصد کیفیت ورود پول</span>
@@ -1517,6 +1507,6 @@
         </section>
     </div>
 
-    <script src="{{ url_for('static', filename='scripttest.js', v='retail-value-v3') }}"></script>
+    <script src="{{ url_for('static', filename='scripttest.js', v='suspicious-volume-ratio-v1') }}"></script>
 </body>
 </html>

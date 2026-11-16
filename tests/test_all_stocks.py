@@ -52,10 +52,25 @@ class AllStockDailyTests(unittest.TestCase):
         fields[25] = category
         return ",".join(fields)
 
-    def test_market_watch_parser_keeps_only_equities_without_number_suffix(self):
+    def test_market_watch_parser_keeps_equities_and_supported_funds(self):
         response_text = ";".join([
             self.market_row(
                 "10000000000000001", "IRO1TEST0001", "آزمون", "شرکت آزمون", "N1"
+            ),
+            self.market_row(
+                "10000000000000008", "IRT1AHRM0001", "اهرم", "صندوق اهرمی", "5A"
+            ),
+            self.market_row(
+                "10000000000000009", "IRT3TVAF0001", "توان", "صندوق اهرمی توان", "TA"
+            ),
+            self.market_row(
+                "10000000000000010", "IRT1PLSH0001", "پالایش", "صندوق پالایشی یکم", "51"
+            ),
+            self.market_row(
+                "10000000000000011", "IRT3SECT0001", "بخشی", "صندوق بخشی", "T1"
+            ),
+            self.market_row(
+                "10000000000000012", "IRTKNAHL0001", "نهال", "صندوق کالایی نویرا", "Q1"
             ),
             self.market_row(
                 "10000000000000002", "IRT3FIXD0001", "ثابت", "صندوق درآمد ثابت", "1A"
@@ -75,12 +90,19 @@ class AllStockDailyTests(unittest.TestCase):
             self.market_row(
                 "10000000000000007", "IRO1TEST0003", "آزمونح", "حق تقدم آزمون", "N1"
             ),
+            self.market_row(
+                "10000000000000013", "IRKSCRTF0001", "زعفران01", "گواهی سپرده زعفران", "Q1"
+            ),
         ])
 
         rows = stock_app.parse_all_stock_market_watch(response_text)
 
-        self.assertEqual([row["symbol"] for row in rows], ["آزمون"])
+        self.assertEqual(
+            [row["symbol"] for row in rows],
+            ["آزمون", "اهرم", "توان", "پالایش", "بخشی", "نهال"],
+        )
         self.assertEqual(rows[0]["session_type"], "standard")
+        self.assertEqual(rows[-1]["session_type"], "extended")
         self.assertEqual(rows[0]["share_count"], 5_000_000_000)
         self.assertTrue(stock_app.is_stock_rights_symbol("آزمونح"))
 
@@ -129,13 +151,18 @@ class AllStockDailyTests(unittest.TestCase):
         )
         self.assertEqual(
             stock_app.all_stock_due_phases(self.at(18, 0), {}),
-            ["standard"],
+            ["standard", "extended"],
         )
         metadata = {"standard_completed_date": "2026-10-19"}
         self.assertEqual(
             stock_app.all_stock_due_phases(self.at(18, 0), metadata),
-            [],
+            ["extended"],
         )
+        self.assertEqual(
+            stock_app.all_stock_due_phases(self.at(23, 0), metadata),
+            ["extended"],
+        )
+        metadata["extended_completed_date"] = "2026-10-19"
         self.assertEqual(stock_app.all_stock_due_phases(self.at(23, 0), metadata), [])
 
     def test_phase_is_published_and_archived_atomically(self):
@@ -340,6 +367,29 @@ class AllStockDailyTests(unittest.TestCase):
         self.assertEqual(snapshots, [])
         self.assertNotIn("standard_completed_date", metadata)
         self.assertEqual(metadata["last_manual_update"], self.at(11, 0).isoformat())
+
+    def test_manual_publish_keeps_supported_fund_identity(self):
+        row = {
+            "position": 0,
+            "symbol": "اهرم",
+            "instrument_id": "IRT1AHRM0001",
+            "company": "صندوق سرمایه‌گذاری اهرمی",
+            "category": "5A",
+            "session_type": "standard",
+            "market_date": "2026-10-19",
+            "closing_price": 1400,
+        }
+
+        result = stock_app.publish_all_stock_current_phase(
+            [row],
+            "standard",
+            self.at(11, 0),
+        )
+        rows, _ = stock_app.read_all_stock_database()
+
+        self.assertTrue(result["published"])
+        self.assertEqual([item["symbol"] for item in rows], ["اهرم"])
+        self.assertEqual(rows[0]["instrument_id"], "IRT1AHRM0001")
 
     def test_manual_publish_preserves_rows_when_market_day_is_stale(self):
         current_row = {
