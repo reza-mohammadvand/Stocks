@@ -125,6 +125,63 @@ class OptionTradingDaysTests(unittest.TestCase):
         self.assertEqual(rows[0]["symbol"], "اختیار معتبر")
         self.assertEqual(rows[0]["best_buy_price"], 10)
 
+    def test_option_burning_uses_six_percent_for_all_leveraged_funds(self):
+        leveraged_symbols = (
+            "اهرم",
+            "بیدار",
+            "پیشران",
+            "توان",
+            "جهش",
+            "دوایکس",
+            "شتاب",
+            "موج",
+            "نارنج",
+            "نارنج اهرم",
+        )
+
+        for base_symbol in leveraged_symbols:
+            with self.subTest(base_symbol=base_symbol):
+                rows = stock_app.build_option_burning_summary(
+                    [{
+                        "base_symbol": base_symbol,
+                        "groups": [{
+                            "trading_days_remaining": 2,
+                            "options": [{
+                                "symbol": "اختیار آزمون",
+                                "option_last_price": 10,
+                                "best_buy_price": 10,
+                                "breakeven_distance": 12,
+                                "status": "OTM",
+                            }],
+                        }],
+                    }],
+                )
+
+                self.assertEqual(
+                    rows[0]["option_burning_percentage"],
+                    100,
+                )
+
+        ordinary_rows = stock_app.build_option_burning_summary(
+            [{
+                "base_symbol": "فولاد",
+                "groups": [{
+                    "trading_days_remaining": 2,
+                    "options": [{
+                        "symbol": "اختیار عادی",
+                        "option_last_price": 10,
+                        "best_buy_price": 10,
+                        "breakeven_distance": 12,
+                        "status": "OTM",
+                    }],
+                }],
+            }],
+        )
+        self.assertEqual(
+            ordinary_rows[0]["option_burning_percentage"],
+            200,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -285,11 +285,20 @@ let marketExpectationsLoading = false;
 let marketExpectationsRefreshTimer = null;
 let expectationDetailRows = [];
 let expectationDetailSort = { key: null, direction: "asc" };
-const OPTION_BURNING_ALLOWED_RANGES = new Map([
-    [normalizeSymbol("اهرم"), 4],
-    [normalizeSymbol("موج"), 4],
-    [normalizeSymbol("توان"), 4]
-]);
+const LEVERAGED_FUND_DAILY_RANGE_PERCENT = 6;
+const DEFAULT_OPTION_BURNING_RANGE_PERCENT = 3;
+const LEVERAGED_FUND_OPTION_BASES = new Set([
+    "اهرم",
+    "بیدار",
+    "پیشران",
+    "توان",
+    "جهش",
+    "دوایکس",
+    "شتاب",
+    "موج",
+    "نارنج",
+    "نارنج اهرم"
+].map(normalizeSymbol));
 
 async function loadData() {
 
@@ -5397,7 +5406,9 @@ function buildOptionBurningRows() {
     const rows = [];
     bases.forEach(base => {
         const normalizedBase = normalizeSymbol(base.base_symbol);
-        const allowedRange = OPTION_BURNING_ALLOWED_RANGES.get(normalizedBase) || 3;
+        const allowedRange = LEVERAGED_FUND_OPTION_BASES.has(normalizedBase)
+            ? LEVERAGED_FUND_DAILY_RANGE_PERCENT
+            : DEFAULT_OPTION_BURNING_RANGE_PERCENT;
 
         (base.groups || []).forEach(group => {
             const calendarDaysRemaining = Number(group.days_remaining);

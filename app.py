@@ -8668,6 +8668,24 @@ mapping = {
     for option_symbol, base_symbol in mapping.items()
 }
 
+LEVERAGED_FUND_DAILY_RANGE_PERCENT = 6
+DEFAULT_OPTION_BURNING_RANGE_PERCENT = 3
+LEVERAGED_FUND_OPTION_BASE_SYMBOLS = frozenset(
+    normalize_symbol(symbol)
+    for symbol in (
+        "اهرم",
+        "بیدار",
+        "پیشران",
+        "توان",
+        "جهش",
+        "دوایکس",
+        "شتاب",
+        "موج",
+        "نارنج",
+        "نارنج اهرم",
+    )
+)
+
 
 def is_option_description(description, option_type=None):
     text = normalize_symbol(description)
@@ -10547,15 +10565,13 @@ def build_option_burning_summary(
 ):
     """Build ranked rows using contracts whose last price and best bid are valid."""
     option_groups = []
-    special_ranges = {
-        normalize_symbol("اهرم"): 4,
-        normalize_symbol("موج"): 4,
-        normalize_symbol("توان"): 4,
-    }
-
     for base in bases:
         base_symbol = normalize_symbol(base.get("base_symbol"))
-        allowed_range = special_ranges.get(base_symbol, 3)
+        allowed_range = (
+            LEVERAGED_FUND_DAILY_RANGE_PERCENT
+            if base_symbol in LEVERAGED_FUND_OPTION_BASE_SYMBOLS
+            else DEFAULT_OPTION_BURNING_RANGE_PERCENT
+        )
 
         for group in base.get("groups") or []:
             trading_days = parse_number(group.get("trading_days_remaining"))

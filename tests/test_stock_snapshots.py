@@ -292,6 +292,19 @@ class StockSnapshotTests(unittest.TestCase):
                     expected in {"buy_queue", "buy_queue_neutral"},
                 )
 
+        # Leveraged funds now trade in a ±6% range. Price-power classification
+        # consumes TSETMC's actual ceiling/floor and must accept those limits.
+        self.assertEqual(
+            stock_app.stock_price_power_status({
+                "symbol": "اهرم",
+                "last_price": 106,
+                "closing_price": 106,
+                "daily_upper_price": 106,
+                "daily_lower_price": 94,
+            }),
+            "buy_queue_neutral",
+        )
+
         # Observed intraday highs/lows are not queue boundaries.  Fazar on
         # 1405-08-23 traded only at the permitted floor, so its observed high
         # and low were identical; the static limits must classify it as a
