@@ -10,7 +10,7 @@
     >
     <title>دیدبان بازار سهام</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='strategy-volume-v4') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='theme.css', v='strategy-toolbar-centered-v1') }}">
     <link rel="icon" href="{{ url_for('static', filename='logo.png', v='market-logo-v2') }}" type="image/png">
 </head>
 <body class="dashboard-shell">
@@ -685,77 +685,84 @@
                         <p>نماد باید تمام شرط‌های فعال را هم‌زمان داشته باشد.</p>
                     </div>
                     <div class="strategy-toolbar-actions">
-                        <span id="strategy-source-date" class="stocks-sync-status stock-saved-date" aria-live="polite"></span>
-                        <div class="strategy-source-selector" role="group" aria-label="دامنه اجرای استراتژی">
-                            <button
-                                class="strategy-source-button is-active"
-                                type="button"
-                                data-strategy-source="featured"
-                                aria-pressed="true"
-                            >سهام برتر</button>
-                            <button
-                                class="strategy-source-button"
-                                type="button"
-                                data-strategy-source="all"
-                                aria-pressed="false"
-                            >تمام سهام‌ها</button>
-                        </div>
-                        <label class="stock-industry-toggle stock-saved-data-toggle" for="strategy-group-by-industry">
-                            <input id="strategy-group-by-industry" type="checkbox" role="switch">
-                            <span class="stock-toggle-track" aria-hidden="true">
-                                <span class="stock-toggle-thumb"></span>
-                            </span>
-                            <span>تفکیک بر اساس صنعت</span>
-                        </label>
-                        <label class="stock-industry-toggle stock-saved-data-toggle" for="strategy-use-saved-data">
-                            <input id="strategy-use-saved-data" type="checkbox" role="switch">
-                            <span class="stock-toggle-track" aria-hidden="true">
-                                <span class="stock-toggle-thumb"></span>
-                            </span>
-                            <span>آخرین دیتای ذخیره‌شده</span>
-                        </label>
-                        <label
-                            class="stock-industry-toggle stock-saved-data-toggle"
-                            for="strategy-buy-queue-use-previous-day"
-                            title="در حالت خاموش، آخرین دیتاست فعلی بررسی می‌شود"
-                        >
-                            <input id="strategy-buy-queue-use-previous-day" type="checkbox" role="switch">
-                            <span class="stock-toggle-track" aria-hidden="true">
-                                <span class="stock-toggle-thumb"></span>
-                            </span>
-                            <span>صف خرید روز قبل</span>
-                        </label>
-                        <form id="strategy-buy-queue-form" class="strategy-buy-queue-filter" autocomplete="off">
-                            <label for="strategy-buy-queue-count" aria-label="تعداد نمادهای صف خرید">
-                                <input
-                                    id="strategy-buy-queue-count"
-                                    type="number"
-                                    min="1"
-                                    max="100"
-                                    step="1"
-                                    value="10"
-                                    inputmode="numeric"
-                                    aria-label="تعداد نمادهای صف خرید"
-                                    title="تعداد نمادهای صف خرید"
-                                    required
-                                >
+                        <div class="strategy-toolbar-row strategy-toolbar-row-primary">
+                            <div class="strategy-source-selector" role="group" aria-label="دامنه اجرای استراتژی">
+                                <button
+                                    class="strategy-source-button is-active"
+                                    type="button"
+                                    data-strategy-source="featured"
+                                    aria-pressed="true"
+                                >سهام برتر</button>
+                                <button
+                                    class="strategy-source-button"
+                                    type="button"
+                                    data-strategy-source="all"
+                                    aria-pressed="false"
+                                >تمام سهام‌ها</button>
+                            </div>
+                            <label class="stock-industry-toggle stock-saved-data-toggle" for="strategy-group-by-industry">
+                                <input id="strategy-group-by-industry" type="checkbox" role="switch">
+                                <span class="stock-toggle-track" aria-hidden="true">
+                                    <span class="stock-toggle-thumb"></span>
+                                </span>
+                                <span>تفکیک بر اساس صنعت</span>
                             </label>
-                            <button id="strategy-buy-queue-button" class="button-secondary" type="submit">
-                                نمایش صف خرید
-                            </button>
-                        </form>
-                        <div class="strategy-action-buttons">
-                            <button id="strategy-run-button" class="button-primary" type="button">
-                                اجرای فیلتر
-                            </button>
-                            <button
-                                id="strategy-export-button"
-                                class="button-secondary"
-                                type="button"
-                                disabled
+                            <label class="stock-industry-toggle stock-saved-data-toggle" for="strategy-use-saved-data">
+                                <input id="strategy-use-saved-data" type="checkbox" role="switch">
+                                <span class="stock-toggle-track" aria-hidden="true">
+                                    <span class="stock-toggle-thumb"></span>
+                                </span>
+                                <span>آخرین دیتای ذخیره‌شده</span>
+                            </label>
+                            <span id="strategy-source-date" class="stocks-sync-status stock-saved-date strategy-source-date" aria-live="polite"></span>
+                        </div>
+                        <div class="strategy-toolbar-row strategy-toolbar-row-secondary">
+                            <form id="strategy-buy-queue-form" class="strategy-buy-queue-filter" autocomplete="off">
+                                <label for="strategy-buy-queue-count" aria-label="تعداد نمادهای صف">
+                                    <input
+                                        id="strategy-buy-queue-count"
+                                        type="number"
+                                        min="1"
+                                        max="100"
+                                        step="1"
+                                        value="10"
+                                        inputmode="numeric"
+                                        aria-label="تعداد نمادهای صف"
+                                        title="تعداد نمادهای صف"
+                                        required
+                                    >
+                                </label>
+                                <button id="strategy-buy-queue-button" class="button-secondary" type="submit">
+                                    بیشترین صف خرید
+                                </button>
+                                <button id="strategy-sell-queue-button" class="button-secondary" type="button">
+                                    بیشترین صف فروش
+                                </button>
+                            </form>
+                            <label
+                                class="stock-industry-toggle stock-saved-data-toggle"
+                                for="strategy-buy-queue-use-previous-day"
+                                title="در حالت خاموش، آخرین دیتاست فعلی بررسی می‌شود"
                             >
-                                خروجی اکسل
-                            </button>
+                                <input id="strategy-buy-queue-use-previous-day" type="checkbox" role="switch">
+                                <span class="stock-toggle-track" aria-hidden="true">
+                                    <span class="stock-toggle-thumb"></span>
+                                </span>
+                                <span>صف‌های روز قبل</span>
+                            </label>
+                            <div class="strategy-action-buttons">
+                                <button id="strategy-run-button" class="button-primary" type="button">
+                                    اجرای فیلتر
+                                </button>
+                                <button
+                                    id="strategy-export-button"
+                                    class="button-secondary"
+                                    type="button"
+                                    disabled
+                                >
+                                    خروجی اکسل
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1093,10 +1100,10 @@
                     <thead>
                         <tr>
                             <th data-sort-type="text" tabindex="0">نماد <span class="expectations-sort-indicator">↕</span></th>
-                            <th data-sort-type="number" tabindex="0">ارزش صف خرید (میلیون ریال) <span class="expectations-sort-indicator">↕</span></th>
+                            <th id="strategy-queue-value-heading" data-sort-type="number" tabindex="0">ارزش صف خرید (میلیون ریال) <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="number" tabindex="0">ارزش معاملات (میلیون ریال) <span class="expectations-sort-indicator">↕</span></th>
                             <th data-sort-type="number" tabindex="0">درصد ارزش معامله‌شده از مجموع <span class="expectations-sort-indicator">↕</span></th>
-                            <th data-sort-type="number" tabindex="0">صف خرید پیاپی (روز) <span class="expectations-sort-indicator">↕</span></th>
+                            <th id="strategy-queue-streak-heading" data-sort-type="number" tabindex="0">صف خرید پیاپی (روز) <span class="expectations-sort-indicator">↕</span></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1507,6 +1514,6 @@
         </section>
     </div>
 
-    <script src="{{ url_for('static', filename='scripttest.js', v='leveraged-range-6-v1') }}"></script>
+    <script src="{{ url_for('static', filename='scripttest.js', v='strategy-sell-queue-v1') }}"></script>
 </body>
 </html>

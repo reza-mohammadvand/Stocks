@@ -10780,6 +10780,10 @@ function initializeStockStrategyControls() {
         "submit",
         loadStrategyBuyQueueFilter
     );
+    document.getElementById("strategy-sell-queue-button")?.addEventListener(
+        "click",
+        loadStrategySellQueueFilter
+    );
     document
         .querySelectorAll("[data-close-strategy-buy-queue-modal]")
         .forEach(element => element.addEventListener(
@@ -10837,16 +10841,37 @@ function initializeStockStrategyControls() {
 }
 
 async function loadStrategyBuyQueueFilter(event) {
+    return loadStrategyQueueFilter("buy", event);
+}
+
+async function loadStrategySellQueueFilter(event) {
+    return loadStrategyQueueFilter("sell", event);
+}
+
+async function loadStrategyQueueFilter(queueSide, event) {
     event?.preventDefault();
+    const isSellQueue = queueSide === "sell";
+    const queueLabel = isSellQueue ? "صف فروش" : "صف خرید";
+    const endpoint = isSellQueue ? "/stock-sell-queues" : "/stock-buy-queues";
+    const queueValueKey = isSellQueue ? "sell_queue_value" : "buy_queue_value";
     const input = document.getElementById("strategy-buy-queue-count");
     const previousDayToggle = document.getElementById(
         "strategy-buy-queue-use-previous-day"
     );
-    const button = document.getElementById("strategy-buy-queue-button");
+    const buyButton = document.getElementById("strategy-buy-queue-button");
+    const sellButton = document.getElementById("strategy-sell-queue-button");
+    const button = isSellQueue ? sellButton : buyButton;
     const modal = document.getElementById("strategy-buy-queue-modal");
     const table = modal?.querySelector(".strategy-buy-queue-table");
     const tbody = table?.querySelector("tbody");
     const summary = document.getElementById("strategy-buy-queue-summary");
+    const modalTitle = document.getElementById("strategy-buy-queue-modal-title");
+    const queueValueHeading = document.getElementById(
+        "strategy-queue-value-heading"
+    );
+    const queueStreakHeading = document.getElementById(
+        "strategy-queue-streak-heading"
+    );
     const requestedCount = Number(input?.value);
     if (!input || !button || !modal || !table || !tbody || !summary) return;
 
@@ -10859,7 +10884,16 @@ async function loadStrategyBuyQueueFilter(event) {
 
     modal.hidden = false;
     document.body.classList.add("expectations-modal-open");
-    button.disabled = true;
+    if (modalTitle) modalTitle.textContent = `نمادهای ${queueLabel}`;
+    if (queueValueHeading) {
+        queueValueHeading.childNodes[0].textContent = `ارزش ${queueLabel} (میلیون ریال) `;
+    }
+    if (queueStreakHeading) {
+        queueStreakHeading.childNodes[0].textContent = `${queueLabel} پیاپی (روز) `;
+    }
+    [buyButton, sellButton].forEach(item => {
+        if (item) item.disabled = true;
+    });
     button.setAttribute("aria-busy", "true");
     summary.textContent = "";
     tbody.innerHTML = `
@@ -10874,12 +10908,12 @@ async function loadStrategyBuyQueueFilter(event) {
             use_previous_day: previousDayToggle?.checked ? "1" : "0",
             live: previousDayToggle?.checked ? "0" : "1"
         });
-        const response = await fetch(`/stock-buy-queues?${params}`, {
+        const response = await fetch(`${endpoint}?${params}`, {
             cache: "no-store"
         });
         const payload = await response.json();
         if (!response.ok) {
-            throw new Error(payload.error || "دریافت نمادهای صف خرید ناموفق بود.");
+            throw new Error(payload.error || `دریافت نمادهای ${queueLabel} ناموفق بود.`);
         }
 
         const rows = Array.isArray(payload?.stocks) ? payload.stocks : [];
@@ -10887,12 +10921,12 @@ async function loadStrategyBuyQueueFilter(event) {
             ? rows.map(stock => `
                 <tr>
                     <td data-sort-value="${escapeHtml(stock.symbol || "")}">${escapeHtml(stock.symbol || "—")}</td>
-                    <td data-sort-value="${stock.buy_queue_value ?? ""}">${formatScaledStockNumber(stock.buy_queue_value, 1_000_000)}</td>
+                    <td data-sort-value="${stock[queueValueKey] ?? ""}">${formatScaledStockNumber(stock[queueValueKey], 1_000_000)}</td>
                     <td data-sort-value="${stock.trade_value ?? ""}">${formatScaledStockNumber(stock.trade_value, 1_000_000)}</td>
                     <td class="expectation-percent" data-sort-value="${stock.traded_value_percent ?? ""}">${formatExpectationPercent(stock.traded_value_percent)}</td>
                     <td data-sort-value="${stock.consecutive_queue_days ?? 0}">${formatStockInteger(stock.consecutive_queue_days || 0)}</td>
                 </tr>`).join("")
-            : `<tr><td colspan="5" class="expectations-no-result">در آخرین داده نمادی با صف خرید پیدا نشد.</td></tr>`;
+            : `<tr><td colspan="5" class="expectations-no-result">در آخرین داده نمادی با ${queueLabel} پیدا نشد.</td></tr>`;
 
         const formatter = new Intl.NumberFormat("fa-IR");
         const sourceLabel = payload.source === "all" ? "تمام سهام‌ها" : "سهام برتر";
@@ -10907,28 +10941,30 @@ async function loadStrategyBuyQueueFilter(event) {
             : "";
         const liveTimeLabel = liveFetchedAt ? `؛ دریافت ${liveFetchedAt}` : "";
         summary.textContent = rows.length
-            ? `${formatter.format(rows.length)} مورد نخست از ${formatter.format(payload.matched_count || rows.length)} نماد صف خرید در ${sourceLabel} بر اساس ${dataModeLabel}${liveTimeLabel}؛ مرتب‌شده بر اساس ارزش صف خرید`
-            : `در ${sourceLabel} نمادی با صف خرید بر اساس ${dataModeLabel}${liveTimeLabel} پیدا نشد.`;
+            ? `${formatter.format(rows.length)} مورد نخست از ${formatter.format(payload.matched_count || rows.length)} نماد ${queueLabel} در ${sourceLabel} بر اساس ${dataModeLabel}${liveTimeLabel}؛ مرتب‌شده بر اساس ارزش ${queueLabel}`
+            : `در ${sourceLabel} نمادی با ${queueLabel} بر اساس ${dataModeLabel}${liveTimeLabel} پیدا نشد.`;
         resetExpectationSummarySort(table);
-        const buyQueueValueHeader = table.querySelectorAll("th[data-sort-type]")[1];
-        if (buyQueueValueHeader) {
+        const queueValueHeader = table.querySelectorAll("th[data-sort-type]")[1];
+        if (queueValueHeader) {
             table.dataset.sortColumn = "1";
             table.dataset.sortDirection = "desc";
-            buyQueueValueHeader.setAttribute("aria-sort", "descending");
-            const indicator = buyQueueValueHeader.querySelector(
+            queueValueHeader.setAttribute("aria-sort", "descending");
+            const indicator = queueValueHeader.querySelector(
                 ".expectations-sort-indicator"
             );
             if (indicator) indicator.textContent = "▼";
         }
     } catch (error) {
-        console.error("Buy queue filter error:", error);
-        summary.textContent = error.message || "دریافت نمادهای صف خرید ناموفق بود.";
+        console.error(`${queueLabel} filter error:`, error);
+        summary.textContent = error.message || `دریافت نمادهای ${queueLabel} ناموفق بود.`;
         tbody.innerHTML = `
             <tr>
                 <td colspan="5" class="expectations-no-result">امکان نمایش اطلاعات وجود ندارد.</td>
             </tr>`;
     } finally {
-        button.disabled = false;
+        [buyButton, sellButton].forEach(item => {
+            if (item) item.disabled = false;
+        });
         button.removeAttribute("aria-busy");
     }
 }

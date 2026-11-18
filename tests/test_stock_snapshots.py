@@ -291,6 +291,10 @@ class StockSnapshotTests(unittest.TestCase):
                     stock_app.stock_strategy_buy_queue_state(row),
                     expected in {"buy_queue", "buy_queue_neutral"},
                 )
+                self.assertEqual(
+                    stock_app.stock_strategy_sell_queue_state(row),
+                    expected in {"sell_queue", "sell_queue_neutral"},
+                )
 
         # Leveraged funds now trade in a ±6% range. Price-power classification
         # consumes TSETMC's actual ceiling/floor and must accept those limits.

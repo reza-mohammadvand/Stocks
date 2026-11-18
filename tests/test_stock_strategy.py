@@ -614,6 +614,88 @@ class StockStrategyTests(unittest.TestCase):
         self.assertEqual(result["stocks"][0]["trade_value"], 9_000)
         self.assertEqual(result["stocks"][0]["buy_queue_value"], 3_000)
 
+    def test_sell_queue_summary_ranks_and_counts_consecutive_days(self):
+        current_rows = [
+            {
+                "symbol": "نماد۱",
+                "market_date": "2026-10-27",
+                "trade_value": 2_500,
+                "order_book_buy_value": 0,
+                "order_book_sell_value": 500,
+            },
+            {
+                "symbol": "نماد۲",
+                "market_date": "2026-10-27",
+                "trade_value": 3_500,
+                "order_book_buy_value": 0,
+                "order_book_sell_value": 1_000,
+            },
+        ]
+        history = {
+            stock_app.normalize_symbol("نماد۱"): [
+                {
+                    "trade_date": "2026-10-26",
+                    "trade_value": 4_000,
+                    "order_book_buy_value": 0,
+                    "order_book_sell_value": 400,
+                },
+                {
+                    "trade_date": "2026-10-25",
+                    "trade_value": 1_500,
+                    "order_book_buy_value": 0,
+                    "order_book_sell_value": 300,
+                },
+                {
+                    "trade_date": "2026-10-24",
+                    "trade_value": 1_000,
+                    "order_book_buy_value": 200,
+                    "order_book_sell_value": 20,
+                },
+            ],
+            stock_app.normalize_symbol("نماد۲"): [{
+                "trade_date": "2026-10-26",
+                "trade_value": 3_000,
+                "order_book_buy_value": 100,
+                "order_book_sell_value": 0,
+            }],
+        }
+
+        result = stock_app.build_stock_sell_queue_summary(
+            current_rows,
+            history,
+            limit=10,
+        )
+
+        self.assertEqual(result["queue_side"], "sell")
+        self.assertEqual(result["matched_count"], 2)
+        self.assertEqual(result["stocks"][0]["symbol"], "نماد۲")
+        self.assertEqual(result["stocks"][0]["sell_queue_value"], 1_000)
+        self.assertAlmostEqual(
+            result["stocks"][0]["traded_value_percent"],
+            77.7778,
+        )
+        first_symbol = next(
+            item for item in result["stocks"] if item["symbol"] == "نماد۱"
+        )
+        self.assertEqual(first_symbol["consecutive_queue_days"], 3)
+
+        previous_day_result = stock_app.build_stock_sell_queue_summary(
+            current_rows,
+            history,
+            limit=10,
+            use_previous_day=True,
+            reference_date="2026-10-27",
+        )
+        self.assertEqual(previous_day_result["matched_count"], 1)
+        self.assertEqual(
+            previous_day_result["stocks"][0]["sell_queue_value"],
+            400,
+        )
+        self.assertEqual(
+            previous_day_result["stocks"][0]["consecutive_queue_days"],
+            2,
+        )
+
     def test_technical_indicator_calculations(self):
         values = [100, 101, 102, 103, 104, 105, 106, 107, 108, 110]
 

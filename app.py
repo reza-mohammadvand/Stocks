@@ -4318,6 +4318,14 @@ def stock_strategy_buy_queue_state(row):
     return status in {"buy_queue", "buy_queue_neutral"}
 
 
+def stock_strategy_sell_queue_state(row):
+    """Return whether the row is one of the two sell-queue states."""
+    status = stock_price_power_status(row)
+    if status is None:
+        return None
+    return status in {"sell_queue", "sell_queue_neutral"}
+
+
 def stock_price_power_status(row):
     """Classify price position into the seven requested market states."""
     if not isinstance(row, dict):
@@ -5897,13 +5905,26 @@ def build_stock_strategy_excel(result, use_saved_data=False):
     return output
 
 
-def build_stock_buy_queue_summary(
+def build_stock_queue_summary(
     rows,
     history,
+    side="buy",
     limit=10,
     use_previous_day=False,
     reference_date=None,
 ):
+    side = "sell" if side == "sell" else "buy"
+    queue_value_field = (
+        "order_book_sell_value"
+        if side == "sell"
+        else "order_book_buy_value"
+    )
+    result_queue_value_field = f"{side}_queue_value"
+    queue_state = (
+        stock_strategy_sell_queue_state
+        if side == "sell"
+        else stock_strategy_buy_queue_state
+    )
     requested_limit = normalize_stock_strategy_integer(
         limit,
         10,
@@ -5961,13 +5982,11 @@ def build_stock_buy_queue_summary(
                 continue
             target_date, target_row = previous_candidate
 
-        if stock_strategy_buy_queue_state(target_row) is not True:
+        if queue_state(target_row) is not True:
             continue
 
-        buy_queue_value = stock_number(
-            target_row.get("order_book_buy_value")
-        )
-        if buy_queue_value is None or buy_queue_value <= 0:
+        queue_value = stock_number(target_row.get(queue_value_field))
+        if queue_value is None or queue_value <= 0:
             continue
 
         historical_rows = [
@@ -5979,35 +5998,36 @@ def build_stock_buy_queue_summary(
         trade_value = stock_number(target_row.get("trade_value"))
         consecutive_queue_days = 1
         for snapshot in historical_rows:
-            if stock_strategy_buy_queue_state(snapshot) is not True:
+            if queue_state(snapshot) is not True:
                 break
             consecutive_queue_days += 1
 
         traded_value_percent = (
             round(
-                trade_value / (trade_value + buy_queue_value) * 100,
+                trade_value / (trade_value + queue_value) * 100,
                 4,
             )
             if trade_value is not None
             and trade_value >= 0
-            and trade_value + buy_queue_value > 0
+            and trade_value + queue_value > 0
             else None
         )
-        results.append({
+        result_row = {
             "symbol": row.get("symbol"),
             "ins_code": row.get("ins_code"),
             "market_date": target_date or None,
-            "buy_queue_value": buy_queue_value,
             "trade_value": trade_value,
             "traded_value_percent": traded_value_percent,
             "consecutive_queue_days": consecutive_queue_days,
-        })
+        }
+        result_row[result_queue_value_field] = queue_value
+        results.append(result_row)
         if target_date:
             target_dates.add(target_date)
 
     results.sort(
         key=lambda item: (
-            item["buy_queue_value"],
+            item[result_queue_value_field],
             item["trade_value"] is not None,
             item["trade_value"] or 0,
         ),
@@ -6018,9 +6038,44 @@ def build_stock_buy_queue_summary(
         "matched_count": len(results),
         "count": min(len(results), requested_limit),
         "stocks": results[:requested_limit],
+        "queue_side": side,
         "data_mode": "previous_day" if use_previous_day else "latest",
         "data_dates": sorted(target_dates, reverse=True),
     }
+
+
+def build_stock_buy_queue_summary(
+    rows,
+    history,
+    limit=10,
+    use_previous_day=False,
+    reference_date=None,
+):
+    return build_stock_queue_summary(
+        rows,
+        history,
+        side="buy",
+        limit=limit,
+        use_previous_day=use_previous_day,
+        reference_date=reference_date,
+    )
+
+
+def build_stock_sell_queue_summary(
+    rows,
+    history,
+    limit=10,
+    use_previous_day=False,
+    reference_date=None,
+):
+    return build_stock_queue_summary(
+        rows,
+        history,
+        side="sell",
+        limit=limit,
+        use_previous_day=use_previous_day,
+        reference_date=reference_date,
+    )
 
 
 def fetch_live_stock_buy_queue_rows(rows):
@@ -6029,7 +6084,7 @@ def fetch_live_stock_buy_queue_rows(rows):
         response_text = fetch_stock_market_watch_plus_text()
     except (requests.RequestException, ValueError, TypeError) as error:
         raise RuntimeError(
-            "دریافت لحظه‌ای صف‌های خرید از TSETMC ناموفق بود."
+            "دریافت لحظه‌ای صف‌های خرید و فروش از TSETMC ناموفق بود."
         ) from error
 
     instruments = parse_all_stock_market_watch(
@@ -6107,6 +6162,49 @@ def get_stock_buy_queue_summary(
     if live and not use_previous_day:
         rows, live_metadata = fetch_live_stock_buy_queue_rows(rows)
     result = build_stock_buy_queue_summary(
+        rows,
+        read_stock_strategy_history(
+            source=source,
+            symbols=[row.get("symbol") for row in rows if row.get("symbol")],
+        ),
+        limit=limit,
+        use_previous_day=use_previous_day,
+    )
+    result.update({
+        "source": source,
+        "source_updated_at": (
+            live_metadata["fetched_at"]
+            if live_metadata
+            else metadata.get("last_successful_update")
+        ),
+        "evaluated_count": len(rows),
+        "data_source": "live" if live_metadata else "database",
+    })
+    if live_metadata:
+        result.update({
+            "live_fetched_at": live_metadata["fetched_at"],
+            "live_market_date": live_metadata["market_date"],
+            "missing_live_count": live_metadata["missing_count"],
+        })
+    return result
+
+
+def get_stock_sell_queue_summary(
+    limit=10,
+    source="all",
+    use_previous_day=False,
+    live=False,
+):
+    source = "featured" if source == "featured" else "all"
+    rows, metadata = (
+        read_stock_database()
+        if source == "featured"
+        else read_all_stock_database()
+    )
+    live_metadata = None
+    if live and not use_previous_day:
+        rows, live_metadata = fetch_live_stock_buy_queue_rows(rows)
+    result = build_stock_sell_queue_summary(
         rows,
         read_stock_strategy_history(
             source=source,
@@ -11457,6 +11555,37 @@ def stock_buy_queue_filter():
         return Response(
             json.dumps(
                 get_stock_buy_queue_summary(
+                    limit=request.args.get("count", default=10, type=int),
+                    source=request.args.get("source") or "all",
+                    use_previous_day=use_previous_day,
+                    live=use_live_data and not use_previous_day,
+                ),
+                ensure_ascii=False,
+            ),
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        return Response(
+            json.dumps({"error": str(error)}, ensure_ascii=False),
+            status=500,
+            content_type="application/json; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
+@app.route("/stock-sell-queues")
+def stock_sell_queue_filter():
+    try:
+        use_previous_day = request.args.get(
+            "use_previous_day", default="0", type=str
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        use_live_data = request.args.get(
+            "live", default="1", type=str
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        return Response(
+            json.dumps(
+                get_stock_sell_queue_summary(
                     limit=request.args.get("count", default=10, type=int),
                     source=request.args.get("source") or "all",
                     use_previous_day=use_previous_day,
